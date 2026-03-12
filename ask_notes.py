@@ -3,6 +3,8 @@ import time
 import datetime
 import numpy as np
 from pathlib import Path
+
+import requests
 from google import genai
 from google.genai import types
 from sentence_transformers import SentenceTransformer
@@ -13,7 +15,7 @@ os.environ["http_proxy"] = "http://127.0.0.1:7897"
 os.environ["https_proxy"] = "http://127.0.0.1:7897"
 
 print("正在初始化系统...")
-model_emb = SentenceTransformer("BAAI/bge-small-zh-v1.5")
+model_emb = SentenceTransformer("BAAI/bge-large-zh-v1.5")
 print(f"⏱️ 模型加载耗时: {time.time() - start_init:.2f}s")
 
 NOTES_DIR = Path("test_notes")
@@ -44,7 +46,7 @@ for file in all_files:
 earliest_note = file_info_list[0] if file_info_list else "无"
 latest_note = file_info_list[-1] if file_info_list else "无"
 
-# ====== 3. 影子索引与向量缓存 ======
+# ====== 3. 影子索引与向量缓存 (Ollama 本地版) ======
 embeddings = None
 if CACHE_FILE.exists():
     cache = np.load(CACHE_FILE, allow_pickle=True)
@@ -53,29 +55,44 @@ if CACHE_FILE.exists():
         print("✨ 调取现成记忆缓存")
 
 if embeddings is None:
-    print("\n🧠 触发初次建库：正在启动 AI 引擎生成【影子索引】...")
-    print("⏳ 注意：这将调用大模型为每篇笔记提取隐藏特征，可能需要几分钟，但只需执行一次！\n")
+    print("\n🧠 触发初次建库：正在启动【本地 Ollama 引擎】生成影子索引...")
+    print("⏳ 注意：这将调用你本地的 GPU 进行脱机推断，数据绝对安全！\n")
 
     enhanced_docs = []
+    # 配置本地 Ollama 的 API 地址和使用的模型
+    OLLAMA_API_URL = "http://localhost:11434/api/generate"
+    OLLAMA_MODEL = "qwen2.5"
+
     for path, doc in zip(paths, docs):
         print(f"   🤖 正在透视文件：{path} ...")
         try:
-            # 逼迫 AI 提取深层实体和情绪标签
+            # 强化版影子索引指令：强制进行“身份识别”，防混淆
             summary_prompt = (
-                f"请仔细阅读以下私人随手记片段，提取出 5-8 个最核心的搜索关键词。\n"
-                f"要求：\n"
-                f"1. 【向上推断核心项目】：不要只停留在字面技术词汇！根据你的世界知识，大胆推断并提取其所属的完整名。\n"
-                f"2. 【提炼开发动作】：如果内容涉及代码修改、指针报错、依赖关系，自动补充‘编译调试’、‘源码剖析’等动作标签。\n"
-                f"3. 极度简练，只返回用空格分隔的关键词，绝不解释。\n\n"
-                f"文本：\n{doc[:2000]}"
+                f"请阅读以下私人随手记片段，提取出 5-8 个最核心的搜索关键词。\n"
+                f"【核心任务】：\n"
+                f"1. 如果内容涉及代码编译、软件开发、公司任务、工程实施，【必须】在关键词中加入‘项目’和‘工作’这两个词！\n"
+                f"2. 如果涉及游戏，【必须】加入‘游戏’和‘个人爱好’，并提取具体的游戏名。\n"
+                f"3. 提取具体的关键技术词（如：C++, SVN, CMake）。\n"
+                f"4. 极度简练，只返回空格分隔的关键词，不许废话。\n\n"
+                f"文本：\n{doc[:1500]}"
             )
-            resp = client.models.generate_content(model=MODEL_ID, contents=summary_prompt)
-            shadow_tags = resp.text.strip()
 
-            # 融合为增强版文本喂给本地向量模型
+            payload = {
+                "model": OLLAMA_MODEL,
+                "prompt": summary_prompt,
+                "stream": False
+            }
+
+            # 向本地发送请求，完全不走外网
+            response = requests.post(OLLAMA_API_URL, json=payload, timeout=60)
+            response.raise_for_status()
+
+            shadow_tags = response.json().get("response", "").strip()
+
             enhanced_text = f"【核心隐藏特征：{shadow_tags}】\n{doc}"
             enhanced_docs.append(enhanced_text)
             print(f"      ✨ 提取到影子标签：[{shadow_tags}]")
+
         except Exception as e:
             print(f"      ⚠️ {path} 透视失败，使用原文本 ({e})")
             enhanced_docs.append(doc)
@@ -84,6 +101,7 @@ if embeddings is None:
     embeddings = model_emb.encode(enhanced_docs)
     np.savez(CACHE_FILE, embeddings=embeddings, paths=paths)
     print("✅ 影子索引建库完成！\n")
+
 
 # ====== 4. 初始化带有“全局视野+时间维度”的 AI ======
 file_map = "\n".join(file_info_list)
@@ -97,20 +115,20 @@ chat_config = types.GenerateContentConfig(
         "【行为原则】：\n"
         "1. 当用户只是寒暄、道谢或输入很短时，直接自然回复，无需强行引用笔记。\n"
         "2. 当用户问‘有哪些笔记’、‘最早/最新笔记’等宏观问题时，直接参考【全局统计】和【全局地图】回答。\n"
-        "3. 当用户问具体细节时，根据提供的【参考片段】回答，绝不瞎编。\n"
+        "3. 当用户问具体细节时，优先根据提供的【参考片段】回答。\n"
         "4. 语气自然、像真人一样聊天，极度简练。\n"
-        "5. 【严格隔离与推理】：绝不能将不同工作/生活切片强行缝合。\n"
-        "6. 【架构师思维与融会贯通】：当用户探讨某个宏观项目时，如果检索到的是底层的代码片段或报错记录，你要能像高级架构师一样，主动向用户解释这些底层代码是如何在整个项目的编译、重构和运行链路中发挥作用的。要自主建立代码细节与宏观项目之间的关联！"
+        "5. 【严格隔离与推理】：绝不能将不同工作/生活切片强行缝合。必须明确区分用户的【个人娱乐项目】与【公司企业工作项目】，绝不可混淆！\n"
+        "6. 【架构师思维与融会贯通】：当用户探讨某个宏观项目时，你要能主动建立代码细节与宏观项目的关联。"
     ),
-    temperature=0.3
+    temperature=0.4
 )
-chat = client.chats.create(model=MODEL_ID, config=chat_config)
 
 print(f"✅ 系统就绪！启动总耗时: {time.time() - start_init:.2f}s")
 print("=================================")
 
-# ====== 5. 带有短期记忆的对话循环 ======
+# ====== 5. 带有短期记忆的无状态对话循环 ======
 memory_buffer = []
+current_focus_file = None  # 用于记录当前的全局焦点文件
 
 while True:
     question = input("\n问：")
@@ -127,33 +145,59 @@ while True:
             print(f"🔍 [直觉模式]：纯寒暄，极速响应")
         else:
             history_str = "\n".join(memory_buffer[-4:])
-            # 重写 Prompt，保留文件名等上下文线索
+            # 绝对禁止举具体文件的例子，防止大模型“粉红大象”抄作业
             rewrite_prompt = (
                 f"【近期对话历史】\n{history_str}\n\n"
                 f"【任务】\n"
-                f"请结合上述历史，补全用户最新问题中缺失的上下文（主语或指代对象）。\n"
-                f"特别注意：如果用户使用了代词或要求看“详细内容”，请务必将 AI 刚刚回答中提到的【文件名】或核心主题提取出来，拼接到关键词中。\n"
+                f"请结合上述历史，补全用户最新问题中缺失的上下文。\n"
                 f"将用户的最新问题‘{question}’重写为一个独立的、具体的搜索关键词短语。\n"
-                f"【警告】：绝不允许捏造任何无关实体！直接返回关键词，不要任何解释。"
+                f"【最高警告】：\n"
+                f"1. 如果近期对话历史为空，说明是全新对话，你【必须】只根据用户当前提问提取关键词，绝对不允许脑补、捏造或引入任何外部文件名！\n"
+                f"2. 如果用户开启了新话题，必须立刻抛弃历史记录中的实体和文件名。\n"
+                f"3. 只能返回纯粹的搜索短语，绝不允许输出任何多余的解释。"
             )
             try:
                 rewrite_resp = client.models.generate_content(model=MODEL_ID, contents=rewrite_prompt)
                 search_query = rewrite_resp.text.strip()
                 print(f"🔍 [意图重写]：{search_query}")
             except Exception as e:
-                search_query = question
-                print(f"⚠️ 重写失败，使用原句 ({e})")
+                # 兜底机制
+                last_file_mentioned = ""
+                for mem in reversed(memory_buffer[-4:]):
+                    import re
+                    match = re.search(r'([a-zA-Z0-9_\-\u4e00-\u9fa5]+\.(?:txt|md))', mem)
+                    if match:
+                        last_file_mentioned = match.group(1)
+                        break
+
+                if last_file_mentioned:
+                    search_query = f"{last_file_mentioned} {question}"
+                    print(f"⚠️ 重写失败，但探测到历史文件上下文，智能回退查询词为: [{search_query}]")
+                else:
+                    search_query = question
+                    print(f"⚠️ 重写失败，使用原句 ({e})")
 
         # 加入 BGE 中文短搜长的专属检索咒语
         bge_instruction = "为这个句子生成表示以用于检索相关文章："
         q_emb = model_emb.encode([bge_instruction + search_query])[0]
         scores = np.dot(embeddings, q_emb)
 
-        temp_query = (question + " " + search_query).lower()
-        exact_match_indices = []
+        # ==========================================
+        # 智能焦点释放
+        # ==========================================
+        shift_keywords = ["其他", "别的", "所有", "全局", "抛开", "除了", "另外"]
+        if any(keyword in question for keyword in shift_keywords):
+            current_focus_file = None
+            print("🔄 [焦点释放]：检测到搜索范围扩大，已自动解除全局焦点锁定！")
 
+        # ==========================================
+        # 混合检索逻辑 (Merge Strategy)
+        # ==========================================
+        exact_match_indices = []
+        temp_query = (question + " " + search_query).lower()
         sorted_indices = sorted(range(len(paths)), key=lambda k: len(paths[k]), reverse=True)
 
+        # 1. 先抓取精确匹配的文件
         for i in sorted_indices:
             base_name = paths[i].replace(".txt", "").replace(".md", "").lower()
             if base_name and base_name in temp_query:
@@ -161,34 +205,71 @@ while True:
                 print(f"⚡ [精确拦截]：检测到直接呼叫文件名 -> {paths[i]}")
                 temp_query = temp_query.replace(base_name, " ")
 
-        # 提高阈值，宁缺毋滥防串味
-        threshold = 0.55
-        relevant_indices = [i for i, s in enumerate(scores) if s > threshold]
+        # 2. 更新焦点（如果用户没有喊“其他”，且命中了具体文件，就锁定焦点）
+        if exact_match_indices and not any(k in question for k in shift_keywords):
+            current_focus_file = paths[exact_match_indices[0]]
+            print(f"🎯 [全局焦点锁定]：AI的注意力已死死盯住 -> {current_focus_file}")
 
+        # 3. 获取 BGE 语义检索的高分结果
+        threshold = 0.48
+        semantic_indices = [i for i in np.argsort(scores)[::-1] if scores[i] > threshold]
+
+        # 4. 将 精确命中 与 语义命中 优雅合并，去重
+        relevant_indices = []
         for idx in exact_match_indices:
             if idx not in relevant_indices:
-                relevant_indices.insert(0, idx)
+                relevant_indices.append(idx)
+        for idx in semantic_indices:
+            if idx not in relevant_indices:
+                relevant_indices.append(idx)
 
-        if not relevant_indices and len(question) > 8:
+        # 兜底：如果啥也没找到，且问题长于2个字，强行给最高分的1个
+        if not relevant_indices and len(search_query) > 2:
             relevant_indices = [np.argsort(scores)[-1]]
 
-        relevant_indices = relevant_indices[:4]  # 最多只给 4 个防爆炸
+        # 截断：最多只给 4 个文件
+        relevant_indices = relevant_indices[:4]
 
         context_text = ""
         if relevant_indices:
-            # 塞给大模型的仍然是原始纯净文本 docs，不会干扰最终回答
             retrieved_docs = [f"文件【{paths[idx]}】：\n{docs[idx]}" for idx in relevant_indices]
-            context_text = "【检索到的参考片段】:\n" + "\n---\n".join(retrieved_docs) + "\n\n"
+            context_text = "【本次检索到的独家参考片段】:\n" + "\n---\n".join(retrieved_docs) + "\n\n"
 
-        final_prompt = f"{context_text}【用户输入】: {question}"
+        # 1. 提取干净的历史记录
+        clean_history = "\n".join(memory_buffer[-4:])
+
+        # 2. 焦点注入文本
+        focus_injection = f"【当前全局焦点文件】：{current_focus_file} (如果用户使用代词或省略主语，请务必默认围绕此文件展开！)\n" if current_focus_file else ""
+
+        # 3. 组装无状态的专属 Prompt
+        final_prompt = (
+            f"【近期聊天上下文】:\n{clean_history}\n\n"
+            f"{focus_injection}" 
+            f"{context_text}"
+            f"【用户最新提问】: {question}\n\n"
+            f"【最高指令】：\n"
+            f"1. 如果【本次检索到的独家参考片段】里有内容，请优先分析片段。\n"
+            f"2. 💡【全局联想】：如果检索片段很少（比如只有1个），或者片段太琐碎，你可以结合你系统指令里自带的【全局地图/文件列表】来进行推理！\n"
+            f"   - 例如：用户问‘有哪些项目’，如果检索没搜全，你可以根据文件名主动联想并告诉用户有哪些值得关注的项目。\n"
+            f"3. 优先结合【当前全局焦点文件】的背景来理解用户的追问（如“这个”、“这家”等）。\n"
+            f"4. 启动‘毒舌模式’：针对技术/工作项目，如果内容包含抱怨，请犀利点评其拉胯之处。\n"
+            f"5. 🚨【个人项目保护】：明确区分游戏与工作。"
+        )
 
         print(f"🔍 [系统日志] 匹配到 {len(relevant_indices)} 个相关片段...")
-        response = chat.send_message(final_prompt)
+
+        # 使用 generate_content 保证每次独立思考，不污染长期记忆
+        response = client.models.generate_content(
+            model=MODEL_ID,
+            contents=final_prompt,
+            config=chat_config
+        )
 
         if response.text:
             print(f"\nAI回答：\n{response.text}")
+            # 保存到记忆里的，只有极简的问答，防撑爆
             memory_buffer.append(f"用户：{question}")
-            memory_buffer.append(f"AI：{response.text[:200]}...")
+            memory_buffer.append(f"AI：{response.text[:150]}...")
 
         print(f"⏱️ 耗时: {time.time() - start_qa:.2f}s")
 
