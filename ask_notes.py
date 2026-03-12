@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import datetime
 import numpy as np
@@ -145,37 +146,27 @@ while True:
             print(f"🔍 [直觉模式]：纯寒暄，极速响应")
         else:
             history_str = "\n".join(memory_buffer[-4:])
-            # 绝对禁止举具体文件的例子，防止大模型“粉红大象”抄作业
             rewrite_prompt = (
                 f"【近期对话历史】\n{history_str}\n\n"
                 f"【任务】\n"
                 f"请结合上述历史，补全用户最新问题中缺失的上下文。\n"
                 f"将用户的最新问题‘{question}’重写为一个独立的、具体的搜索关键词短语。\n"
                 f"【最高警告】：\n"
-                f"1. 如果近期对话历史为空，说明是全新对话，你【必须】只根据用户当前提问提取关键词，绝对不允许脑补、捏造或引入任何外部文件名！\n"
-                f"2. 如果用户开启了新话题，必须立刻抛弃历史记录中的实体和文件名。\n"
-                f"3. 只能返回纯粹的搜索短语，绝不允许输出任何多余的解释。"
+                f"1. 如果近期对话历史为空，必须只根据当前提问提取关键词，绝对不允许脑补外部文件名！\n"
+                f"2. 💡【转移话题判定】：如果用户暗示‘其他’、‘另外的’或‘从xxx出发’，必须立刻抛弃历史记录中的旧实体和旧文件名！\n"
+                f"3. 只能返回纯粹的搜索短语，绝不允许输出多余的解释。\n"
+                f"4. 🕵️【侦探直觉】：如果用户试图‘寻找背后实体’，请从历史上下文中提取技术凭证（如用户名）加入搜索词！\n"
+                f"5. 🚫【致命禁忌】：提取的搜索短语中【绝对不可以】包含“.txt”或“.md”等扩展名！"
             )
             try:
                 rewrite_resp = client.models.generate_content(model=MODEL_ID, contents=rewrite_prompt)
                 search_query = rewrite_resp.text.strip()
+                # 暴力清洗大模型可能违规生成的后缀
+                search_query = search_query.replace(".txt", "").replace(".md", "")
                 print(f"🔍 [意图重写]：{search_query}")
             except Exception as e:
-                # 兜底机制
-                last_file_mentioned = ""
-                for mem in reversed(memory_buffer[-4:]):
-                    import re
-                    match = re.search(r'([a-zA-Z0-9_\-\u4e00-\u9fa5]+\.(?:txt|md))', mem)
-                    if match:
-                        last_file_mentioned = match.group(1)
-                        break
-
-                if last_file_mentioned:
-                    search_query = f"{last_file_mentioned} {question}"
-                    print(f"⚠️ 重写失败，但探测到历史文件上下文，智能回退查询词为: [{search_query}]")
-                else:
-                    search_query = question
-                    print(f"⚠️ 重写失败，使用原句 ({e})")
+                search_query = question
+                print(f"⚠️ 重写失败，回退使用原句作为查询词 ({e})")
 
         # 加入 BGE 中文短搜长的专属检索咒语
         bge_instruction = "为这个句子生成表示以用于检索相关文章："
@@ -185,10 +176,16 @@ while True:
         # ==========================================
         # 智能焦点释放
         # ==========================================
-        shift_keywords = ["其他", "别的", "所有", "全局", "抛开", "除了", "另外"]
-        if any(keyword in question for keyword in shift_keywords):
+        shift_keywords = ["其他", "别的", "所有", "全局", "抛开", "除了", "另外", "换个", "不说", "那"]
+
+        # 建立临时黑名单
+        ignored_file = None
+
+        # 如果问题极短，或者明确带有转移词，释放焦点
+        if any(keyword in question for keyword in shift_keywords) or len(question) < 4:
+            ignored_file = current_focus_file  # 把当前焦点打入冷宫
             current_focus_file = None
-            print("🔄 [焦点释放]：检测到搜索范围扩大，已自动解除全局焦点锁定！")
+            print(f"🔄 [焦点释放]：检测到话题可能转移，已自动解除全局焦点锁定！(临时屏蔽: {ignored_file})")
 
         # ==========================================
         # 混合检索逻辑 (Merge Strategy)
@@ -199,11 +196,30 @@ while True:
 
         # 1. 先抓取精确匹配的文件
         for i in sorted_indices:
-            base_name = paths[i].replace(".txt", "").replace(".md", "").lower()
-            if base_name and base_name in temp_query:
+            full_name = paths[i].lower()
+            base_name = full_name.replace(".txt", "").replace(".md", "")
+
+            # 【严格执行黑名单机制！如果该文件被标记为忽略，直接跳过本次匹配
+            if ignored_file and full_name == ignored_file.lower():
+                continue
+
+            # 策略A：全名命中（带后缀），最精准，直接拦截
+            if full_name in temp_query:
                 exact_match_indices.append(i)
-                print(f"⚡ [精确拦截]：检测到直接呼叫文件名 -> {paths[i]}")
-                temp_query = temp_query.replace(base_name, " ")
+                print(f"⚡ [精确拦截-全名]：-> {paths[i]}")
+                temp_query = temp_query.replace(full_name, " ")
+                continue
+
+            # 策略B：无后缀名拦截
+            # 采用正则表达式进行严格的单词边界匹配
+            pattern = rf"\b{re.escape(base_name)}\b"
+
+            if not base_name.isdigit() and re.search(pattern, temp_query):
+                # 场景1：全句只有一个词，或者是一个长度 >= 4 的独立词
+                if temp_query.strip() == base_name or len(base_name) >= 4:
+                    exact_match_indices.append(i)
+                    print(f"⚡ [精确拦截-词边界匹配]：-> {paths[i]}")
+                    temp_query = re.sub(pattern, " ", temp_query)
 
         # 2. 更新焦点（如果用户没有喊“其他”，且命中了具体文件，就锁定焦点）
         if exact_match_indices and not any(k in question for k in shift_keywords):
@@ -244,7 +260,7 @@ while True:
         # 3. 组装无状态的专属 Prompt
         final_prompt = (
             f"【近期聊天上下文】:\n{clean_history}\n\n"
-            f"{focus_injection}" 
+            f"{focus_injection}"
             f"{context_text}"
             f"【用户最新提问】: {question}\n\n"
             f"【最高指令】：\n"
@@ -252,8 +268,16 @@ while True:
             f"2. 💡【全局联想】：如果检索片段很少（比如只有1个），或者片段太琐碎，你可以结合你系统指令里自带的【全局地图/文件列表】来进行推理！\n"
             f"   - 例如：用户问‘有哪些项目’，如果检索没搜全，你可以根据文件名主动联想并告诉用户有哪些值得关注的项目。\n"
             f"3. 优先结合【当前全局焦点文件】的背景来理解用户的追问（如“这个”、“这家”等）。\n"
-            f"4. 启动‘毒舌模式’：针对技术/工作项目，如果内容包含抱怨，请犀利点评其拉胯之处。\n"
-            f"5. 🚨【个人项目保护】：明确区分游戏与工作。"
+            f"4. 😈 启动‘毒舌模式’：针对技术/工作项目，如果内容包含抱怨，请犀利点评其拉胯之处，不要端着！\n"
+            f"5. 🚨【个人项目保护】：明确区分游戏与工作。\n"
+            f"6. ⏰【绝对时间线警告】：严格区分“笔记记录的时间（文件修改时间）”和“笔记内容涉及的技术年代”。\n"
+            f"   - 如果用户问“当时/写这篇笔记时”，请【务必】以检索片段头部标注的 [修改时间: xxxx-xx-xx] 为准！\n"
+            f"   - 切勿因为笔记里提到了老旧技术，就臆断用户是在那个年代写的笔记！\n"
+            f"7. 🕵️【极客侦探模式】：在分析文档关联时，请高度敏锐地捕捉用户名等技术凭证，利用这些线索跨文档推理人物身份或项目背景！\n"
+            f"8. 🛑【实体隔离警告】：严禁跨年份、跨事件强行拼接实体（公司名、人名）！\n"
+            f"   - 如果当前检索的文件没有具体名称，请直接回答‘找不到全称’。\n"
+            f"   - 绝对不允许把文档里的公司名强行套用到，不要自己编造剧情！\n"
+            f"9. 🛡️【拒绝胡诌指令】：如果检索到的片段内容与用户的问题【完全无关】（例如用户问宏观背景，检索到的全是具体代码日志），请勇敢地回答‘我的笔记里没有记录这方面的信息’，绝对禁止生搬硬套！"
         )
 
         print(f"🔍 [系统日志] 匹配到 {len(relevant_indices)} 个相关片段...")
@@ -267,9 +291,16 @@ while True:
 
         if response.text:
             print(f"\nAI回答：\n{response.text}")
-            # 保存到记忆里的，只有极简的问答，防撑爆
+
+            # 清洗掉换行和复杂的 Markdown 符号，避免下一轮语法错乱
+            clean_reply = response.text.replace("\n", " ").replace("*", "").replace("#", "")
+            # 找到前 150 个字符里最后一个句号/标点的位置进行优雅截断
+            short_reply = clean_reply[:150]
+            if len(clean_reply) > 150:
+                short_reply += "..."
+
             memory_buffer.append(f"用户：{question}")
-            memory_buffer.append(f"AI：{response.text[:150]}...")
+            memory_buffer.append(f"AI：{short_reply}")
 
         print(f"⏱️ 耗时: {time.time() - start_qa:.2f}s")
 
