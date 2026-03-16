@@ -37,12 +37,18 @@ all_files.sort(key=lambda x: x.stat().st_mtime)
 for file in all_files:
     if file.suffix.lower() not in {".txt", ".md"}: continue
 
-    mtime = datetime.datetime.fromtimestamp(file.stat().st_mtime)
+    stat = file.stat()
+    mtime = datetime.datetime.fromtimestamp(stat.st_mtime)
     date_str = mtime.strftime('%Y-%m-%d')
+
+    # 获取文件大小并转换为 KB
+    size_kb = stat.st_size / 1024
 
     docs.append(file.read_text(encoding="utf-8", errors="ignore"))
     paths.append(file.name)
-    file_info_list.append(f"- {file.name} (更新于: {date_str})")
+
+    # 将大小信息喂给 AI 的全局地图
+    file_info_list.append(f"- {file.name} (大小: {size_kb:.1f}KB, 更新于: {date_str})")
 
 earliest_note = file_info_list[0] if file_info_list else "无"
 latest_note = file_info_list[-1] if file_info_list else "无"
@@ -117,9 +123,10 @@ chat_config = types.GenerateContentConfig(
         "1. 当用户只是寒暄、道谢或输入很短时，直接自然回复，无需强行引用笔记。\n"
         "2. 当用户问‘有哪些笔记’、‘最早/最新笔记’等宏观问题时，直接参考【全局统计】和【全局地图】回答。\n"
         "3. 当用户问具体细节时，优先根据提供的【参考片段】回答。\n"
-        "4. 语气自然、像真人一样聊天，极度简练。\n"
-        "5. 【严格隔离与推理】：绝不能将不同工作/生活切片强行缝合。必须明确区分用户的【个人娱乐项目】与【公司企业工作项目】，绝不可混淆！\n"
-        "6. 【架构师思维与融会贯通】：当用户探讨某个宏观项目时，你要能主动建立代码细节与宏观项目的关联。"
+        "4. 【自我认知】：当用户问“你能干啥”、“你是谁”等关于你系统能力的问题时，请直接自我介绍，告诉用户你可以帮他们精准检索、总结和推理海量的私人随手记，无需强行引用或分析具体的笔记片段。\n" 
+        "5. 语气自然、像真人一样聊天，极度简练。\n"
+        "6. 【严格隔离与推理】：绝不能将不同工作/生活切片强行缝合。必须明确区分用户的【个人娱乐项目】与【公司企业工作项目】，绝不可混淆！\n"
+        "7. 【架构师思维与融会贯通】：当用户探讨某个宏观项目时，你要能主动建立代码细节与宏观项目的关联。"
     ),
     temperature=0.4
 )
@@ -139,7 +146,10 @@ while True:
     start_qa = time.time()
 
     try:
-        greetings = ["你好", "嗨", "在吗", "谢谢", "好的", "ok", "嗯", "哈哈", "知道了", "原来如此"]
+        greetings = [
+            "你好", "嗨", "在吗", "谢谢", "好的", "ok", "嗯", "哈哈", "知道了", "原来如此",
+            "能干啥", "你是谁", "怎么用", "你能做什么", "你的功能"
+        ]
 
         if question in greetings:
             search_query = question
@@ -210,9 +220,9 @@ while True:
                 temp_query = temp_query.replace(full_name, " ")
                 continue
 
-            # 策略B：无后缀名拦截
-            # 采用正则表达式进行严格的单词边界匹配
-            pattern = rf"\b{re.escape(base_name)}\b"
+            # 策略B优化：兼容中英文混合的“抗劫持”边界匹配
+            # 确保 base_name 的前后不是英文字母或数字，完美兼容中文！
+            pattern = rf"(?:^|[^a-zA-Z0-9_]){re.escape(base_name)}(?:[^a-zA-Z0-9_]|$)"
 
             if not base_name.isdigit() and re.search(pattern, temp_query):
                 # 场景1：全句只有一个词，或者是一个长度 >= 4 的独立词
@@ -239,9 +249,11 @@ while True:
             if idx not in relevant_indices:
                 relevant_indices.append(idx)
 
-        # 兜底：如果啥也没找到，且问题长于2个字，强行给最高分的1个
+        # 宁缺毋滥
         if not relevant_indices and len(search_query) > 2:
-            relevant_indices = [np.argsort(scores)[-1]]
+            best_match_idx = np.argsort(scores)[-1]
+            if scores[best_match_idx] > 0.35:  # 增加底线，低于此值绝对不给
+                relevant_indices = [best_match_idx]
 
         # 截断：最多只给 4 个文件
         relevant_indices = relevant_indices[:4]
@@ -265,8 +277,7 @@ while True:
             f"【用户最新提问】: {question}\n\n"
             f"【最高指令】：\n"
             f"1. 如果【本次检索到的独家参考片段】里有内容，请优先分析片段。\n"
-            f"2. 💡【全局联想】：如果检索片段很少（比如只有1个），或者片段太琐碎，你可以结合你系统指令里自带的【全局地图/文件列表】来进行推理！\n"
-            f"   - 例如：用户问‘有哪些项目’，如果检索没搜全，你可以根据文件名主动联想并告诉用户有哪些值得关注的项目。\n"
+            f"2. 💡【全局联想限制】：你可以根据【全局地图/文件列表】回答“有哪些笔记”或“文件有多大”。但是！如果用户问及某个文件的【具体内容/它记录了什么】，你【必须】依赖下方提供的参考片段！如果参考片段中没有该文件的内容，【绝对禁止】望文生义或根据文件名瞎猜，必须诚实回答“未检索到该文件的具体内容”。\n" 
             f"3. 优先结合【当前全局焦点文件】的背景来理解用户的追问（如“这个”、“这家”等）。\n"
             f"4. 😈 启动‘毒舌模式’：针对技术/工作项目，如果内容包含抱怨，请犀利点评其拉胯之处，不要端着！\n"
             f"5. 🚨【个人项目保护】：明确区分游戏与工作。\n"
@@ -277,7 +288,12 @@ while True:
             f"8. 🛑【实体隔离警告】：严禁跨年份、跨事件强行拼接实体（公司名、人名）！\n"
             f"   - 如果当前检索的文件没有具体名称，请直接回答‘找不到全称’。\n"
             f"   - 绝对不允许把文档里的公司名强行套用到，不要自己编造剧情！\n"
-            f"9. 🛡️【拒绝胡诌指令】：如果检索到的片段内容与用户的问题【完全无关】（例如用户问宏观背景，检索到的全是具体代码日志），请勇敢地回答‘我的笔记里没有记录这方面的信息’，绝对禁止生搬硬套！"
+            f"9. 🛡️【拒绝胡诌指令】：如果检索到的片段内容与用户的问题【完全无关】（例如用户问宏观背景，检索到的全是具体代码日志），请勇敢地回答‘我的笔记里没有记录这方面的信息’，绝对禁止生搬硬套！\n"
+            f"10. ⏳【时间线侧写与变化推理】：当用户提问关于时间跨度内的‘变化’、‘成长’或‘不同’时：\n"
+            f"    - 【必须】立刻审视你系统指令中自带的【全局地图/文件列表】！\n"
+            f"    - 观察从最早年份到最新年份的文件命名规律。你的关注点、使用的技术栈、参与的项目类型是否发生了转移？\n"
+            f"    - 结合本次检索到的历史片段作为佐证，基于以上客观事实，为用户梳理出一条清晰的‘演进轨迹’。\n"
+            f"    - 如果单靠片段不够，就大胆地用【全局地图】里的文件名来补充说明你的发现！"
         )
 
         print(f"🔍 [系统日志] 匹配到 {len(relevant_indices)} 个相关片段...")
