@@ -3,7 +3,6 @@ import re
 import time
 import datetime
 
-
 import docx2txt
 import numpy as np
 from pathlib import Path
@@ -185,7 +184,7 @@ chat_config = types.GenerateContentConfig(
         f"【全局地图】（以下文件已按时间从早到晚排序）：\n{file_map}\n\n"
         "【行为原则】：\n"
         "1. 当用户只是寒暄、道谢或输入很短时，直接自然回复，无需强行引用笔记。\n"
-        "2. 当用户问‘有哪些笔记’、‘最早/最新笔记’等宏观问题时，直接参考【全局统计】和【全局地图】回答。\n"
+        "2. 当用户问‘有哪些笔记’、‘最早/最新笔记’、‘提到了哪些人’等宏观统计问题时，请直接参考【全局统计】和上面的【全局地图】文件名进行推理回答。\n"
         "3. 当用户问具体细节时，优先根据提供的【参考片段】回答。\n"
         "4. 【自我认知】：当用户问“你能干啥”、“你是谁”等关于你系统能力的问题时，请直接自我介绍，告诉用户你可以帮他们精准检索、总结和推理海量的私人随手记，无需强行引用或分析具体的笔记片段。\n" 
         "5. 语气自然、像真人一样聊天，极度简练。\n"
@@ -212,15 +211,35 @@ while True:
 
     start_qa = time.time()
 
-    try:
-        greetings = [
-            "你好", "嗨", "在吗", "谢谢", "好的", "ok", "嗯", "哈哈", "知道了", "原来如此",
-            "能干啥", "你是谁", "怎么用", "你能做什么", "你的功能"
-        ]
+    # 物理外挂：极简方言与错别字强制纠音
+    if question.strip() in ["银", "仁", "人", "找仁", "找银"]:
+        print("💡 [系统纠音]：检测到极简方言或错字，已强制翻译为 -> 找人")
+        question = "找人"
 
-        if question in greetings:
-            search_query = question
-            print(f"🔍 [直觉模式]：纯寒暄，极速响应")
+    try:
+        # 意图分类短路器
+        greetings = ["你好", "嗨", "在吗", "谢谢", "好的", "ok", "嗯", "哈哈", "知道了", "原来如此", "厉害",
+                     "棒", "牛逼", "多谢", "感谢"]
+        system_queries = ["能干啥", "你是谁", "怎么用", "你能做什么", "你的功能", "介绍一下"]
+        macro_queries = ["有哪些人", "提到哪些人", "所有人名", "文件列表", "最早的笔记", "最新笔记", "文件总数",
+                         "多少个文件", "查人", "找人", "找个人", "多少文件", "统计"]
+
+        skip_retrieval = False
+        search_query = question
+
+        # 如果是问人际关系或评价，禁止走 [直觉模式]
+        relationship_queries = ["对我如何", "关系好", "评价", "他人怎么样", "对他"]
+        is_relationship_query = any(q in question for q in relationship_queries)
+
+        if any(word in question.lower() for word in greetings) and len(question) <= 15 and not is_relationship_query:
+            print(f"🔍 [直觉模式]：检测到寒暄或夸奖，极速响应")
+            skip_retrieval = True
+        elif any(word in question for word in system_queries):
+            print(f"🔍 [系统认知模式]：用户在问我能干啥，跳过文档检索")
+            skip_retrieval = True
+        elif any(word in question for word in macro_queries):
+            print(f"🔍 [宏观统计模式]：用户在问全局信息，直接让 AI 查阅【全局地图】")
+            skip_retrieval = True
         else:
             history_str = "\n".join(memory_buffer[-4:])
             rewrite_prompt = (
@@ -231,9 +250,12 @@ while True:
                 f"【最高警告】：\n"
                 f"1. 如果近期对话历史为空，必须只根据当前提问提取关键词，绝对不允许脑补外部文件名！\n"
                 f"2. 💡【转移话题判定】：如果用户暗示‘其他’、‘另外的’或‘从xxx出发’，必须立刻抛弃历史记录中的旧实体和旧文件名！\n"
-                f"3. 只能返回纯粹的搜索短语，绝不允许输出多余的解释。\n"
-                f"4. 🕵️【侦探直觉】：如果用户试图‘寻找背后实体’，请从历史上下文中提取技术凭证（如用户名）加入搜索词！\n"
-                f"5. 🚫【致命禁忌】：提取的搜索短语中【绝对不可以】包含“.txt”或“.md”等扩展名！"
+                f"3. 🚨【实体保护原则】：如果用户最新提问中出现了明确的具体人名、地名或实体，重写后的搜索词【必须】包含该新实体，绝对不允许用历史记录中的旧名字去覆盖！\n"
+                f"4. 🛑【禁止过度翻译】：如果用户输入了极短的英文字母，请【原封不动】地保留这些字母！绝对不允许脑补或翻译成词汇！也要防止将这些字母理解为文件后缀！\n"
+                f"5. 只能返回纯粹的搜索短语，绝不允许输出多余的解释。\n"
+                f"6. 🕵️【侦探直觉】：如果用户试图‘寻找背后实体’，请从历史上下文中提取技术凭证（如用户名）加入搜索词！\n"
+                f"7. 🚫【致命禁忌】：提取的搜索短语中【绝对不可以】包含“.txt”或“.md”等扩展名！\n"
+                f"8. 🗣️【方言与纠错领悟】：如果用户使用了方言谐音，或者用户在纠正你上一轮的错误，请务必像个人类一样领会其真正的意图，将搜索词纠正为标准普通话！"
             )
             try:
                 rewrite_resp = client.models.generate_content(model=MODEL_ID, contents=rewrite_prompt)
@@ -245,101 +267,128 @@ while True:
                 search_query = question
                 print(f"⚠️ 重写失败，回退使用原句作为查询词 ({e})")
 
-        # 加入 BGE 中文短搜长的专属检索咒语
-        bge_instruction = "为这个句子生成表示以用于检索相关文章："
-        q_emb = model_emb.encode([bge_instruction + search_query])[0]
-        scores = np.dot(embeddings, q_emb)
+        # ==========================================
+        # 🚀 检索核心逻辑 (受短路器控制)
+        # ==========================================
+        scores = []
+        relevant_indices = []
+        exact_match_indices = []
+        ignored_file = None
 
-        # ==========================================
-        # 🚀 关键词混合暴击 (Keyword Boost)
-        # ==========================================
-        # 如果是寒暄，就直接跳过暴击逻辑！
-        if question not in greetings:
+        if not skip_retrieval:
+            # 加入 BGE 中文短搜长的专属检索咒语
+            bge_instruction = "为这个句子生成表示以用于检索相关文章："
+            q_emb = model_emb.encode([bge_instruction + search_query])[0]
+            scores = np.dot(embeddings, q_emb)
+
+            # ------------------------------------------
+            # 🚀 关键词混合暴击 (Keyword Boost) + 智能降维打击
+            # ------------------------------------------
             search_terms = [term for term in search_query.split() if len(term) >= 2]
+            raw_eng_terms = re.findall(r'[a-zA-Z0-9_]{2,}', question)
+            search_terms.extend(raw_eng_terms)
+            search_terms = list(set(search_terms))
+
+            # 智能词频侦测，判断哪些是“泛滥词”
+            term_in_filename_count = {term: 0 for term in search_terms}
+            for path in paths:
+                path_no_ext = path.rsplit('.', 1)[0].lower()
+                for term in search_terms:
+                    if term.lower() in path_no_ext:
+                        term_in_filename_count[term] += 1
 
             for i, doc_text in enumerate(docs):
                 for term in search_terms:
-                    # 如果这个核心关键词直接存在于文档原文中
-                    if term in doc_text:
-                        scores[i] += 0.15
-                        print(f"      🔥 [关键词暴击] '{term}' 强力命中文件 -> {paths[i]}")
-                        break  # 一篇文档命中一次即可，防止重复加分
+                    term_lower = term.lower()
+                    path_no_ext = paths[i].rsplit('.', 1)[0].lower()
+                    doc_lower = doc_text.lower()
+
+                    if term_lower in path_no_ext:
+                        if term_in_filename_count[term] > 3:
+                            scores[i] += 0.15
+                            print(f"      🔥 [泛滥词降级] '{term}' 命中文件名，按普通权重加分 -> {paths[i]}")
+                        else:
+                            scores[i] += 0.35
+                            print(f"      🔥 [文件名暴击] '{term}' 强力锁定文件 -> {paths[i]}")
+
+                    elif term_lower in doc_lower:
+                        # 纯英文/拼音特权！如果是纯字母或数字组合，给予 0.35 巨额保送分！
+                        if re.match(r'^[a-z0-9_]+$', term_lower):
+                            scores[i] += 0.35
+                            print(f"      🔥 [英文特权暴击] '{term}' 强行捞出文件 -> {paths[i]}")
+                        else:
+                            scores[i] += 0.15
+                            print(f"      🔥 [正文暴击] '{term}' 命中文件 -> {paths[i]}")
 
 
-        # ==========================================
-        # 智能焦点释放
-        # ==========================================
-        shift_keywords = ["其他", "别的", "所有", "全局", "抛开", "除了", "另外", "换个", "不说", "那"]
+            # ------------------------------------------
+            # 智能焦点释放
+            # ------------------------------------------
+            shift_keywords = ["其他", "别的", "所有", "全局", "抛开", "除了", "另外", "换个", "不说", "那"]
 
-        # 建立临时黑名单
-        ignored_file = None
+            # 如果问题极短，或者明确带有转移词，释放焦点
+            if any(keyword in question for keyword in shift_keywords) or len(question) < 4:
+                ignored_file = current_focus_file  # 把当前焦点打入冷宫
+                current_focus_file = None
+                print(f"🔄 [焦点释放]：检测到话题可能转移，已自动解除全局焦点锁定！(临时屏蔽: {ignored_file})")
 
-        # 如果问题极短，或者明确带有转移词，释放焦点
-        if any(keyword in question for keyword in shift_keywords) or len(question) < 4:
-            ignored_file = current_focus_file  # 把当前焦点打入冷宫
-            current_focus_file = None
-            print(f"🔄 [焦点释放]：检测到话题可能转移，已自动解除全局焦点锁定！(临时屏蔽: {ignored_file})")
+            # ------------------------------------------
+            # 混合检索逻辑 (Merge Strategy)
+            # ------------------------------------------
+            temp_query = (question + " " + search_query).lower()
+            sorted_indices = sorted(range(len(paths)), key=lambda k: len(paths[k]), reverse=True)
 
-        # ==========================================
-        # 混合检索逻辑 (Merge Strategy)
-        # ==========================================
-        exact_match_indices = []
-        temp_query = (question + " " + search_query).lower()
-        sorted_indices = sorted(range(len(paths)), key=lambda k: len(paths[k]), reverse=True)
+            # 1. 先抓取精确匹配的文件
+            for i in sorted_indices:
+                full_name = paths[i].lower()
+                base_name = full_name.replace(".txt", "").replace(".md", "")
 
-        # 1. 先抓取精确匹配的文件
-        for i in sorted_indices:
-            full_name = paths[i].lower()
-            base_name = full_name.replace(".txt", "").replace(".md", "")
+                # 【严格执行黑名单机制！如果该文件被标记为忽略，直接跳过本次匹配
+                if ignored_file and full_name == ignored_file.lower():
+                    continue
 
-            # 【严格执行黑名单机制！如果该文件被标记为忽略，直接跳过本次匹配
-            if ignored_file and full_name == ignored_file.lower():
-                continue
-
-            # 策略A：全名命中（带后缀），最精准，直接拦截
-            if full_name in temp_query:
-                exact_match_indices.append(i)
-                print(f"⚡ [精确拦截-全名]：-> {paths[i]}")
-                temp_query = temp_query.replace(full_name, " ")
-                continue
-
-            # 策略B优化：兼容中英文混合的“抗劫持”边界匹配
-            # 确保 base_name 的前后不是英文字母或数字，完美兼容中文！
-            pattern = rf"(?:^|[^a-zA-Z0-9_]){re.escape(base_name)}(?:[^a-zA-Z0-9_]|$)"
-
-            if not base_name.isdigit() and re.search(pattern, temp_query):
-                # 场景1：全句只有一个词，或者是一个长度 >= 4 的独立词
-                if temp_query.strip() == base_name or len(base_name) >= 4:
+                # 策略A：全名命中（带后缀），最精准，直接拦截
+                if full_name in temp_query:
                     exact_match_indices.append(i)
-                    print(f"⚡ [精确拦截-词边界匹配]：-> {paths[i]}")
-                    temp_query = re.sub(pattern, " ", temp_query)
+                    print(f"⚡ [精确拦截-全名]：-> {paths[i]}")
+                    temp_query = temp_query.replace(full_name, " ")
+                    continue
 
-        # 2. 更新焦点（如果用户没有喊“其他”，且命中了具体文件，就锁定焦点）
-        if exact_match_indices and not any(k in question for k in shift_keywords):
-            current_focus_file = paths[exact_match_indices[0]]
-            print(f"🎯 [全局焦点锁定]：AI的注意力已死死盯住 -> {current_focus_file}")
+                # 策略B优化：兼容中英文混合的“抗劫持”边界匹配
+                pattern = rf"(?:^|[^a-zA-Z0-9_]){re.escape(base_name)}(?:[^a-zA-Z0-9_]|$)"
 
-        # 3. 获取 BGE 语义检索的高分结果
-        threshold = 0.48
-        semantic_indices = [i for i in np.argsort(scores)[::-1] if scores[i] > threshold]
+                if not base_name.isdigit() and re.search(pattern, temp_query):
+                    if temp_query.strip() == base_name or len(base_name) >= 4:
+                        exact_match_indices.append(i)
+                        print(f"⚡ [精确拦截-词边界匹配]：-> {paths[i]}")
+                        temp_query = re.sub(pattern, " ", temp_query)
 
-        # 4. 将 精确命中 与 语义命中 优雅合并，去重
-        relevant_indices = []
-        for idx in exact_match_indices:
-            if idx not in relevant_indices:
-                relevant_indices.append(idx)
-        for idx in semantic_indices:
-            if idx not in relevant_indices:
-                relevant_indices.append(idx)
+            # 2. 更新焦点（如果用户没有喊“其他”，且命中了具体文件，就锁定焦点）
+            if exact_match_indices and not any(k in question for k in shift_keywords):
+                current_focus_file = paths[exact_match_indices[0]]
+                print(f"🎯 [全局焦点锁定]：AI的注意力已死死盯住 -> {current_focus_file}")
 
-        # 宁缺毋滥
-        if not relevant_indices and len(search_query) > 2:
-            best_match_idx = np.argsort(scores)[-1]
-            if scores[best_match_idx] > 0.35:  # 增加底线，低于此值绝对不给
-                relevant_indices = [best_match_idx]
+            # 3. 获取 BGE 语义检索的高分结果
+            threshold = 0.48
+            semantic_indices = [i for i in np.argsort(scores)[::-1] if scores[i] > threshold]
 
-        # 截断：最多只给 4 个文件
-        relevant_indices = relevant_indices[:4]
+            # 4. 将 精确命中 与 语义命中 优雅合并，去重
+            for idx in exact_match_indices:
+                if idx not in relevant_indices:
+                    relevant_indices.append(idx)
+            for idx in semantic_indices:
+                if idx not in relevant_indices:
+                    relevant_indices.append(idx)
+
+            # 宁缺毋滥
+            if not relevant_indices and len(search_query) >= 2:
+                best_match_idx = np.argsort(scores)[-1]
+                if scores[best_match_idx] > 0.35:  # 增加底线，低于此值绝对不给
+                    relevant_indices = [best_match_idx]
+
+            # 截断：最多只给 4 个文件
+            relevant_indices = relevant_indices[:4]
+            print(f"🔍 [系统日志] 匹配到 {len(relevant_indices)} 个相关片段...")
 
         context_text = ""
         if relevant_indices:
@@ -367,7 +416,9 @@ while True:
             f"6. ⏰【绝对时间线警告】：严格区分“笔记记录的时间（文件修改时间）”和“笔记内容涉及的技术年代”。\n"
             f"   - 如果用户问“当时/写这篇笔记时”，请【务必】以检索片段头部标注的 [修改时间: xxxx-xx-xx] 为准！\n"
             f"   - 切勿因为笔记里提到了老旧技术，就臆断用户是在那个年代写的笔记！\n"
-            f"7. 🕵️【极客侦探模式】：在分析文档关联时，请高度敏锐地捕捉用户名等技术凭证，利用这些线索跨文档推理人物身份或项目背景！\n"
+            f"7. 🕵️【极客侦探模式】：在分析文档关联时，请高度敏锐地捕捉用户名、邮箱前缀、账号等技术凭证！\n"
+            f"   - 💡 特别注意：如果用户提到极短的拼音首字母缩写，请【优先】将其理解为人名缩写或账号名，而【不是】文件扩展名！\n"
+            f"   - 利用这些线索跨文档推理人物身份或项目背景，大胆猜测！\n"
             f"8. 🛑【实体隔离警告】：严禁跨年份、跨事件强行拼接实体（公司名、人名）！\n"
             f"   - 如果当前检索的文件没有具体名称，请直接回答‘找不到全称’。\n"
             f"   - 绝对不允许把文档里的公司名强行套用到，不要自己编造剧情！\n"
@@ -378,8 +429,6 @@ while True:
             f"    - 结合本次检索到的历史片段作为佐证，基于以上客观事实，为用户梳理出一条清晰的‘演进轨迹’。\n"
             f"    - 如果单靠片段不够，就大胆地用【全局地图】里的文件名来补充说明你的发现！"
         )
-
-        print(f"🔍 [系统日志] 匹配到 {len(relevant_indices)} 个相关片段...")
 
         # 使用 generate_content 保证每次独立思考，不污染长期记忆
         response = client.models.generate_content(
