@@ -198,6 +198,9 @@ chat_config = types.GenerateContentConfig(
 print(f"✅ 系统就绪！启动总耗时: {time.time() - start_init:.2f}s")
 print("=================================")
 
+print("🤖：你好！我是你的 DocMind 随身助理。")
+print("    我已加载完所有笔记，你可以问我关于项目、生活的任何问题。")
+
 # ====== 5. 带有短期记忆的无状态对话循环 ======
 memory_buffer = []
 current_focus_file = None  # 用于记录当前的全局焦点文件
