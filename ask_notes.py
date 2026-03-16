@@ -3,19 +3,25 @@ import re
 import time
 import datetime
 
+
 import docx2txt
 import numpy as np
 from pathlib import Path
 
+import pymupdf
 import requests
 from google import genai
 from google.genai import types
+from rapidocr_onnxruntime import RapidOCR
 from sentence_transformers import SentenceTransformer
 
 # ====== 1. 环境与启动计时 ======
 start_init = time.time()
 os.environ["http_proxy"] = "http://127.0.0.1:7897"
 os.environ["https_proxy"] = "http://127.0.0.1:7897"
+
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 print("正在初始化系统...")
 model_emb = SentenceTransformer("BAAI/bge-large-zh-v1.5")
@@ -42,24 +48,58 @@ all_files.sort(key=lambda x: x.stat().st_mtime)
 for file in all_files:
     if file.suffix.lower() not in SUPPORTED_EXT:
         continue
-
+    if file.name.endswith(".ocr.txt"):
+        continue
     # 1. 获取文件元数据 (大小和时间)
     stat = file.stat()
     mtime = datetime.datetime.fromtimestamp(stat.st_mtime)
     date_str = mtime.strftime('%Y-%m-%d')
     size_kb = stat.st_size / 1024
 
-    # 2. 智能提取文本
+    # 2. 智能提取文本与 OCR 破甲（引入伴生文件机制）
     content = ""
     try:
         if file.suffix.lower() in {".txt", ".md"}:
             content = file.read_text(encoding="utf-8", errors="ignore")
-        elif file.suffix.lower() == ".pdf":
-            with fitz.open(file) as pdf_doc:
-                for page in pdf_doc:
-                    content += page.get_text()
+
         elif file.suffix.lower() == ".docx":
             content = docx2txt.process(file)
+
+        elif file.suffix.lower() == ".pdf":
+            # 检查是否存在 OCR 伴生文件
+            ocr_sidecar_path = file.with_name(file.name + ".ocr.txt")
+
+            if ocr_sidecar_path.exists():
+                print(f"      📄 发现伴生文件，直接秒读纯文本 -> {ocr_sidecar_path.name}")
+                content = ocr_sidecar_path.read_text(encoding="utf-8", errors="ignore")
+            else:
+                # 原来的 PDF 正常提取和 OCR 破甲逻辑
+                ocr_engine = None
+
+                with pymupdf.open(file) as pdf_doc:
+                    for page_num, page in enumerate(pdf_doc):
+                        page_text = page.get_text().strip()
+
+                        if len(page_text) < 15:
+                            if ocr_engine is None:
+                                ocr_engine = RapidOCR()
+                            print(f"      👁️ 发现“金身”页面 (页码 {page_num + 1})，启动 OCR 视觉强行破拆...")
+                            pix = page.get_pixmap(dpi=150)
+                            img_bytes = pix.tobytes("png")
+
+                            result, _ = ocr_engine(img_bytes)
+                            if result:
+                                page_text = "\n".join([line[1] for line in result])
+                                print(f"         ✅ 破拆成功！提取到 {len(page_text)} 个字符。")
+                            else:
+                                print(f"         ❌ 破拆失败，页面可能真的是空白的。")
+
+                        content += page_text + "\n"
+
+                # 破拆完成后，保存为伴生文件，下次一劳永逸！
+                if content.strip():
+                    ocr_sidecar_path.write_text(content, encoding="utf-8")
+
     except Exception as e:
         print(f"⚠️ 解析文件失败 {file.name}: {e}")
         continue
@@ -206,6 +246,21 @@ while True:
         bge_instruction = "为这个句子生成表示以用于检索相关文章："
         q_emb = model_emb.encode([bge_instruction + search_query])[0]
         scores = np.dot(embeddings, q_emb)
+
+        # ==========================================
+        # 🚀 关键词混合暴击 (Keyword Boost)
+        # ==========================================
+        # 将意图重写后的搜索词拆分成独立词汇（仅保留长度 >= 2 的词，防止单字误伤）
+        search_terms = [term for term in search_query.split() if len(term) >= 2]
+
+        for i, doc_text in enumerate(docs):
+            for term in search_terms:
+                # 如果这个核心关键词直接存在于文档原文中（无论是普通文本还是 OCR 出来的文本）
+                if term in doc_text:
+                    scores[i] += 0.15  # 给予 0.15 的降维打击加分，护送它冲过及格线！
+                    print(f"      🔥 [关键词暴击] '{term}' 强力命中文件 -> {paths[i]}")
+                    break  # 一篇文档命中一次即可，防止重复加分
+
 
         # ==========================================
         # 智能焦点释放
