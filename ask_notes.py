@@ -2,6 +2,8 @@ import os
 import re
 import time
 import datetime
+
+import docx2txt
 import numpy as np
 from pathlib import Path
 
@@ -30,24 +32,46 @@ client = genai.Client(api_key=os.getenv("OPENAI_API_KEY"), vertexai=False)
 docs, paths = [], []
 file_info_list = []
 
+# 支持的格式列表
+SUPPORTED_EXT = {".txt", ".md", ".docx", ".pdf"}
+
 # 按文件的修改时间(st_mtime)从小到大排序
 all_files = list(NOTES_DIR.glob("*"))
 all_files.sort(key=lambda x: x.stat().st_mtime)
 
 for file in all_files:
-    if file.suffix.lower() not in {".txt", ".md"}: continue
+    if file.suffix.lower() not in SUPPORTED_EXT:
+        continue
 
+    # 1. 获取文件元数据 (大小和时间)
     stat = file.stat()
     mtime = datetime.datetime.fromtimestamp(stat.st_mtime)
     date_str = mtime.strftime('%Y-%m-%d')
-
-    # 获取文件大小并转换为 KB
     size_kb = stat.st_size / 1024
 
-    docs.append(file.read_text(encoding="utf-8", errors="ignore"))
-    paths.append(file.name)
+    # 2. 智能提取文本
+    content = ""
+    try:
+        if file.suffix.lower() in {".txt", ".md"}:
+            content = file.read_text(encoding="utf-8", errors="ignore")
+        elif file.suffix.lower() == ".pdf":
+            with fitz.open(file) as pdf_doc:
+                for page in pdf_doc:
+                    content += page.get_text()
+        elif file.suffix.lower() == ".docx":
+            content = docx2txt.process(file)
+    except Exception as e:
+        print(f"⚠️ 解析文件失败 {file.name}: {e}")
+        continue
 
-    # 将大小信息喂给 AI 的全局地图
+    # 3. 拦截空文件或全是图片的 PDF
+    if not content.strip():
+        print(f"⚠️ 文件 {file.name} 提取为空，已跳过")
+        continue
+
+    # 4. 存入系统记忆
+    docs.append(content)
+    paths.append(file.name)
     file_info_list.append(f"- {file.name} (大小: {size_kb:.1f}KB, 更新于: {date_str})")
 
 earliest_note = file_info_list[0] if file_info_list else "无"
@@ -73,14 +97,14 @@ if embeddings is None:
     for path, doc in zip(paths, docs):
         print(f"   🤖 正在透视文件：{path} ...")
         try:
-            # 强化版影子索引指令：强制进行“身份识别”，防混淆
+            # 强化版影子索引指令：明确边界
             summary_prompt = (
-                f"请阅读以下私人随手记片段，提取出 5-8 个最核心的搜索关键词。\n"
-                f"【核心任务】：\n"
-                f"1. 如果内容涉及代码编译、软件开发、公司任务、工程实施，【必须】在关键词中加入‘项目’和‘工作’这两个词！\n"
-                f"2. 如果涉及游戏，【必须】加入‘游戏’和‘个人爱好’，并提取具体的游戏名。\n"
-                f"3. 提取具体的关键技术词（如：C++, SVN, CMake）。\n"
-                f"4. 极度简练，只返回空格分隔的关键词，不许废话。\n\n"
+                f"请提取以下私人笔记片段的 5-8 个最核心搜索关键词。\n"
+                f"【严格分类指令】：\n"
+                f"1. [技术/职场类]：【仅当】内容明确涉及代码、软件开发、公司事务时，才允许加入“项目”、“工作”及技术词。\n"
+                f"2. [游戏/娱乐类]：【仅当】明确涉及游戏时，才加入“游戏”、“个人爱好”及具体游戏名。\n"
+                f"3. [生活类]：如果涉及生活琐事、情感日常，【绝对禁止】加入任何技术、代码或工作词汇！提取其本身的专属词即可。\n"
+                f"【输出格式】：极度简练，只返回空格分隔的关键词，不许废话。\n\n"
                 f"文本：\n{doc[:1500]}"
             )
 
@@ -90,8 +114,8 @@ if embeddings is None:
                 "stream": False
             }
 
-            # 向本地发送请求，完全不走外网
-            response = requests.post(OLLAMA_API_URL, json=payload, timeout=60)
+            # 向本地发送请求
+            response = requests.post(OLLAMA_API_URL, json=payload, timeout=180)
             response.raise_for_status()
 
             shadow_tags = response.json().get("response", "").strip()
