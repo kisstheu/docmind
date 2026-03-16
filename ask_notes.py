@@ -250,16 +250,17 @@ while True:
         # ==========================================
         # 🚀 关键词混合暴击 (Keyword Boost)
         # ==========================================
-        # 将意图重写后的搜索词拆分成独立词汇（仅保留长度 >= 2 的词，防止单字误伤）
-        search_terms = [term for term in search_query.split() if len(term) >= 2]
+        # 如果是寒暄，就直接跳过暴击逻辑！
+        if question not in greetings:
+            search_terms = [term for term in search_query.split() if len(term) >= 2]
 
-        for i, doc_text in enumerate(docs):
-            for term in search_terms:
-                # 如果这个核心关键词直接存在于文档原文中（无论是普通文本还是 OCR 出来的文本）
-                if term in doc_text:
-                    scores[i] += 0.15  # 给予 0.15 的降维打击加分，护送它冲过及格线！
-                    print(f"      🔥 [关键词暴击] '{term}' 强力命中文件 -> {paths[i]}")
-                    break  # 一篇文档命中一次即可，防止重复加分
+            for i, doc_text in enumerate(docs):
+                for term in search_terms:
+                    # 如果这个核心关键词直接存在于文档原文中
+                    if term in doc_text:
+                        scores[i] += 0.15
+                        print(f"      🔥 [关键词暴击] '{term}' 强力命中文件 -> {paths[i]}")
+                        break  # 一篇文档命中一次即可，防止重复加分
 
 
         # ==========================================
