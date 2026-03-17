@@ -49,6 +49,9 @@ for file in all_files:
         continue
     if file.name.endswith(".ocr.txt"):
         continue
+    if file.name.startswith("~$"):
+        continue
+
     # 1. 获取文件元数据 (大小和时间)
     stat = file.stat()
     mtime = datetime.datetime.fromtimestamp(stat.st_mtime)
@@ -62,7 +65,39 @@ for file in all_files:
             content = file.read_text(encoding="utf-8", errors="ignore")
 
         elif file.suffix.lower() == ".docx":
-            content = docx2txt.process(file)
+
+            try:
+
+                # 正常尝试用 Word 引擎解析
+
+                content = docx2txt.process(file)
+
+
+            except Exception as e:
+
+                print(f"      🕵️ 发现“伪装者”文件 {file.name}，正在尝试暴力读取...")
+
+                try:
+
+                    # 1. 先文明地用 UTF-8 尝试
+
+                    content = file.read_text(encoding="utf-8")
+
+                except UnicodeDecodeError:
+
+                    try:
+
+                        # 2. 如果报错，说明极大概率是 Windows 祖传的 GBK/GB18030 编码！
+
+                        content = file.read_text(encoding="gb18030")
+
+                        print("         💡 成功使用 GB18030(ANSI) 编码抢救出中文内容！")
+
+                    except Exception:
+
+                        # 3. 如果都不行，那只能闭着眼睛强读了
+
+                        content = file.read_text(encoding="utf-8", errors="ignore")
 
         elif file.suffix.lower() == ".pdf":
             # 检查是否存在 OCR 伴生文件
@@ -242,13 +277,18 @@ while True:
             skip_retrieval = True
         else:
             history_str = "\n".join(memory_buffer[-4:])
+
+            if not memory_buffer:
+                task_desc = f"当前没有历史对话。请直接提取用户问题‘{question}’中的核心词作为搜索短语。绝对禁止脑补任何不存在的人名（如李四、张三）或项目名（如项目A）！"
+            else:
+                task_desc = f"请结合上述历史，补全用户最新问题‘{question}’中缺失的上下文（如代词指代），将其重写为一个独立的、具体的搜索短语。"
+
             rewrite_prompt = (
                 f"【近期对话历史】\n{history_str}\n\n"
                 f"【任务】\n"
-                f"请结合上述历史，补全用户最新问题中缺失的上下文。\n"
-                f"将用户的最新问题‘{question}’重写为一个独立的、具体的搜索关键词短语。\n"
+                f"{task_desc}\n"
                 f"【最高警告】：\n"
-                f"1. 如果近期对话历史为空，必须只根据当前提问提取关键词，绝对不允许脑补外部文件名！\n"
+                f"1. 绝对不允许脑补外部文件名！\n"
                 f"2. 💡【转移话题判定】：如果用户暗示‘其他’、‘另外的’或‘从xxx出发’，必须立刻抛弃历史记录中的旧实体和旧文件名！\n"
                 f"3. 🚨【实体保护原则】：如果用户最新提问中出现了明确的具体人名、地名或实体，重写后的搜索词【必须】包含该新实体，绝对不允许用历史记录中的旧名字去覆盖！\n"
                 f"4. 🛑【禁止过度翻译】：如果用户输入了极短的英文字母，请【原封不动】地保留这些字母！绝对不允许脑补或翻译成词汇！也要防止将这些字母理解为文件后缀！\n"
