@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pymupdf
 import requests
+import torch
 from google import genai
 from google.genai import types
 from rapidocr_onnxruntime import RapidOCR
@@ -23,7 +24,11 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 print("正在初始化系统...")
-model_emb = SentenceTransformer("BAAI/bge-large-zh-v1.5")
+# 自动检测是否有英伟达 GPU，并强制分配给 BGE 模型！
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model_emb = SentenceTransformer("BAAI/bge-large-zh-v1.5", device=device)
+
+print(f"⚙️ BGE 向量模型运行设备: {device.upper()}")
 print(f"⏱️ 模型加载耗时: {time.time() - start_init:.2f}s")
 
 NOTES_DIR = Path("test_notes")
@@ -408,9 +413,19 @@ while True:
                 current_focus_file = paths[exact_match_indices[0]]
                 print(f"🎯 [全局焦点锁定]：AI的注意力已死死盯住 -> {current_focus_file}")
 
+            # ------------------------------------------
+            # 动态扩容与降维打击逻辑
+            # ------------------------------------------
+            is_macro_request = any(
+                kw in question for kw in ["时间线", "经过", "梳理", "复盘", "总结", "详细", "过程", "所有"])
+            top_k = 15 if is_macro_request else 4
+            current_threshold = 0.30 if is_macro_request else 0.48
+
+            if is_macro_request:
+                print(f"📂 [深度检索模式]：检测到宏观需求，上限扩至 {top_k} 份，及格线降至 {current_threshold}！")
+
             # 3. 获取 BGE 语义检索的高分结果
-            threshold = 0.48
-            semantic_indices = [i for i in np.argsort(scores)[::-1] if scores[i] > threshold]
+            semantic_indices = [i for i in np.argsort(scores)[::-1] if scores[i] > current_threshold]
 
             # 4. 将 精确命中 与 语义命中 优雅合并，去重
             for idx in exact_match_indices:
@@ -420,14 +435,14 @@ while True:
                 if idx not in relevant_indices:
                     relevant_indices.append(idx)
 
-            # 宁缺毋滥
+            # 5. 宁缺毋滥
             if not relevant_indices and len(search_query) >= 2:
-                best_match_idx = np.argsort(scores)[-1]
-                if scores[best_match_idx] > 0.35:  # 增加底线，低于此值绝对不给
-                    relevant_indices = [best_match_idx]
+                # 兜底：只要大于底线 0.30 的，统统捞上来！绝不只拿1个！
+                fallback_indices = [i for i in np.argsort(scores)[::-1] if scores[i] > 0.30]
+                relevant_indices = fallback_indices
 
-            # 截断：最多只给 4 个文件
-            relevant_indices = relevant_indices[:4]
+            # 6. 最终截断
+            relevant_indices = relevant_indices[:top_k]
             print(f"🔍 [系统日志] 匹配到 {len(relevant_indices)} 个相关片段...")
 
         context_text = ""

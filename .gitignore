@@ -1,0 +1,27 @@
+# --- JetBrains 官方推荐排除的私人工作区配置 ---
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/**/usage.statistics.xml
+.idea/**/dictionaries
+.idea/**/shelf
+
+# --- 环境与编辑器 ---
+.venv/
+.vscode/
+__pycache__/
+*.py[cod]
+
+# --- NAS 与操作系统垃圾 ---
+.SynologyWorkingDirectory/
+desktop.ini
+$RECYCLE.BIN/
+Thumbs.db
+
+# --- 缓存文件 ---
+brain_cache*.npz
+
+# --- 自动生成的伴生文件 ---
+test_notes/*.ocr.txt
+
+# --- 敏感数据 ---
+ test_notes/
