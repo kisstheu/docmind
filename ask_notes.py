@@ -1,182 +1,305 @@
+import sys
 import os
+os.environ["http_proxy"] = "http://127.0.0.1:7897"
+os.environ["https_proxy"] = "http://127.0.0.1:7897"
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["NO_PROXY"] = "localhost,127.0.0.1"
 import re
 import time
 import datetime
-
 import docx2txt
 import numpy as np
 from pathlib import Path
-
 import pymupdf
 import requests
 import torch
+import logging
 from google import genai
 from google.genai import types
 from rapidocr_onnxruntime import RapidOCR
 from sentence_transformers import SentenceTransformer
 
+# ====== 0. 配置企业级双轨日志系统 ======
+logger = logging.getLogger("DocMind")
+logger.setLevel(logging.DEBUG)  # 捕获所有级别的日志
+
+# 1. 控制台输出
+console_handler = logging.StreamHandler(sys.stdout)
+# 💡 临时调试开关：把这里的 INFO 改成 DEBUG，终端就会把底层搜了什么词全打印出来！调试完再改回 INFO 即可。
+console_handler.setLevel(logging.DEBUG)
+console_handler.setFormatter(logging.Formatter('%(message)s'))
+logger.addHandler(console_handler)
+
+# 2. 文件输出 (DEBUG级别：将所有底层打分和溯源细节写入文件，便于事后复盘)
+file_handler = logging.FileHandler("docmind_sys.log", encoding="utf-8")
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - [%(levelname)s] - %(message)s'))
+logger.addHandler(file_handler)
+
 # ====== 1. 环境与启动计时 ======
 start_init = time.time()
-os.environ["http_proxy"] = "http://127.0.0.1:7897"
-os.environ["https_proxy"] = "http://127.0.0.1:7897"
 
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-print("正在初始化系统...")
-# 自动检测是否有英伟达 GPU，并强制分配给 BGE 模型！
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model_emb = SentenceTransformer("BAAI/bge-large-zh-v1.5", device=device)
+logger.info("正在初始化系统...")
 
-print(f"⚙️ BGE 向量模型运行设备: {device.upper()}")
-print(f"⏱️ 模型加载耗时: {time.time() - start_init:.2f}s")
+# 💡 硬件动态检测
+if torch.cuda.is_available():
+    device = "cuda"
+elif torch.backends.mps.is_available():
+    device = "mps"
+else:
+    device = "cpu"
+
+try:
+    model_emb = SentenceTransformer(
+        "BAAI/bge-large-zh-v1.5",
+        device=device,
+        local_files_only=True
+    )
+except Exception as e:
+    logger.error(f"⚠️ 本地嵌入模型加载失败：{e}")
+    logger.error("请确认该模型已经提前下载到本机缓存，或改为使用本地模型目录。")
+    raise
+
+logger.info(f"⚙️ BGE 向量模型运行设备: {device.upper()}")
+logger.info(f"⏱️ 模型加载耗时: {time.time() - start_init:.2f}s")
+
+if not os.getenv("OPENAI_API_KEY"):
+    logger.error("⚠️ [系统拦截] 未检测到大模型 API Key！请配置环境变量。")
+    import sys
+    sys.exit(1)
 
 NOTES_DIR = Path("test_notes")
 CACHE_FILE = Path("brain_cache.npz")
 MODEL_ID = "gemini-2.5-flash"
 
-# 初始化 AI 客户端（提前初始化，供影子索引使用）
+# 本地大模型（用于快速提取意图、建库等脏活累活）
+OLLAMA_API_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "qwen2.5"
+
 client = genai.Client(api_key=os.getenv("OPENAI_API_KEY"), vertexai=False)
 
-# ====== 2. 读取文件与时间感知 ======
+# ====== 2. 读取文件与时间感知 (全深度扫描) ======
 docs, paths = [], []
+file_times = []
 file_info_list = []
-
-# 支持的格式列表
 SUPPORTED_EXT = {".txt", ".md", ".docx", ".pdf"}
 
-# 按文件的修改时间(st_mtime)从小到大排序
-all_files = list(NOTES_DIR.glob("*"))
+raw_files = list(NOTES_DIR.rglob("*"))
+all_files = []
+for f in raw_files:
+    if not f.is_file(): continue
+    if any(part in f.parts for part in {'.venv', '.idea', '.git', '.SynologyWorkingDirectory', '__pycache__'}): continue
+    if f.suffix.lower() not in SUPPORTED_EXT: continue
+    if f.name.endswith(".ocr.txt") or f.name.startswith("~$"): continue
+    all_files.append(f)
+
 all_files.sort(key=lambda x: x.stat().st_mtime)
 
-for file in all_files:
-    if file.suffix.lower() not in SUPPORTED_EXT:
-        continue
-    if file.name.endswith(".ocr.txt"):
-        continue
-    if file.name.startswith("~$"):
-        continue
 
-    # 1. 获取文件元数据 (大小和时间)
+def robust_read_text(filepath):
+    try:
+        return filepath.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        try:
+            text = filepath.read_text(encoding="gb18030")
+            logger.info(f"         💡 成功使用 GB18030(ANSI) 抢救出中文 -> {filepath.name}")
+            return text
+        except Exception:
+            return filepath.read_text(encoding="utf-8", errors="ignore")
+
+def extract_company_candidates(text: str):
+    candidates = []
+
+    patterns = [
+        r'[\u4e00-\u9fa5A-Za-z0-9·（）()\-]{2,}股份有限公司',
+        r'[\u4e00-\u9fa5A-Za-z0-9·（）()\-]{2,}有限公司',
+        r'[\u4e00-\u9fa5A-Za-z0-9·（）()\-]{2,}集团',
+        r'[\u4e00-\u9fa5A-Za-z0-9·（）()\-]{2,}公司',
+    ]
+
+    for _pattern in patterns:
+        for m in re.findall(_pattern, text):
+            name = m.strip("，。；：、（）() \n\t")
+            if len(name) >= 2:
+                candidates.append(name)
+
+    # 去重保序
+    _result = []
+    seen = set()
+    for name in candidates:
+        if name not in seen:
+            seen.add(name)
+            _result.append(name)
+
+    return _result
+
+def classify_org_candidate(name: str):
+    name = name.strip()
+
+    # 明确的正式组织名
+    if name.endswith("股份有限公司"):
+        return "explicit"
+    if name.endswith("有限公司"):
+        return "explicit"
+    if name.endswith("集团") and len(name) >= 4:
+        return "explicit"
+
+    # 明显泛称 / 指代
+    generic_names = {
+        "公司", "贵公司", "该公司", "本公司", "原公司",
+        "大公司", "小公司", "对方公司"
+    }
+    if name in generic_names:
+        return "generic"
+
+    # 地点 + 公司 这类泛称，通常不算正式组织名
+    if name.endswith("公司") and len(name) <= 6:
+        return "generic"
+
+    # 其他情况先视为模糊候选（简称、别称、未写全）
+    return "ambiguous"
+
+
+def extract_query_terms(_search_query: str, _question: str):
+    text = f"{_search_query} {_question}"
+
+    # 去掉标点
+    text = re.sub(r"[^\w\s\u4e00-\u9fa5]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    raw_terms = []
+
+    # 1. 保留英文/数字词
+    raw_terms.extend(re.findall(r"[a-zA-Z0-9_]{2,}", text))
+
+    # 2. 抓中文连续片段
+    raw_terms.extend(re.findall(r"[\u4e00-\u9fa5]{2,}", text))
+
+    stop_terms = {
+        "我想", "想知道", "请问", "一下", "这个", "那个", "这里", "那里",
+        "涉及", "涉及了", "提到", "提到了", "多少", "几个", "哪些", "所有",
+        "有没有", "是什么", "什么", "怎么", "为什么", "吗", "呢", "呀", "啊",
+        "的呢", "过的", "我的", "那就"
+    }
+
+    cleaned = []
+    for term in raw_terms:
+        term = term.strip()
+        if len(term) < 2:
+            continue
+        if term in stop_terms:
+            continue
+
+        # 对“涉及了多少公司”这种句子做一点轻拆分
+        if "公司" in term and term != "公司":
+            cleaned.append("公司")
+            continue
+        if "人名" in term and term != "人名":
+            cleaned.append("人名")
+            continue
+        if "项目" in term and term != "项目":
+            cleaned.append("项目")
+            continue
+
+        cleaned.append(term)
+
+    # 去重但保序
+    _result = []
+    for term in cleaned:
+        if term not in _result:
+            _result.append(term)
+
+    return _result
+
+
+def detect_inventory_target(_question: str):
+    q = re.sub(r"[^\w\s\u4e00-\u9fa5]", "", _question)
+
+    target_aliases = {
+        "company": ["公司", "单位", "组织", "企业"],
+        "person": ["人", "人名", "人物", "同事", "员工"],
+        "project": ["项目", "系统", "方案"],
+        "place": ["地点", "地方", "城市", "位置"],
+    }
+
+    for target_type, aliases in target_aliases.items():
+        for alias in aliases:
+            if alias in q:
+                return target_type, alias
+
+    return None, None
+
+for file in all_files:
     stat = file.stat()
     mtime = datetime.datetime.fromtimestamp(stat.st_mtime)
+    file_times.append(mtime)
     date_str = mtime.strftime('%Y-%m-%d')
     size_kb = stat.st_size / 1024
-
-    # 2. 智能提取文本与 OCR 破甲（引入伴生文件机制）
     content = ""
+
     try:
         if file.suffix.lower() in {".txt", ".md"}:
-            content = file.read_text(encoding="utf-8", errors="ignore")
-
+            content = robust_read_text(file)
         elif file.suffix.lower() == ".docx":
-
             try:
-
-                # 正常尝试用 Word 引擎解析
-
                 content = docx2txt.process(file)
-
-
-            except Exception as e:
-
-                print(f"      🕵️ 发现“伪装者”文件 {file.name}，正在尝试暴力读取...")
-
-                try:
-
-                    # 1. 先文明地用 UTF-8 尝试
-
-                    content = file.read_text(encoding="utf-8")
-
-                except UnicodeDecodeError:
-
-                    try:
-
-                        # 2. 如果报错，说明极大概率是 Windows 祖传的 GBK/GB18030 编码！
-
-                        content = file.read_text(encoding="gb18030")
-
-                        print("         💡 成功使用 GB18030(ANSI) 编码抢救出中文内容！")
-
-                    except Exception:
-
-                        # 3. 如果都不行，那只能闭着眼睛强读了
-
-                        content = file.read_text(encoding="utf-8", errors="ignore")
-
+            except Exception:
+                logger.info(f"      🕵️ 发现“伪装者”文件 {file.name}，正在尝试暴力读取...")
+                content = robust_read_text(file)
         elif file.suffix.lower() == ".pdf":
-            # 检查是否存在 OCR 伴生文件
             ocr_sidecar_path = file.with_name(file.name + ".ocr.txt")
-
             if ocr_sidecar_path.exists():
-                print(f"      📄 发现伴生文件，直接秒读纯文本 -> {ocr_sidecar_path.name}")
-                content = ocr_sidecar_path.read_text(encoding="utf-8", errors="ignore")
+                logger.info(f"      📄 发现伴生文件，直接秒读纯文本 -> {ocr_sidecar_path.name}")
+                content = robust_read_text(ocr_sidecar_path)
             else:
-                # 原来的 PDF 正常提取和 OCR 破甲逻辑
                 ocr_engine = None
-
                 with pymupdf.open(file) as pdf_doc:
                     for page_num, page in enumerate(pdf_doc):
                         page_text = page.get_text().strip()
-
                         if len(page_text) < 15:
-                            if ocr_engine is None:
-                                ocr_engine = RapidOCR()
-                            print(f"      👁️ 发现“金身”页面 (页码 {page_num + 1})，启动 OCR 视觉强行破拆...")
+                            if ocr_engine is None: ocr_engine = RapidOCR()
+                            logger.info(f"      👁️ 发现“金身”页面 (页码 {page_num + 1})，启动 OCR...")
                             pix = page.get_pixmap(dpi=150)
-                            img_bytes = pix.tobytes("png")
-
-                            result, _ = ocr_engine(img_bytes)
-                            if result:
-                                page_text = "\n".join([line[1] for line in result])
-                                print(f"         ✅ 破拆成功！提取到 {len(page_text)} 个字符。")
-                            else:
-                                print(f"         ❌ 破拆失败，页面可能真的是空白的。")
-
+                            result, _ = ocr_engine(pix.tobytes("png"))
+                            if result: page_text = "\n".join([line[1] for line in result])
                         content += page_text + "\n"
-
-                # 破拆完成后，保存为伴生文件，下次一劳永逸！
                 if content.strip():
                     ocr_sidecar_path.write_text(content, encoding="utf-8")
-
     except Exception as e:
-        print(f"⚠️ 解析文件失败 {file.name}: {e}")
+        logger.warning(f"⚠️ 解析文件失败 {file.name}: {e}")
         continue
 
-    # 3. 拦截空文件或全是图片的 PDF
-    if not content.strip():
-        print(f"⚠️ 文件 {file.name} 提取为空，已跳过")
-        continue
+    if content:
+        content = re.sub(r'\n{3,}', '\n\n', content)
+        content = content.replace('\u200b', '').replace('\ufeff', '').strip()
 
-    # 4. 存入系统记忆
+    if not content: continue
+
+    relative_path = file.relative_to(NOTES_DIR).as_posix()
     docs.append(content)
-    paths.append(file.name)
-    file_info_list.append(f"- {file.name} (大小: {size_kb:.1f}KB, 更新于: {date_str})")
+    paths.append(relative_path)
+    file_info_list.append(f"- {relative_path} (大小: {size_kb:.1f}KB, 更新于: {date_str})")
 
 earliest_note = file_info_list[0] if file_info_list else "无"
 latest_note = file_info_list[-1] if file_info_list else "无"
 
-# ====== 3. 影子索引与向量缓存 (Ollama 本地版) ======
+# ====== 3. 影子索引与向量缓存 ======
 embeddings = None
 if CACHE_FILE.exists():
     cache = np.load(CACHE_FILE, allow_pickle=True)
     if len(cache['paths']) == len(paths):
         embeddings = cache['embeddings']
-        print("✨ 调取现成记忆缓存")
+        logger.info("✨ 调取现成记忆缓存")
 
 if embeddings is None:
-    print("\n🧠 触发初次建库：正在启动【本地 Ollama 引擎】生成影子索引...")
-    print("⏳ 注意：这将调用你本地的 GPU 进行脱机推断，数据绝对安全！\n")
-
+    logger.info("\n🧠 触发初次建库：正在启动【本地 Ollama 引擎】生成影子索引...\n")
     enhanced_docs = []
-    # 配置本地 Ollama 的 API 地址和使用的模型
-    OLLAMA_API_URL = "http://localhost:11434/api/generate"
-    OLLAMA_MODEL = "qwen2.5"
 
     for path, doc in zip(paths, docs):
-        print(f"   🤖 正在透视文件：{path} ...")
+        logger.info(f"   🤖 正在透视文件：{path} ...")
         try:
-            # 强化版影子索引指令：明确边界
             summary_prompt = (
                 f"请提取以下私人笔记片段的 5-8 个最核心搜索关键词。\n"
                 f"【严格分类指令】：\n"
@@ -186,63 +309,46 @@ if embeddings is None:
                 f"【输出格式】：极度简练，只返回空格分隔的关键词，不许废话。\n\n"
                 f"文本：\n{doc[:1500]}"
             )
-
-            payload = {
-                "model": OLLAMA_MODEL,
-                "prompt": summary_prompt,
-                "stream": False
-            }
-
-            # 向本地发送请求
+            payload = {"model": OLLAMA_MODEL, "prompt": summary_prompt, "stream": False}
             response = requests.post(OLLAMA_API_URL, json=payload, timeout=180)
             response.raise_for_status()
-
             shadow_tags = response.json().get("response", "").strip()
-
-            enhanced_text = f"【核心隐藏特征：{shadow_tags}】\n{doc}"
-            enhanced_docs.append(enhanced_text)
-            print(f"      ✨ 提取到影子标签：[{shadow_tags}]")
-
+            enhanced_docs.append(f"【核心隐藏特征：{shadow_tags}】\n{doc}")
+            logger.info(f"      ✨ 提取到影子标签：[{shadow_tags}]")
         except Exception as e:
-            print(f"      ⚠️ {path} 透视失败，使用原文本 ({e})")
+            logger.warning(f"      ⚠️ {path} 透视失败，使用原文本 ({e})")
             enhanced_docs.append(doc)
 
-    print("\n🧠 正在将带有影子索引的笔记压入高维向量空间...")
+    logger.info("\n🧠 正在将带有影子索引的笔记压入高维向量空间...")
     embeddings = model_emb.encode(enhanced_docs)
     np.savez(CACHE_FILE, embeddings=embeddings, paths=paths)
-    print("✅ 影子索引建库完成！\n")
+    logger.info("✅ 影子索引建库完成！\n")
 
-
-# ====== 4. 初始化带有“全局视野+时间维度”的 AI ======
+# ====== 4. 初始化 AI ======
 file_map = "\n".join(file_info_list)
-
 chat_config = types.GenerateContentConfig(
     system_instruction=(
-        "你是一个聪明、懂心思的个人笔记整理助手。你有‘全局地图’和‘局部细节’两层意识。\n"
-        f"【全局统计】：你的仓库里目前共有 {len(paths)} 个文件。\n"
+        "你是用户的个人笔记助理，擅长根据给定材料回答问题、整理线索、做有限归纳。\n"
+        f"【仓库概况】目前共有 {len(paths)} 个文件。\n"
         f"⏳ 时间跨度：最早的笔记是 {earliest_note}；最新更新的笔记是 {latest_note}。\n"
-        f"【全局地图】（以下文件已按时间从早到晚排序）：\n{file_map}\n\n"
-        "【行为原则】：\n"
-        "1. 当用户只是寒暄、道谢或输入很短时，直接自然回复，无需强行引用笔记。\n"
-        "2. 当用户问‘有哪些笔记’、‘最早/最新笔记’、‘提到了哪些人’等宏观统计问题时，请直接参考【全局统计】和上面的【全局地图】文件名进行推理回答。\n"
-        "3. 当用户问具体细节时，优先根据提供的【参考片段】回答。\n"
-        "4. 【自我认知】：当用户问“你能干啥”、“你是谁”等关于你系统能力的问题时，请直接自我介绍，告诉用户你可以帮他们精准检索、总结和推理海量的私人随手记，无需强行引用或分析具体的笔记片段。\n" 
-        "5. 语气自然、像真人一样聊天，极度简练。\n"
-        "6. 【严格隔离与推理】：绝不能将不同工作/生活切片强行缝合。必须明确区分用户的【个人娱乐项目】与【公司企业工作项目】，绝不可混淆！\n"
-        "7. 【架构师思维与融会贯通】：当用户探讨某个宏观项目时，你要能主动建立代码细节与宏观项目的关联。"
+        f"【文件地图】以下文件已按时间从早到晚排序：\n{file_map}\n\n"
+        "【总原则】\n"
+        "1. 优先尊重用户当前问题，不要被旧话题带偏。\n"
+        "2. 有材料时基于材料回答；没有材料时直接说明不知道，不要补空白。\n"
+        "3. 只在用户明确要求统计、盘点、列表时使用列表；其他时候尽量自然表达。\n"
+        "4. 不要把相似名字、相似称呼、相似公司自动视为同一个对象，除非材料里有明确证据。\n"
+        "5. 回答要自然、清楚、有人味，但不要刻意表演人格，也不要为了显得聪明去过度解读。\n"
     ),
     temperature=0.4
 )
 
-print(f"✅ 系统就绪！启动总耗时: {time.time() - start_init:.2f}s")
+logger.info(f"✅ 系统就绪！启动总耗时: {time.time() - start_init:.2f}s")
 print("=================================")
+print("🤖：你好！我是你的 DocMind 随身助理。你可以问我任何问题。")
 
-print("🤖：你好！我是你的 DocMind 随身助理。")
-print("    我已加载完所有笔记，你可以问我关于项目、生活的任何问题。")
-
-# ====== 5. 带有短期记忆的无状态对话循环 ======
+# ====== 5. 对话循环 ======
 memory_buffer = []
-current_focus_file = None  # 用于记录当前的全局焦点文件
+current_focus_file = None
 
 while True:
     question = input("\n问：")
@@ -250,43 +356,45 @@ while True:
     if not question.strip(): continue
 
     start_qa = time.time()
-
-    # 物理外挂：极简方言与错别字强制纠音
     if question.strip() in ["银", "仁", "人", "找仁", "找银"]:
-        print("💡 [系统纠音]：检测到极简方言或错字，已强制翻译为 -> 找人")
         question = "找人"
 
     try:
-        # 意图分类短路器
-        greetings = ["你好", "嗨", "在吗", "谢谢", "好的", "ok", "嗯", "哈哈", "知道了", "原来如此", "厉害",
-                     "棒", "牛逼", "多谢", "感谢"]
+        greetings = ["你好", "嗨", "在吗", "谢谢", "好的", "ok", "嗯", "哈哈", "知道了", "原来如此", "厉害", "棒",
+                     "牛逼", "多谢", "感谢"]
         system_queries = ["能干啥", "你是谁", "怎么用", "你能做什么", "你的功能", "介绍一下"]
-        macro_queries = ["有哪些人", "提到哪些人", "所有人名", "文件列表", "最早的笔记", "最新笔记", "文件总数",
-                         "多少个文件", "查人", "找人", "找个人", "多少文件", "统计"]
+        file_level_macro_queries = [
+            "文件列表", "最早的笔记", "最新笔记",
+            "文件总数", "多少个文件", "多少文件", "统计"
+        ]
+
+        inventory_triggers = ["多少", "哪些", "有哪些", "提到", "涉及", "所有", "盘点", "过"]
+        inventory_target_type, inventory_target_label = detect_inventory_target(question)
+        is_inventory_query = inventory_target_type is not None and any(t in question for t in inventory_triggers)
+        relationship_queries = ["对我如何", "关系好", "评价", "他人怎么样", "对他"]
 
         skip_retrieval = False
         search_query = question
-
-        # 如果是问人际关系或评价，禁止走 [直觉模式]
-        relationship_queries = ["对我如何", "关系好", "评价", "他人怎么样", "对他"]
         is_relationship_query = any(q in question for q in relationship_queries)
 
         if any(word in question.lower() for word in greetings) and len(question) <= 15 and not is_relationship_query:
-            print(f"🔍 [直觉模式]：检测到寒暄或夸奖，极速响应")
             skip_retrieval = True
         elif any(word in question for word in system_queries):
-            print(f"🔍 [系统认知模式]：用户在问我能干啥，跳过文档检索")
             skip_retrieval = True
-        elif any(word in question for word in macro_queries):
-            print(f"🔍 [宏观统计模式]：用户在问全局信息，直接让 AI 查阅【全局地图】")
+        elif any(word in question for word in file_level_macro_queries):
             skip_retrieval = True
+        elif is_inventory_query:
+            skip_retrieval = False
         else:
             history_str = "\n".join(memory_buffer[-4:])
-
             if not memory_buffer:
                 task_desc = f"当前没有历史对话。请直接提取用户问题‘{question}’中的核心词作为搜索短语。绝对禁止脑补任何不存在的人名（如李四、张三）或项目名（如项目A）！"
             else:
-                task_desc = f"请结合上述历史，补全用户最新问题‘{question}’中缺失的上下文（如代词指代），将其重写为一个独立的、具体的搜索短语。"
+                task_desc = (
+                    f"请结合上述历史，理解用户最新问题‘{question}’的真实搜索意图。\n"
+                    f"🚨【绝对禁止】：严禁直接复制或罗列历史对话中的实体列表（如一长串公司名、人名）！\n"
+                    f"💡【正确做法】：将其抽象为3-5个高度概括的搜索关键词"
+                )
 
             rewrite_prompt = (
                 f"【近期对话历史】\n{history_str}\n\n"
@@ -297,215 +405,276 @@ while True:
                 f"2. 💡【转移话题判定】：如果用户暗示‘其他’、‘另外的’或‘从xxx出发’，必须立刻抛弃历史记录中的旧实体和旧文件名！\n"
                 f"3. 🚨【实体保护原则】：如果用户最新提问中出现了明确的具体人名、地名或实体，重写后的搜索词【必须】包含该新实体，绝对不允许用历史记录中的旧名字去覆盖！\n"
                 f"4. 🛑【禁止过度翻译】：如果用户输入了极短的英文字母，请【原封不动】地保留这些字母！绝对不允许脑补或翻译成词汇！也要防止将这些字母理解为文件后缀！\n"
-                f"5. 只能返回纯粹的搜索短语，绝不允许输出多余的解释。\n"
-                f"6. 🕵️【侦探直觉】：如果用户试图‘寻找背后实体’，请从历史上下文中提取技术凭证（如用户名）加入搜索词！\n"
-                f"7. 🚫【致命禁忌】：提取的搜索短语中【绝对不可以】包含“.txt”或“.md”等扩展名！\n"
-                f"8. 🗣️【方言与纠错领悟】：如果用户使用了方言谐音，或者用户在纠正你上一轮的错误，请务必像个人类一样领会其真正的意图，将搜索词纠正为标准普通话！"
+                f"5. 🛑【输出格式绝对指令】：只能返回纯粹的词汇短语，词与词之间用空格隔开。绝对不允许输出完整的句子！绝对不允许包含问号、逗号、感叹号等任何标点符号！\n"
+                f"6. 🕵️【侦探直觉与事实检索】：\n"
+                f"   - 当用户询问‘人际关系’或‘都有谁’时，翻译为查找具体人名和事件。\n"
+                f"7. 🚫【致命禁忌】：提取的搜索短语中【绝对不可以】包含“.txt”、“.md”、“.pdf”或“.docx”等扩展名！\n"
+                f"8. 🗣️【上下文继承与纠错领悟】：如果用户输入极短（如‘A其实是B’），说明是在纠正上一轮的映射。你【必须】像人类一样，把上一轮的核心问题带入新的搜索词中！绝不能把核心意图弄丢！\n"
+                f"9. 🤡【调侃与情绪过滤】：如果用户的最新提问带有表情包（如😄、😅、😂）或明显是随口调侃，请【仅保留】上一轮的核心实体（如人名）作为搜索词，绝对禁止脑补出“冲突”、“争执”、“暴力”等严肃词汇去污染搜索池！\n"
+                f"10. 🏢【职场语义翻译】：如果用户询问某人的‘作品’、‘产出’、‘成果’或‘做过什么’，请务必将其翻译为具体的职场实体词汇，如：方案、文档、代码、系统、项目、设计。绝对不要只保留‘作品’这种偏文艺的词汇，避免导致技术文档检索失败！"
             )
             try:
-                rewrite_resp = client.models.generate_content(model=MODEL_ID, contents=rewrite_prompt)
-                search_query = rewrite_resp.text.strip()
-                # 暴力清洗大模型可能违规生成的后缀
-                search_query = search_query.replace(".txt", "").replace(".md", "")
-                print(f"🔍 [意图重写]：{search_query}")
-            except Exception as e:
-                search_query = question
-                print(f"⚠️ 重写失败，回退使用原句作为查询词 ({e})")
+                # 1. 组装发给本地 Ollama 的请求
+                payload = {
+                    "model": OLLAMA_MODEL,
+                    "prompt": rewrite_prompt,
+                    "stream": False
+                }
+                # 本地推理通常很快，设个 10 秒超时防卡死足够了
+                response = requests.post(OLLAMA_API_URL, json=payload, timeout=10)
+                response.raise_for_status()
 
-        # ==========================================
-        # 🚀 检索核心逻辑 (受短路器控制)
-        # ==========================================
-        scores = []
-        relevant_indices = []
-        exact_match_indices = []
+                # 2. 获取本地小模型的提取结果
+                search_query = response.json().get("response", "").strip()
+
+                # 3. 必须先脱掉后缀！避免下一步的清洗把句号洗掉导致正则失效
+                search_query = re.sub(r'\.(txt|md|pdf|docx)$', '', search_query, flags=re.IGNORECASE).strip()
+
+                # 4. 物理清洗：移除非字母数字、非中文字符的各种标点符号（此时句号问号等都会被洗掉，只留干净的词）
+                search_query = re.sub(r'[^\w\s\u4e00-\u9fa5]', ' ', search_query)
+
+                # 5. 替换多个连续空格为一个空格，保持格式整洁
+                search_query = re.sub(r'\s+', ' ', search_query).strip()
+
+                logger.info(f"🔍 [本地引擎意图重写]：{search_query}")
+
+            except Exception as e:
+                logger.warning(f"⚠️ 本地意图提取失败，退回原问题：{e}")
+                search_query = question
+
+        # === 检索核心逻辑 ===
+        scores, relevant_indices, exact_match_indices = [], [], []
         ignored_file = None
 
         if not skip_retrieval:
-            # 加入 BGE 中文短搜长的专属检索咒语
-            bge_instruction = "为这个句子生成表示以用于检索相关文章："
-            q_emb = model_emb.encode([bge_instruction + search_query])[0]
+            q_emb = model_emb.encode(["为这个句子生成表示以用于检索相关文章：" + search_query])[0]
             scores = np.dot(embeddings, q_emb)
+            apply_time_decay = not is_inventory_query
+            if apply_time_decay:
+                now = datetime.datetime.now()
+                for i in range(len(scores)):
+                    delta_days = (now - file_times[i]).days
 
-            # ------------------------------------------
-            # 🚀 关键词混合暴击 (Keyword Boost) + 智能降维打击
-            # ------------------------------------------
-            search_terms = [term for term in search_query.split() if len(term) >= 2]
-            raw_eng_terms = re.findall(r'[a-zA-Z0-9_]{2,}', question)
-            search_terms.extend(raw_eng_terms)
-            search_terms = list(set(search_terms))
+                    if delta_days < 30:
+                        time_weight = 1.0
+                    elif delta_days < 180:
+                        time_weight = 0.92
+                    elif delta_days < 365:
+                        time_weight = 0.85
+                    else:
+                        time_weight = 0.75
 
-            # 智能词频侦测，判断哪些是“泛滥词”
-            term_in_filename_count = {term: 0 for term in search_terms}
-            for path in paths:
-                path_no_ext = path.rsplit('.', 1)[0].lower()
-                for term in search_terms:
-                    if term.lower() in path_no_ext:
-                        term_in_filename_count[term] += 1
+                    scores[i] *= time_weight
+
+            search_terms = extract_query_terms(search_query, question)
+            term_in_filename_count = {term: sum(1 for p in paths if term.lower() in Path(p).stem.lower()) for term in
+                                      search_terms}
+
+            logger.debug(f"提取到的核心搜索词: {search_terms}")
 
             for i, doc_text in enumerate(docs):
+                path_no_ext = Path(paths[i]).stem.lower()
+                if any(k in question for k in ["经历"]):
+                    evidence_keywords = ["总结", "报告", "说明", "证明", "合同"]
+                    if any(ek in path_no_ext for ek in evidence_keywords):
+                        scores[i] += 0.25  # 给总结类文件额外加分，防止被淹没
+                        logger.info(f"   ⬆️ [证据提权] 发现关键证据类文件 -> {paths[i]}")
                 for term in search_terms:
                     term_lower = term.lower()
-                    path_no_ext = paths[i].rsplit('.', 1)[0].lower()
-                    doc_lower = doc_text.lower()
-
                     if term_lower in path_no_ext:
                         if term_in_filename_count[term] > 3:
                             scores[i] += 0.15
-                            print(f"      🔥 [泛滥词降级] '{term}' 命中文件名，按普通权重加分 -> {paths[i]}")
+                            logger.debug(f"   [泛滥词降级] '{term}' 命中 -> {paths[i]}")
                         else:
                             scores[i] += 0.35
-                            print(f"      🔥 [文件名暴击] '{term}' 强力锁定文件 -> {paths[i]}")
-
-                    elif term_lower in doc_lower:
-                        # 纯英文/拼音特权！如果是纯字母或数字组合，给予 0.35 巨额保送分！
+                            logger.info(f"   🔥 [文件名暴击] '{term}' 强力锁定 -> {paths[i]}")
+                    elif term_lower in doc_text.lower():
                         if re.match(r'^[a-z0-9_]+$', term_lower):
                             scores[i] += 0.35
-                            print(f"      🔥 [英文特权暴击] '{term}' 强行捞出文件 -> {paths[i]}")
+                            logger.info(f"   ⚡ [英文特权穿透] '{term}' 强行捞出 -> {paths[i]}")
                         else:
                             scores[i] += 0.15
-                            print(f"      🔥 [正文暴击] '{term}' 命中文件 -> {paths[i]}")
+                            logger.debug(f"   [正文命中] '{term}' -> {paths[i]}")
 
-
-            # ------------------------------------------
-            # 智能焦点释放
-            # ------------------------------------------
             shift_keywords = ["其他", "别的", "所有", "全局", "抛开", "除了", "另外", "换个", "不说", "那"]
-
-            # 如果问题极短，或者明确带有转移词，释放焦点
-            if any(keyword in question for keyword in shift_keywords) or len(question) < 4:
-                ignored_file = current_focus_file  # 把当前焦点打入冷宫
+            if any(k in question for k in shift_keywords) or len(question) < 4:
+                ignored_file = current_focus_file
                 current_focus_file = None
-                print(f"🔄 [焦点释放]：检测到话题可能转移，已自动解除全局焦点锁定！(临时屏蔽: {ignored_file})")
+                if ignored_file: logger.info(f"   🔄 [焦点释放] 检测到话题转移，临时屏蔽: {ignored_file}")
 
-            # ------------------------------------------
-            # 混合检索逻辑 (Merge Strategy)
-            # ------------------------------------------
             temp_query = (question + " " + search_query).lower()
             sorted_indices = sorted(range(len(paths)), key=lambda k: len(paths[k]), reverse=True)
 
-            # 1. 先抓取精确匹配的文件
             for i in sorted_indices:
                 full_name = paths[i].lower()
-                base_name = full_name.replace(".txt", "").replace(".md", "")
+                base_name = Path(paths[i]).stem.lower()
 
-                # 【严格执行黑名单机制！如果该文件被标记为忽略，直接跳过本次匹配
-                if ignored_file and full_name == ignored_file.lower():
-                    continue
+                if ignored_file and full_name == ignored_file.lower(): continue
 
-                # 策略A：全名命中（带后缀），最精准，直接拦截
                 if full_name in temp_query:
                     exact_match_indices.append(i)
-                    print(f"⚡ [精确拦截-全名]：-> {paths[i]}")
                     temp_query = temp_query.replace(full_name, " ")
+                    logger.info(f"   🎯 [精确拦截-全名] -> {paths[i]}")
                     continue
 
-                # 策略B优化：兼容中英文混合的“抗劫持”边界匹配
                 pattern = rf"(?:^|[^a-zA-Z0-9_]){re.escape(base_name)}(?:[^a-zA-Z0-9_]|$)"
-
                 if not base_name.isdigit() and re.search(pattern, temp_query):
                     if temp_query.strip() == base_name or len(base_name) >= 4:
                         exact_match_indices.append(i)
-                        print(f"⚡ [精确拦截-词边界匹配]：-> {paths[i]}")
                         temp_query = re.sub(pattern, " ", temp_query)
+                        logger.info(f"   🎯 [精确拦截-词边界] -> {paths[i]}")
 
-            # 2. 更新焦点（如果用户没有喊“其他”，且命中了具体文件，就锁定焦点）
             if exact_match_indices and not any(k in question for k in shift_keywords):
                 current_focus_file = paths[exact_match_indices[0]]
-                print(f"🎯 [全局焦点锁定]：AI的注意力已死死盯住 -> {current_focus_file}")
+                logger.info(f"   🔒 [全局焦点锁定] AI注意力集中于 -> {current_focus_file}")
 
-            # ------------------------------------------
-            # 动态扩容与降维打击逻辑
-            # ------------------------------------------
-            is_macro_request = any(
-                kw in question for kw in ["时间线", "经过", "梳理", "复盘", "总结", "详细", "过程", "所有"])
-            top_k = 15 if is_macro_request else 4
-            current_threshold = 0.30 if is_macro_request else 0.48
+            is_macro_request = is_inventory_query or any(
+                kw in question for kw in
+                [
+                    "时间线", "经过", "梳理", "复盘", "总结", "详细", "过程",
+                    "所有", "表现", "评价", "对吗", "境遇", "怎么看",
+                    "经历", "待过"
+                ]
+            )
+            is_person_eval_query = (
+                    ("评价" in question or "怎么看" in question or "这个人怎么样" in question)
+                    and any(len(term) >= 2 for term in extract_query_terms(search_query, question))
+            )
+
+            if is_person_eval_query:
+                top_k = 6
+                current_threshold = 0.50
+            elif is_macro_request:
+                top_k = 50
+                current_threshold = 0.28
+            else:
+                top_k = 12
+                current_threshold = 0.40
 
             if is_macro_request:
-                print(f"📂 [深度检索模式]：检测到宏观需求，上限扩至 {top_k} 份，及格线降至 {current_threshold}！")
+                logger.info(f"   📂 [深度核查模式] 上限扩至 {top_k} 份，及格线降至 {current_threshold}")
 
-            # 3. 获取 BGE 语义检索的高分结果
             semantic_indices = [i for i in np.argsort(scores)[::-1] if scores[i] > current_threshold]
 
-            # 4. 将 精确命中 与 语义命中 优雅合并，去重
-            for idx in exact_match_indices:
-                if idx not in relevant_indices:
-                    relevant_indices.append(idx)
-            for idx in semantic_indices:
-                if idx not in relevant_indices:
-                    relevant_indices.append(idx)
+            for idx in exact_match_indices + semantic_indices:
+                if idx not in relevant_indices: relevant_indices.append(idx)
 
-            # 5. 宁缺毋滥
             if not relevant_indices and len(search_query) >= 2:
-                # 兜底：只要大于底线 0.30 的，统统捞上来！绝不只拿1个！
-                fallback_indices = [i for i in np.argsort(scores)[::-1] if scores[i] > 0.30]
-                relevant_indices = fallback_indices
+                relevant_indices = [i for i in np.argsort(scores)[::-1] if scores[i] > 0.30]
+                logger.info("   🛡️ [兜底打捞] 未达到阈值，启动底线捞取...")
 
-            # 6. 最终截断
             relevant_indices = relevant_indices[:top_k]
-            print(f"🔍 [系统日志] 匹配到 {len(relevant_indices)} 个相关片段...")
+            logger.info(f"   🔍 [溯源完毕] 最终喂给大模型的片段数量: {len(relevant_indices)}")
 
         context_text = ""
         if relevant_indices:
-            retrieved_docs = [f"文件【{paths[idx]}】：\n{docs[idx]}" for idx in relevant_indices]
-            context_text = "【本次检索到的独家参考片段】:\n" + "\n---\n".join(retrieved_docs) + "\n\n"
+            context_text = "【本次检索到的独家参考片段】:\n" + "\n---\n".join(
+                [f"文件【{paths[idx]}】：\n{docs[idx]}" for idx in relevant_indices]) + "\n\n"
+            logger.debug(f"本次最终送入大模型的文档列表: {[paths[idx] for idx in relevant_indices]}")
 
-        # 1. 提取干净的历史记录
-        clean_history = "\n".join(memory_buffer[-4:])
 
-        # 2. 焦点注入文本
-        focus_injection = f"【当前全局焦点文件】：{current_focus_file} (如果用户使用代词或省略主语，请务必默认围绕此文件展开！)\n" if current_focus_file else ""
 
-        # 3. 组装无状态的专属 Prompt
+        inventory_candidates_text = ""
+
+        if is_inventory_query and inventory_target_type == "company":
+            candidate_pool = []
+            for doc_text in docs:
+                for name in extract_company_candidates(doc_text):
+                    candidate_pool.append(name)
+
+            unique_names = []
+            for name in candidate_pool:
+                if name not in unique_names:
+                    unique_names.append(name)
+
+            deduped_names = []
+            for name in unique_names:
+                if any(name != other and name in other and len(other) >= len(name) + 2 for other in unique_names):
+                    continue
+                deduped_names.append(name)
+
+            explicit_names = []
+            ambiguous_names = []
+            generic_names = []
+
+            for name in deduped_names:
+                name_type = classify_org_candidate(name)
+                if name_type == "explicit":
+                    explicit_names.append(name)
+                elif name_type == "ambiguous":
+                    ambiguous_names.append(name)
+                else:
+                    generic_names.append(name)
+
+            def uniq_keep_order(items):
+                _result = []
+                for x in items:
+                    if x not in _result:
+                        _result.append(x)
+                return _result
+
+            explicit_names = uniq_keep_order(explicit_names)
+            ambiguous_names = uniq_keep_order(ambiguous_names)
+            generic_names = uniq_keep_order(generic_names)
+
+            lines = []
+            if explicit_names or ambiguous_names or generic_names:
+                lines.append("【盘点候选：组织】")
+                if explicit_names:
+                    lines.append("【明确组织名】")
+                    lines.extend([f"- {x}" for x in explicit_names[:20]])
+                if ambiguous_names:
+                    lines.append("【可能是简称或未写全】")
+                    lines.extend([f"- {x}" for x in ambiguous_names[:20]])
+                if generic_names:
+                    lines.append("【泛称/指代】")
+                    lines.extend([f"- {x}" for x in generic_names[:20]])
+
+                inventory_candidates_text = "\n".join(lines) + "\n\n"
+
+        focus_injection = (
+            f"【当前焦点】当前对话优先围绕文件《{current_focus_file}》展开。"
+            f"如果用户没有明确切换对象，请优先参考该文件及其相关片段，"
+            f"不要随意扩展到其他无关文件或人物。\n"
+            if current_focus_file else ""
+        )
+
         final_prompt = (
-            f"【近期聊天上下文】:\n{clean_history}\n\n"
+            f"【近期聊天上下文】:\n{chr(10).join(memory_buffer[-4:])}\n\n"
             f"{focus_injection}"
+            f"{inventory_candidates_text}"
             f"{context_text}"
-            f"【用户最新提问】: {question}\n\n"
-            f"【最高指令】：\n"
-            f"1. 如果【本次检索到的独家参考片段】里有内容，请优先分析片段。\n"
-            f"2. 💡【全局联想限制】：你可以根据【全局地图/文件列表】回答“有哪些笔记”或“文件有多大”。但是！如果用户问及某个文件的【具体内容/它记录了什么】，你【必须】依赖下方提供的参考片段！如果参考片段中没有该文件的内容，【绝对禁止】望文生义或根据文件名瞎猜，必须诚实回答“未检索到该文件的具体内容”。\n" 
-            f"3. 优先结合【当前全局焦点文件】的背景来理解用户的追问（如“这个”、“这家”等）。\n"
-            f"4. 😈 启动‘毒舌模式’：针对技术/工作项目，如果内容包含抱怨，请犀利点评其拉胯之处，不要端着！\n"
-            f"5. 🚨【个人项目保护】：明确区分游戏与工作。\n"
-            f"6. ⏰【绝对时间线警告】：严格区分“笔记记录的时间（文件修改时间）”和“笔记内容涉及的技术年代”。\n"
-            f"   - 如果用户问“当时/写这篇笔记时”，请【务必】以检索片段头部标注的 [修改时间: xxxx-xx-xx] 为准！\n"
-            f"   - 切勿因为笔记里提到了老旧技术，就臆断用户是在那个年代写的笔记！\n"
-            f"7. 🕵️【极客侦探模式】：在分析文档关联时，请高度敏锐地捕捉用户名、邮箱前缀、账号等技术凭证！\n"
-            f"   - 💡 特别注意：如果用户提到极短的拼音首字母缩写，请【优先】将其理解为人名缩写或账号名，而【不是】文件扩展名！\n"
-            f"   - 利用这些线索跨文档推理人物身份或项目背景，大胆猜测！\n"
-            f"8. 🛑【实体隔离警告】：严禁跨年份、跨事件强行拼接实体（公司名、人名）！\n"
-            f"   - 如果当前检索的文件没有具体名称，请直接回答‘找不到全称’。\n"
-            f"   - 绝对不允许把文档里的公司名强行套用到，不要自己编造剧情！\n"
-            f"9. 🛡️【拒绝胡诌指令】：如果检索到的片段内容与用户的问题【完全无关】（例如用户问宏观背景，检索到的全是具体代码日志），请勇敢地回答‘我的笔记里没有记录这方面的信息’，绝对禁止生搬硬套！\n"
-            f"10. ⏳【时间线侧写与变化推理】：当用户提问关于时间跨度内的‘变化’、‘成长’或‘不同’时：\n"
-            f"    - 【必须】立刻审视你系统指令中自带的【全局地图/文件列表】！\n"
-            f"    - 观察从最早年份到最新年份的文件命名规律。你的关注点、使用的技术栈、参与的项目类型是否发生了转移？\n"
-            f"    - 结合本次检索到的历史片段作为佐证，基于以上客观事实，为用户梳理出一条清晰的‘演进轨迹’。\n"
-            f"    - 如果单靠片段不够，就大胆地用【全局地图】里的文件名来补充说明你的发现！"
+            f"【用户最新提问】\n{question}\n\n"
+            f"【本轮回答规则】\n"
+            f"一、回答依据\n"
+            f"你的判断必须优先建立在【参考片段】上。"
+            f"如果参考片段能直接回答，就直接回答；"
+            f"如果只能支持局部结论，就只回答局部；"
+            f"如果支持不了，就明确说信息不足，不要补全。\n\n"
+            f"二、实体隔离\n"
+            f"不同时间、人物、公司、项目要严格分开。"
+            f"名字相似、称呼相似、同姓、简称相似，都不能自动视为同一个对象。"
+            f"只有参考片段里出现了明确证据，才允许合并判断。\n\n"
+            f"三、表达方式\n"
+            f"回答要自然、直接、清楚，不要写成客服话术，也不要故作犀利。"
+            f"除非用户明确要求“有哪些”“多少”“列出来”，否则尽量不用列表。"
+            f"如果是在评价某个人，只能评价参考片段里能够明确支撑的那部分表现，"
+            f"不要把一次互动上升为完整人格结论。\n\n"
+            f"四、信息不足时\n"
+            f"当证据不够时，请明确指出“目前只能看到这件事里的表现”或“现有材料不足以下结论”。"
+            f"宁可收一点，也不要硬猜。\n"
         )
 
-        # 使用 generate_content 保证每次独立思考，不污染长期记忆
-        response = client.models.generate_content(
-            model=MODEL_ID,
-            contents=final_prompt,
-            config=chat_config
-        )
+
+        response = client.models.generate_content(model=MODEL_ID, contents=final_prompt, config=chat_config)
 
         if response.text:
             print(f"\nAI回答：\n{response.text}")
-
-            # 清洗掉换行和复杂的 Markdown 符号，避免下一轮语法错乱
             clean_reply = response.text.replace("\n", " ").replace("*", "").replace("#", "")
-            # 找到前 150 个字符里最后一个句号/标点的位置进行优雅截断
-            short_reply = clean_reply[:150]
-            if len(clean_reply) > 150:
-                short_reply += "..."
-
             memory_buffer.append(f"用户：{question}")
-            memory_buffer.append(f"AI：{short_reply}")
+            memory_buffer.append(f"AI：{clean_reply[:150] + ('...' if len(clean_reply) > 150 else '')}")
 
         print(f"⏱️ 耗时: {time.time() - start_qa:.2f}s")
 
     except Exception as e:
-        print(f"\n调用失败: {e}")
+        logger.error(f"\n调用失败: {e}")
