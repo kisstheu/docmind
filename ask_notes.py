@@ -84,7 +84,13 @@ client = genai.Client(api_key=os.getenv("OPENAI_API_KEY"), vertexai=False)
 docs, paths = [], []
 file_times = []
 file_info_list = []
+
+chunk_texts = []
+chunk_paths = []
+chunk_meta = []
+chunk_file_times = []
 SUPPORTED_EXT = {".txt", ".md", ".docx", ".pdf"}
+EXTENSION_TERMS = {"pdf", "docx", "txt", "md"}
 
 raw_files = list(NOTES_DIR.rglob("*"))
 all_files = []
@@ -231,6 +237,48 @@ def detect_inventory_target(_question: str):
 
     return None, None
 
+def chunk_text(text: str, chunk_size=1000, overlap=200):
+    chunks = []
+    start = 0
+    text = text.strip()
+
+    if not text:
+        return chunks
+
+    while start < len(text):
+        end = min(len(text), start + chunk_size)
+        chunk = text[start:end]
+
+        chunks.append({
+            "text": chunk,
+            "start": start,
+            "end": end
+        })
+
+        if end >= len(text):
+            break
+
+        start = end - overlap
+        if start < 0:
+            start = 0
+
+    return chunks
+
+
+def expand_neighbor_chunks(top_chunk_indices, chunk_paths, chunk_meta, neighbor=1):
+    expanded = set()
+
+    for idx in top_chunk_indices:
+        expanded.add(idx)
+        current_path = chunk_paths[idx]
+        current_chunk_id = chunk_meta[idx]["chunk_id"]
+
+        for j in range(max(0, idx - neighbor), min(len(chunk_paths), idx + neighbor + 1)):
+            if chunk_paths[j] == current_path and abs(chunk_meta[j]["chunk_id"] - current_chunk_id) <= neighbor:
+                expanded.add(j)
+
+    return sorted(expanded)
+
 for file in all_files:
     stat = file.stat()
     mtime = datetime.datetime.fromtimestamp(stat.st_mtime)
@@ -259,7 +307,9 @@ for file in all_files:
                     for page_num, page in enumerate(pdf_doc):
                         page_text = page.get_text().strip()
                         if len(page_text) < 15:
-                            if ocr_engine is None: ocr_engine = RapidOCR()
+                            if ocr_engine is None:
+                                # 强制开启 GPU 加速
+                                ocr_engine = RapidOCR(det_use_cuda=True, cls_use_cuda=True, rec_use_cuda=True)
                             logger.info(f"      👁️ 发现“金身”页面 (页码 {page_num + 1})，启动 OCR...")
                             pix = page.get_pixmap(dpi=150)
                             result, _ = ocr_engine(pix.tobytes("png"))
@@ -278,24 +328,51 @@ for file in all_files:
     if not content: continue
 
     relative_path = file.relative_to(NOTES_DIR).as_posix()
+
+    # 全文级信息
     docs.append(content)
     paths.append(relative_path)
     file_info_list.append(f"- {relative_path} (大小: {size_kb:.1f}KB, 更新于: {date_str})")
+
+    # chunk级信息
+    chunks = chunk_text(content, chunk_size=1000, overlap=200)
+
+    for idx, ch in enumerate(chunks):
+        chunk_texts.append(ch["text"])
+        chunk_paths.append(relative_path)
+        chunk_meta.append({
+            "path": relative_path,
+            "chunk_id": idx,
+            "start": ch["start"],
+            "end": ch["end"]
+        })
+        chunk_file_times.append(mtime)
 
 earliest_note = file_info_list[0] if file_info_list else "无"
 latest_note = file_info_list[-1] if file_info_list else "无"
 
 # ====== 3. 影子索引与向量缓存 ======
 embeddings = None
+chunk_embeddings = None
+
 if CACHE_FILE.exists():
     cache = np.load(CACHE_FILE, allow_pickle=True)
     if len(cache['paths']) == len(paths):
         embeddings = cache['embeddings']
-        logger.info("✨ 调取现成记忆缓存")
+        if all(k in cache.files for k in ['chunk_embeddings', 'chunk_texts', 'chunk_paths', 'chunk_meta', 'chunk_file_times']):
+            chunk_embeddings = cache['chunk_embeddings']
+            chunk_texts = list(cache['chunk_texts'])
+            chunk_paths = list(cache['chunk_paths'])
+            chunk_meta = list(cache['chunk_meta'])
+            chunk_file_times = [datetime.datetime.fromtimestamp(float(ts)) for ts in cache['chunk_file_times']]
+            logger.info("✨ 调取现成记忆缓存（含chunk索引）")
+        else:
+            logger.info("⚠️ 检测到旧版缓存，仅有全文索引，将重建 chunk 索引。")
 
-if embeddings is None:
+if embeddings is None or chunk_embeddings is None:
     logger.info("\n🧠 触发初次建库：正在启动【本地 Ollama 引擎】生成影子索引...\n")
     enhanced_docs = []
+    enhanced_chunk_texts = []
 
     for path, doc in zip(paths, docs):
         logger.info(f"   🤖 正在透视文件：{path} ...")
@@ -319,25 +396,38 @@ if embeddings is None:
             logger.warning(f"      ⚠️ {path} 透视失败，使用原文本 ({e})")
             enhanced_docs.append(doc)
 
-    logger.info("\n🧠 正在将带有影子索引的笔记压入高维向量空间...")
+    for chunk_text_item, chunk_path, meta in zip(chunk_texts, chunk_paths, chunk_meta):
+        enhanced_chunk_texts.append(
+            f"【所属文件：{chunk_path}｜chunk:{meta['chunk_id']}】\n{chunk_text_item}"
+        )
+
+    logger.info("\n🧠 正在将全文级文档压入高维向量空间...")
     embeddings = model_emb.encode(enhanced_docs)
-    np.savez(CACHE_FILE, embeddings=embeddings, paths=paths)
-    logger.info("✅ 影子索引建库完成！\n")
+
+    logger.info("🧠 正在将 chunk 片段压入高维向量空间...")
+    chunk_embeddings = model_emb.encode(enhanced_chunk_texts)
+
+    np.savez(
+        CACHE_FILE,
+        embeddings=embeddings,
+        paths=np.array(paths, dtype=object),
+        chunk_embeddings=chunk_embeddings,
+        chunk_texts=np.array(chunk_texts, dtype=object),
+        chunk_paths=np.array(chunk_paths, dtype=object),
+        chunk_meta=np.array(chunk_meta, dtype=object),
+        chunk_file_times=np.array([dt.timestamp() for dt in chunk_file_times], dtype=float),
+    )
+    logger.info("✅ 影子索引建库完成！（含chunk索引）\n")
 
 # ====== 4. 初始化 AI ======
-file_map = "\n".join(file_info_list)
 chat_config = types.GenerateContentConfig(
     system_instruction=(
         "你是用户的个人笔记助理，擅长根据给定材料回答问题、整理线索、做有限归纳。\n"
-        f"【仓库概况】目前共有 {len(paths)} 个文件。\n"
-        f"⏳ 时间跨度：最早的笔记是 {earliest_note}；最新更新的笔记是 {latest_note}。\n"
-        f"【文件地图】以下文件已按时间从早到晚排序：\n{file_map}\n\n"
-        "【总原则】\n"
-        "1. 优先尊重用户当前问题，不要被旧话题带偏。\n"
-        "2. 有材料时基于材料回答；没有材料时直接说明不知道，不要补空白。\n"
-        "3. 只在用户明确要求统计、盘点、列表时使用列表；其他时候尽量自然表达。\n"
-        "4. 不要把相似名字、相似称呼、相似公司自动视为同一个对象，除非材料里有明确证据。\n"
-        "5. 回答要自然、清楚、有人味，但不要刻意表演人格，也不要为了显得聪明去过度解读。\n"
+        f"当前知识库共有 {len(paths)} 个文件。\n"
+        f"时间跨度参考：最早文件是 {earliest_note}；最新文件是 {latest_note}。\n"
+        "你只能依据本轮给出的参考片段回答，不要假设自己看过所有文件全文。\n"
+        "有证据就答，没有证据就明确说信息不足。\n"
+        "不要因为名字相似、简称相似，就擅自把不同人物、公司、项目混为一谈。\n"
     ),
     temperature=0.4
 )
@@ -349,6 +439,58 @@ print("🤖：你好！我是你的 DocMind 随身助理。你可以问我任何
 # ====== 5. 对话循环 ======
 memory_buffer = []
 current_focus_file = None
+
+
+def answer_repo_meta_question(question: str, all_files, paths, file_times):
+    q = question.lower()
+
+    # 文件总数
+    if any(k in question for k in ["文件总数", "多少个文件", "多少文件", "目前有多少文档"]):
+        return f"目前共有 {len(all_files)} 个文件。"
+
+    # 文件格式统计
+    if any(k in question for k in ["多少格式", "几种格式", "有哪些格式", "文件格式"]):
+        from collections import Counter
+        ext_counter = Counter((f.suffix.lower() or "[无后缀]") for f in all_files)
+        items = sorted(ext_counter.items(), key=lambda x: (-x[1], x[0]))
+        detail = "，".join([f"{ext}: {count} 个" for ext, count in items])
+        return f"当前共有 {len(ext_counter)} 种文件格式：{detail}。"
+
+    # 最早文件
+    if "最早" in question and ("笔记" in question or "文件" in question):
+        if file_times:
+            idx = min(range(len(file_times)), key=lambda i: file_times[i])
+            return f"最早的文件是 {paths[idx]}，时间是 {file_times[idx].strftime('%Y-%m-%d %H:%M:%S')}。"
+
+    # 最新文件
+    if "最新" in question and ("笔记" in question or "文件" in question):
+        if file_times:
+            idx = max(range(len(file_times)), key=lambda i: file_times[i])
+            return f"最新的文件是 {paths[idx]}，时间是 {file_times[idx].strftime('%Y-%m-%d %H:%M:%S')}。"
+
+    return None
+
+
+def answer_system_capability_question(question: str):
+    if any(k in question for k in [
+        "你是谁", "介绍一下"
+    ]):
+        return "我是你的 DocMind 随身助理，主要负责根据你的本地笔记和文档回答问题、整理线索，并做有限归纳。"
+
+    if any(k in question for k in [
+        "能干啥", "你能做什么", "能做什么", "可以做什么", "你可以做什么", "你的功能", "有什么功能", "有啥功能", "怎么用"
+    ]):
+        return (
+            "我现在主要能做这几类事：\n"
+            "1. 根据你的本地笔记、文档和资料回答具体问题。\n"
+            "2. 帮你查某个人、某个项目、某段经历、某份材料里提到过什么。\n"
+            "3. 帮你做有限总结，比如梳理某个方案、某组记录或某段时间线。\n"
+            "4. 帮你做一些仓库层面的统计，比如文件数量、文件格式、最近更新情况等。\n"
+            "5. 对于明显是闲聊、寒暄或系统介绍类问题，我也可以直接回答，不必走文档检索。"
+        )
+
+    return None
+
 
 while True:
     question = input("\n问：")
@@ -362,12 +504,37 @@ while True:
     try:
         greetings = ["你好", "嗨", "在吗", "谢谢", "好的", "ok", "嗯", "哈哈", "知道了", "原来如此", "厉害", "棒",
                      "牛逼", "多谢", "感谢"]
-        system_queries = ["能干啥", "你是谁", "怎么用", "你能做什么", "你的功能", "介绍一下"]
-        file_level_macro_queries = [
-            "文件列表", "最早的笔记", "最新笔记",
-            "文件总数", "多少个文件", "多少文件", "统计"
+        system_queries = [
+            "能干啥", "你是谁", "怎么用", "你能做什么", "你的功能", "介绍一下",
+            "能做什么", "可以做什么", "你可以做什么", "有什么功能", "有啥功能"
         ]
+        repo_meta_queries = [
+            "文件列表", "最早的笔记", "最新笔记",
+            "文件总数", "多少个文件", "多少文件", "统计",
+            "多少格式", "几种格式", "有哪些格式", "文件格式",
+        ]
+        local_system_answer = None
+        if any(word in question for word in system_queries):
+            local_system_answer = answer_system_capability_question(question)
 
+        if local_system_answer:
+            print(f"\nAI回答：\n{local_system_answer}")
+            clean_reply = local_system_answer.replace("\n", " ").replace("*", "").replace("#", "")
+            memory_buffer.append(f"用户：{question}")
+            memory_buffer.append(f"AI：{clean_reply[:150] + ('...' if len(clean_reply) > 150 else '')}")
+            print(f"⏱️ 耗时: {time.time() - start_qa:.2f}s")
+            continue
+        
+        is_repo_meta_query = any(word in question for word in repo_meta_queries)
+        if is_repo_meta_query:
+            local_answer = answer_repo_meta_question(question, all_files, paths, file_times)
+            if local_answer:
+                print(f"\nAI回答：\n{local_answer}")
+                clean_reply = local_answer.replace("\n", " ").replace("*", "").replace("#", "")
+                memory_buffer.append(f"用户：{question}")
+                memory_buffer.append(f"AI：{clean_reply[:150] + ('...' if len(clean_reply) > 150 else '')}")
+                print(f"⏱️ 耗时: {time.time() - start_qa:.2f}s")
+                continue
         inventory_triggers = ["多少", "哪些", "有哪些", "提到", "涉及", "所有", "盘点", "过"]
         inventory_target_type, inventory_target_label = detect_inventory_target(question)
         is_inventory_query = inventory_target_type is not None and any(t in question for t in inventory_triggers)
@@ -380,8 +547,6 @@ while True:
         if any(word in question.lower() for word in greetings) and len(question) <= 15 and not is_relationship_query:
             skip_retrieval = True
         elif any(word in question for word in system_queries):
-            skip_retrieval = True
-        elif any(word in question for word in file_level_macro_queries):
             skip_retrieval = True
         elif is_inventory_query:
             skip_retrieval = False
@@ -448,12 +613,12 @@ while True:
 
         if not skip_retrieval:
             q_emb = model_emb.encode(["为这个句子生成表示以用于检索相关文章：" + search_query])[0]
-            scores = np.dot(embeddings, q_emb)
+            scores = np.dot(chunk_embeddings, q_emb)
             apply_time_decay = not is_inventory_query
             if apply_time_decay:
                 now = datetime.datetime.now()
                 for i in range(len(scores)):
-                    delta_days = (now - file_times[i]).days
+                    delta_days = (now - chunk_file_times[i]).days
 
                     if delta_days < 30:
                         time_weight = 1.0
@@ -467,34 +632,30 @@ while True:
                     scores[i] *= time_weight
 
             search_terms = extract_query_terms(search_query, question)
-            term_in_filename_count = {term: sum(1 for p in paths if term.lower() in Path(p).stem.lower()) for term in
-                                      search_terms}
-
             logger.debug(f"提取到的核心搜索词: {search_terms}")
 
-            for i, doc_text in enumerate(docs):
-                path_no_ext = Path(paths[i]).stem.lower()
-                if any(k in question for k in ["经历"]):
-                    evidence_keywords = ["总结", "报告", "说明", "证明", "合同"]
-                    if any(ek in path_no_ext for ek in evidence_keywords):
-                        scores[i] += 0.25  # 给总结类文件额外加分，防止被淹没
-                        logger.info(f"   ⬆️ [证据提权] 发现关键证据类文件 -> {paths[i]}")
+            for i, chunk_text_item in enumerate(chunk_texts):
+                path_no_ext = Path(chunk_paths[i]).stem.lower()
+
                 for term in search_terms:
                     term_lower = term.lower()
+
                     if term_lower in path_no_ext:
-                        if term_in_filename_count[term] > 3:
-                            scores[i] += 0.15
-                            logger.debug(f"   [泛滥词降级] '{term}' 命中 -> {paths[i]}")
+                        if term_lower in EXTENSION_TERMS:
+                            scores[i] += 0.02
                         else:
-                            scores[i] += 0.35
-                            logger.info(f"   🔥 [文件名暴击] '{term}' 强力锁定 -> {paths[i]}")
-                    elif term_lower in doc_text.lower():
-                        if re.match(r'^[a-z0-9_]+$', term_lower):
-                            scores[i] += 0.35
-                            logger.info(f"   ⚡ [英文特权穿透] '{term}' 强行捞出 -> {paths[i]}")
+                            scores[i] += 0.25
+                            logger.debug(f"   [chunk文件名命中] '{term}' -> {chunk_paths[i]}")
+
+                    elif term_lower in chunk_text_item.lower():
+                        if term_lower in EXTENSION_TERMS:
+                            scores[i] += 0.02
+                        elif re.match(r'^[a-z0-9_]+$', term_lower):
+                            scores[i] += 0.25
+                            logger.debug(f"   [chunk英文命中] '{term}' -> {chunk_paths[i]}")
                         else:
-                            scores[i] += 0.15
-                            logger.debug(f"   [正文命中] '{term}' -> {paths[i]}")
+                            scores[i] += 0.12
+                            logger.debug(f"   [chunk正文命中] '{term}' -> {chunk_paths[i]}")
 
             shift_keywords = ["其他", "别的", "所有", "全局", "抛开", "除了", "另外", "换个", "不说", "那"]
             if any(k in question for k in shift_keywords) or len(question) < 4:
@@ -509,24 +670,28 @@ while True:
                 full_name = paths[i].lower()
                 base_name = Path(paths[i]).stem.lower()
 
-                if ignored_file and full_name == ignored_file.lower(): continue
+                if ignored_file and full_name == ignored_file.lower():
+                    continue
 
                 if full_name in temp_query:
-                    exact_match_indices.append(i)
+                    current_focus_file = paths[i]
                     temp_query = temp_query.replace(full_name, " ")
                     logger.info(f"   🎯 [精确拦截-全名] -> {paths[i]}")
-                    continue
+                    break
 
                 pattern = rf"(?:^|[^a-zA-Z0-9_]){re.escape(base_name)}(?:[^a-zA-Z0-9_]|$)"
                 if not base_name.isdigit() and re.search(pattern, temp_query):
                     if temp_query.strip() == base_name or len(base_name) >= 4:
-                        exact_match_indices.append(i)
+                        current_focus_file = paths[i]
                         temp_query = re.sub(pattern, " ", temp_query)
                         logger.info(f"   🎯 [精确拦截-词边界] -> {paths[i]}")
+                        break
 
-            if exact_match_indices and not any(k in question for k in shift_keywords):
-                current_focus_file = paths[exact_match_indices[0]]
+            if current_focus_file and not any(k in question for k in shift_keywords):
                 logger.info(f"   🔒 [全局焦点锁定] AI注意力集中于 -> {current_focus_file}")
+                for i in range(len(scores)):
+                    if chunk_paths[i] == current_focus_file:
+                        scores[i] += 0.18
 
             is_macro_request = is_inventory_query or any(
                 kw in question for kw in
@@ -556,8 +721,9 @@ while True:
 
             semantic_indices = [i for i in np.argsort(scores)[::-1] if scores[i] > current_threshold]
 
-            for idx in exact_match_indices + semantic_indices:
-                if idx not in relevant_indices: relevant_indices.append(idx)
+            for idx in semantic_indices:
+                if idx not in relevant_indices:
+                    relevant_indices.append(idx)
 
             if not relevant_indices and len(search_query) >= 2:
                 relevant_indices = [i for i in np.argsort(scores)[::-1] if scores[i] > 0.30]
@@ -568,9 +734,32 @@ while True:
 
         context_text = ""
         if relevant_indices:
-            context_text = "【本次检索到的独家参考片段】:\n" + "\n---\n".join(
-                [f"文件【{paths[idx]}】：\n{docs[idx]}" for idx in relevant_indices]) + "\n\n"
-            logger.debug(f"本次最终送入大模型的文档列表: {[paths[idx] for idx in relevant_indices]}")
+            expanded_indices = expand_neighbor_chunks(
+                top_chunk_indices=relevant_indices,
+                chunk_paths=chunk_paths,
+                chunk_meta=chunk_meta,
+                neighbor=1
+            )
+
+            file_chunk_count = {}
+            filtered_indices = []
+            for idx in expanded_indices:
+                p = chunk_paths[idx]
+                file_chunk_count.setdefault(p, 0)
+                if file_chunk_count[p] >= 3:
+                    continue
+                filtered_indices.append(idx)
+                file_chunk_count[p] += 1
+
+            context_blocks = []
+            for idx in filtered_indices:
+                meta = chunk_meta[idx]
+                context_blocks.append(
+                    f"文件【{chunk_paths[idx]}】（chunk #{meta['chunk_id']}，位置 {meta['start']}-{meta['end']}）：\n{chunk_texts[idx]}"
+                )
+
+            context_text = "【参考片段】:\n" + "\n---\n".join(context_blocks) + "\n\n"
+            logger.debug(f"本次最终送入大模型的chunk文件列表: {list(dict.fromkeys([chunk_paths[idx] for idx in filtered_indices]))}")
 
 
 
