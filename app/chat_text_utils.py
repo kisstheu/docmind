@@ -60,44 +60,131 @@ def build_clean_merged_query(event_merged_query: str, current_question: str) -> 
     return re.sub(r"\s+", " ", f"{parent} {current}".strip())
 
 
-def extract_strong_terms_from_question(question: str) -> list[str]:
+QUERY_FILLERS = {
+    "帮我",
+    "帮忙",
+    "请",
+    "麻烦",
+    "看下",
+    "看看",
+    "分析下",
+    "分析一下",
+    "整理下",
+    "整理一下",
+    "说下",
+    "说一下",
+    "详细点",
+    "具体点",
+    "展开点",
+    "展开说说",
+}
+
+
+def normalize_question_for_retrieval(question: str) -> str:
     q = (question or "").strip()
+    if not q:
+        return ""
+
+    q = q.replace("？", "").replace("?", "").replace("。", "").strip()
+
+    for filler in sorted(QUERY_FILLERS, key=len, reverse=True):
+        q = q.replace(filler, " ")
+
+    q = re.sub(r"\s+", " ", q).strip()
+    return q
+
+
+def keep_only_current_question_terms(query: str, question: str, logger=None) -> str:
+    """
+    只保留“当前问题里本来就出现过”的词。
+    rewrite 可以重排，但不允许新增词。
+    """
+    source_text = normalize_question_for_retrieval(question) or (question or "").strip()
+
+    kept: list[str] = []
+    dropped: list[str] = []
+    seen: set[str] = set()
+
+    for term in (query or "").split():
+        t = term.strip()
+        if not t or t in seen:
+            continue
+
+        if t in source_text:
+            kept.append(t)
+            seen.add(t)
+        else:
+            dropped.append(t)
+
+    if dropped and logger:
+        logger.info(f"🚫 [过滤新增词] {dropped}")
+
+    return " ".join(kept)
+
+
+def extract_strong_terms_from_question(question: str) -> list[str]:
+    q = normalize_question_for_retrieval(question)
     if not q:
         return []
 
-    candidates: list[str] = []
-
-    candidates.extend(re.findall(r"\d{1,2}号之后", q))
-    candidates.extend(re.findall(r"\d{1,2}日之后", q))
-    candidates.extend(re.findall(r"\d{1,2}月\d{1,2}日", q))
-    candidates.extend(re.findall(r"\d{4}年\d{1,2}月\d{1,2}日", q))
-    candidates.extend(re.findall(r"[\u4e00-\u9fa5]{2,}", q))
-
-    weak_terms = {
-        "给我", "帮我", "我想", "我先", "请你",
-        "分析", "整理", "梳理", "总结", "看看", "看下", "说说", "讲讲",
-        "事情", "情况", "问题", "内容", "动作", "方面", "东西",
-        "一下", "一下吧", "吧", "吗", "呢", "呀", "啊",
-        "更详细的", "详细的", "详细点", "更详细", "详细一些",
-    }
-
     result: list[str] = []
-    for c in candidates:
-        c = c.strip()
-        if not c:
-            continue
-        if c in weak_terms:
-            continue
-        if len(c) > 12:
-            continue
-        if c not in result:
-            result.append(c)
+
+    def add(term: str):
+        t = (term or "").strip()
+        if t and t not in result:
+            result.append(t)
+
+    # 只提取问题里明确写出来的时间短语
+    for pattern in [
+        r"\d{4}年\d{1,2}月\d{1,2}[日号]?(?:后|之前|之后|以后)?",
+        r"\d{1,2}月\d{1,2}[日号]?(?:后|之前|之后|以后)?",
+        r"\d{1,2}[日号](?:后|之前|之后|以后)?",
+        r"\d{1,2}:\d{2}",
+    ]:
+        for match in re.findall(pattern, q):
+            add(match)
+
+    # 只保留“当前问题中原样出现”的少量焦点词
+    exact_terms = [
+        "时间线",
+        "经过",
+        "过程",
+        "详细点",
+        "更详细",
+        "法律性质",
+        "性质",
+        "合法吗",
+        "是否合法",
+        "合法",
+        "合规吗",
+        "合规",
+        "动作",
+        "做法",
+        "行为",
+        "处理",
+        "公司",
+        "对方",
+        "之后",
+        "后来",
+        "后续",
+    ]
+
+    for term in exact_terms:
+        if term in q:
+            add(term)
 
     return result
 
 
-def merge_rewritten_query_with_strong_terms(question: str, rewritten_query: str) -> str:
-    rewritten_terms = [x.strip() for x in (rewritten_query or "").split() if x.strip()]
+def merge_rewritten_query_with_strong_terms(question: str, rewritten_query: str, logger=None) -> str:
+    # rewrite 只能重排当前问题已有的词，不允许新增
+    safe_rewritten = keep_only_current_question_terms(
+        rewritten_query,
+        question,
+        logger=logger,
+    )
+
+    rewritten_terms = [x.strip() for x in safe_rewritten.split() if x.strip()]
     strong_terms = extract_strong_terms_from_question(question)
 
     merged: list[str] = []
@@ -106,16 +193,16 @@ def merge_rewritten_query_with_strong_terms(question: str, rewritten_query: str)
             merged.append(term)
 
     result = " ".join(merged).strip()
-    return result or (rewritten_query or "").strip()
+    return result or (normalize_question_for_retrieval(question) or (question or "").strip())
 
 
 def is_abstract_query(question: str) -> bool:
-    terms = extract_strong_terms_from_question(question)
-    if not terms:
+    q = normalize_question_for_retrieval(question)
+    if not q:
         return True
 
-    weak_terms = {"事情", "情况", "问题", "内容", "性质"}
-    return all(t in weak_terms for t in terms)
+    terms = extract_strong_terms_from_question(q)
+    return not terms
 
 
 def extract_timeline_evidence_from_chunks(relevant_indices, repo_state):
@@ -158,3 +245,29 @@ def build_timeline_evidence_text(timeline_items):
 def needs_timeline_evidence(question: str) -> bool:
     keywords = ["时间线", "经过", "过程", "梳理", "更详细", "详细点"]
     return any(x in question for x in keywords)
+
+
+def is_result_expansion_followup(question: str) -> bool:
+    q = normalize_question_for_retrieval(question)
+    if not q:
+        return False
+
+    markers = {
+        "更详细",
+        "更详细的",
+        "详细点",
+        "具体点",
+        "展开点",
+        "展开说说",
+        "继续",
+        "然后呢",
+        "后来呢",
+        "分析下",
+        "分析一下",
+        "法律性质",
+        "性质",
+        "合法吗",
+        "是否合法",
+    }
+
+    return any(x in q for x in markers)

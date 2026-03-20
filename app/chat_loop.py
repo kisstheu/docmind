@@ -32,7 +32,6 @@ from app.chat_text_utils import normalize_colloquial_question
 
 conversation_state = ConversationState()
 
-
 def try_handle_system_capability(route: str, question: str) -> str | None:
     if route != "system_capability":
         return None
@@ -92,6 +91,7 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
 
     memory_buffer: list[str] = []
     current_focus_file = None
+    last_relevant_indices = []
 
     print("=================================")
     print("🤖：你好！我是你的 DocMind 随身助理。你可以问我任何问题。")
@@ -178,12 +178,13 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
 
             flags = determine_query_flags(question)
 
-            search_query = build_search_query(
+            search_query, context_anchor = build_search_query(
                 question=question,
                 event=event,
                 flags=flags,
                 memory_buffer=memory_buffer,
                 last_effective_search_query=conversation_state.last_effective_search_query,
+                last_relevant_indices=last_relevant_indices,
                 logger=logger,
                 ollama_api_url=ollama_api_url,
                 ollama_model=ollama_model,
@@ -195,14 +196,17 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
             materials = build_retrieval_materials(
                 question=question,
                 search_query=search_query,
+                context_anchor=context_anchor,
                 flags=flags,
                 repo_state=repo_state,
                 model_emb=model_emb,
                 logger=logger,
                 current_focus_file=current_focus_file,
+                last_relevant_indices=last_relevant_indices,
+                event=event,
             )
             current_focus_file = materials["current_focus_file"]
-
+            last_relevant_indices = materials["relevant_indices"]
             if (
                 route == "normal_retrieval"
                 and not materials["context_text"].strip()

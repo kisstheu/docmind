@@ -11,12 +11,14 @@ from retrieval.search_engine import (
 )
 
 from app.chat_text_utils import (
-    build_clean_merged_query,
     build_timeline_evidence_text,
+    extract_strong_terms_from_question,
     extract_timeline_evidence_from_chunks,
-    is_abstract_query,
+    is_result_expansion_followup,
+    keep_only_current_question_terms,
     merge_rewritten_query_with_strong_terms,
     needs_timeline_evidence,
+    normalize_question_for_retrieval,
     redact_sensitive_text,
 )
 
@@ -43,6 +45,7 @@ def build_topic_summarizer(logger, ollama_api_url: str, ollama_model: str):
             ollama_api_url=ollama_api_url,
             ollama_model=ollama_model,
         )
+
     return _summarizer
 
 
@@ -60,33 +63,87 @@ def resolve_route(question: str, event, ollama_api_url: str, ollama_model: str, 
     return route
 
 
+def should_reuse_previous_results(question: str, event, last_relevant_indices) -> bool:
+    return (
+        getattr(event, "name", "") == "content_followup"
+        and bool(last_relevant_indices)
+        and is_result_expansion_followup(question)
+    )
+
+
+def filter_reused_indices_for_question(question: str, candidate_indices, repo_state, logger):
+    q = normalize_question_for_retrieval(question)
+    if not q:
+        return list(candidate_indices)
+
+    # 只使用当前问题中已经出现过的焦点词
+    focus_terms = extract_strong_terms_from_question(q)
+
+    if not focus_terms:
+        return list(candidate_indices)
+
+    scored = []
+    for idx in candidate_indices:
+        path = repo_state.chunk_paths[idx]
+        text = repo_state.chunk_texts[idx] or ""
+
+        score = 0
+        for term in focus_terms:
+            if term and term in text:
+                score += 2
+            elif term and term in path:
+                score += 1
+
+        # 降权：文件名里带立场词，但正文没有对应支撑
+        if "非法" in path and "非法" not in text:
+            score -= 2
+        if "违法" in path and "违法" not in text:
+            score -= 2
+
+        scored.append((score, idx))
+
+    scored.sort(reverse=True, key=lambda x: x[0])
+
+    filtered = [idx for score, idx in scored if score > 0]
+
+    if filtered:
+        logger.info(f"🧪 [追问结果细筛] focus_terms={focus_terms}")
+        logger.info(f"🧪 [追问结果细筛] 保留 {len(filtered)} / {len(candidate_indices)} 个片段")
+        return filtered[:12]
+
+    return list(candidate_indices)
+
 def build_search_query(
     *,
     question: str,
     event,
     flags: dict,
     memory_buffer: list[str],
-    last_effective_search_query: str,
+    last_effective_search_query: str | None,
+    last_relevant_indices=None,
     logger,
     ollama_api_url: str,
     ollama_model: str,
-) -> str:
+) -> tuple[str, str]:
     if flags["skip_retrieval"] or flags["is_inventory_query"]:
-        return question
+        return question, ""
 
-    base_query = question
+    if should_reuse_previous_results(question, event, last_relevant_indices):
+        normalized_question = normalize_question_for_retrieval(question) or question
+        logger.info("♻️ [追问复用] 跳过 query rewrite，直接复用上一轮结果")
+        return normalized_question, ""
 
-    if event.merged_query:
-        clean_merged_query = build_clean_merged_query(event.merged_query, question)
-        logger.info(f"🧩 [状态机拼接检索] raw={event.merged_query}")
-        logger.info(f"🧼 [模式词去壳后] merged={clean_merged_query}")
-        base_query = clean_merged_query
+    normalized_question = normalize_question_for_retrieval(question)
+    base_query = normalized_question or question
 
-    if is_abstract_query(question):
-        prev_anchor = (last_effective_search_query or "").strip()
-        if prev_anchor:
-            base_query = f"{prev_anchor} {question}".strip()
-            logger.info(f"🪝 [抽象追问继承] anchor={prev_anchor}")
+    # 关闭上一轮 query / merged_query 继承，避免把历史词串带进来
+    context_anchor = ""
+
+    if getattr(event, "name", "") in {"content_followup", "action_request"}:
+        logger.info("🧼 [当前轮检索] 仅使用当前问题，不继承上一轮词串")
+
+    if getattr(event, "merged_query", None):
+        logger.info("🧼 [当前轮检索] 忽略 merged_query，仅使用当前问题")
 
     raw_search_query = rewrite_search_query(
         base_query,
@@ -96,23 +153,45 @@ def build_search_query(
         logger,
     )
 
-    search_query = merge_rewritten_query_with_strong_terms(question, raw_search_query)
+    # rewrite 不允许新增当前问题里没有的词
+    raw_search_query = keep_only_current_question_terms(
+        raw_search_query,
+        normalized_question or question,
+        logger=logger,
+    )
+
+    search_query = merge_rewritten_query_with_strong_terms(
+        normalized_question or question,
+        raw_search_query,
+        logger=logger,
+    )
+
+    # merge 后再过滤一次，防止重新混入当前问题之外的词
+    search_query = keep_only_current_question_terms(
+        search_query,
+        normalized_question or question,
+        logger=logger,
+    )
+
     if not search_query.strip():
-        search_query = (raw_search_query or base_query or question).strip()
+        search_query = normalized_question or question
 
     logger.info(f"🛡️ [强词保底后]：{search_query}")
-    return search_query
+    return search_query, context_anchor
 
 
 def build_retrieval_materials(
     *,
     question: str,
     search_query: str,
+    context_anchor: str,
     flags: dict,
     repo_state,
     model_emb,
     logger,
     current_focus_file,
+    last_relevant_indices=None,
+    event=None,
 ):
     inventory_candidates_text = (
         build_inventory_candidates_text(question, repo_state, flags["inventory_target_type"])
@@ -125,16 +204,29 @@ def build_retrieval_materials(
     relevant_indices = []
 
     if not flags["skip_retrieval"]:
-        retrieval = perform_retrieval(
-            question,
-            search_query,
-            repo_state,
-            model_emb,
-            logger,
-            current_focus_file,
-        )
-        current_focus_file = retrieval["current_focus_file"]
-        relevant_indices = retrieval["relevant_indices"]
+        reuse_previous_results = should_reuse_previous_results(question, event, last_relevant_indices)
+
+        if reuse_previous_results:
+            logger.info("♻️ [追问复用] 使用上一轮检索结果，并按当前问题二次过滤")
+            relevant_indices = filter_reused_indices_for_question(
+                question=question,
+                candidate_indices=last_relevant_indices,
+                repo_state=repo_state,
+                logger=logger,
+            )
+        else:
+            retrieval = perform_retrieval(
+                question,
+                search_query,
+                repo_state,
+                model_emb,
+                logger,
+                current_focus_file,
+                context_anchor=context_anchor,
+            )
+            current_focus_file = retrieval["current_focus_file"]
+            relevant_indices = retrieval["relevant_indices"]
+
         context_text = build_context_text(relevant_indices, repo_state, logger)
 
         if needs_timeline_evidence(question):

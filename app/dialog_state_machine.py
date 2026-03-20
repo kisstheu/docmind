@@ -8,10 +8,10 @@ from app.dialog_utils import (
     is_repo_meta_confirmation,
     is_action_request,
     is_judgment_request,
-    is_content_followup_question,
     is_relationship_analysis_request,
     is_query_correction,
 )
+from app.context_anchor import is_context_dependent_question
 
 
 # =========================
@@ -159,7 +159,7 @@ def detect_dialog_event(question: str, state: ConversationState) -> DialogEvent:
             return DialogEvent(name="repo_followup", route_hint="repo_meta")
 
     # === 7. 内容追问继承
-    if prev_route == "normal_retrieval" and is_content_followup_question(question):
+    if prev_route == "normal_retrieval" and is_context_dependent_question(question, state.last_effective_search_query):
         if prev_q:
             return DialogEvent(
                 name="content_followup",

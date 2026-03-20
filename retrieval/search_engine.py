@@ -3,26 +3,19 @@ from __future__ import annotations
 import datetime
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
 import numpy as np
 
 from retrieval.chunking import expand_neighbor_chunks
-from retrieval.query_utils import (
-    EXTENSION_TERMS,
-    classify_org_candidate,
-    detect_inventory_target,
-    extract_company_candidates,
-    extract_query_terms,
-)
+from retrieval.query_utils import (EXTENSION_TERMS, classify_org_candidate, detect_inventory_target,
+                                   extract_company_candidates, extract_query_terms, )
+
 
 def is_capability_like_query(question: str) -> bool:
     q = question.strip().lower()
-    patterns = [
-        "你是谁", "你能做什么", "你可以做什么", "能做什么", "可以做什么",
-        "能干啥", "干啥", "做啥", "能做啥", "有什么功能", "有啥功能",
-        "你的功能", "怎么用", "介绍一下", "help",
-    ]
+    patterns = ["你是谁", "你能做什么", "你可以做什么", "能做什么", "可以做什么", "能干啥", "干啥", "做啥", "能做啥",
+        "有什么功能", "有啥功能", "你的功能", "怎么用", "介绍一下", "help", ]
     return any(p in q for p in patterns)
 
 
@@ -44,15 +37,15 @@ def is_weak_query(question: str, search_terms: list[str]) -> bool:
         return True
 
     return False
+
+
 def determine_query_flags(question: str):
     inventory_triggers = ["多少", "哪些", "有哪些", "提到", "涉及", "所有", "盘点", "过"]
     relationship_queries = ["对我如何", "关系好", "评价", "他人怎么样", "对他"]
-    greetings = ["你好", "嗨", "在吗", "谢谢", "好的", "ok", "嗯", "哈哈", "知道了", "原来如此", "厉害", "棒",
-                 "牛逼", "多谢", "感谢"]
-    system_queries = [
-        "能干啥", "你是谁", "怎么用", "你能做什么", "你的功能", "介绍一下",
-        "能做什么", "可以做什么", "你可以做什么", "有什么功能", "有啥功能"
-    ]
+    greetings = ["你好", "嗨", "在吗", "谢谢", "好的", "ok", "嗯", "哈哈", "知道了", "原来如此", "厉害", "棒", "牛逼",
+                 "多谢", "感谢"]
+    system_queries = ["能干啥", "你是谁", "怎么用", "你能做什么", "你的功能", "介绍一下", "能做什么", "可以做什么",
+        "你可以做什么", "有什么功能", "有啥功能"]
 
     inventory_target_type, inventory_target_label = detect_inventory_target(question)
     is_inventory_query = inventory_target_type is not None and any(t in question for t in inventory_triggers)
@@ -71,22 +64,16 @@ def determine_query_flags(question: str):
     elif any(word in question for word in system_queries):
         skip_retrieval = True
 
-    return {
-        "inventory_target_type": inventory_target_type,
-        "inventory_target_label": inventory_target_label,
-        "is_inventory_query": is_inventory_query,
-        "is_relationship_query": is_relationship_query,
-        "skip_retrieval": skip_retrieval,
-    }
+    return {"inventory_target_type": inventory_target_type, "inventory_target_label": inventory_target_label,
+        "is_inventory_query": is_inventory_query, "is_relationship_query": is_relationship_query,
+        "skip_retrieval": skip_retrieval, }
 
 
 def is_over_generic_term(term: str) -> bool:
     t = (term or "").strip().lower()
 
-    generic_terms = {
-        "公司", "事情", "情况", "问题", "内容", "资料", "文件",
-        "记录", "信息", "人员", "地方", "时间", "东西", "方面",
-    }
+    generic_terms = {"公司", "事情", "情况", "问题", "内容", "资料", "文件", "记录", "信息", "人员", "地方", "时间",
+        "东西", "方面", }
 
     return t in generic_terms
 
@@ -164,9 +151,16 @@ def should_score_body_term(term: str) -> bool:
     return True
 
 
-def perform_retrieval(question: str, search_query: str, repo_state, model_emb, logger, current_focus_file: str | None):
+def perform_retrieval(question: str, search_query: str, repo_state, model_emb, logger, current_focus_file: str | None,
+        context_anchor: str = "", ):
     q_emb = model_emb.encode(["为这个句子生成表示以用于检索相关文章：" + search_query])[0]
     scores = np.dot(repo_state.chunk_embeddings, q_emb)
+
+    if context_anchor.strip():
+        anchor_emb = model_emb.encode(["为这个句子生成表示以用于检索相关文章：" + context_anchor])[0]
+        anchor_scores = np.dot(repo_state.chunk_embeddings, anchor_emb)
+        scores = scores + 0.12 * anchor_scores
+        logger.info(f"   🪝 [锚点辅助检索] {context_anchor}")
 
     raw_search_terms = extract_query_terms(search_query, question)
 
@@ -266,12 +260,11 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
             if repo_state.chunk_paths[i] == current_focus_file:
                 scores[i] += 0.18
 
-    is_macro_request = any(kw in question for kw in [
-        "时间线", "经过", "梳理", "复盘", "总结", "详细", "过程",
-        "所有", "表现", "评价", "对吗", "境遇", "怎么看", "经历", "待过"
-    ])
-    is_person_eval_query = (("评价" in question or "怎么看" in question or "这个人怎么样" in question)
-                            and any(len(term) >= 2 for term in search_terms))
+    is_macro_request = any(kw in question for kw in
+                           ["时间线", "经过", "梳理", "复盘", "总结", "详细", "过程", "所有", "表现", "评价", "对吗",
+                               "境遇", "怎么看", "经历", "待过"])
+    is_person_eval_query = (("评价" in question or "怎么看" in question or "这个人怎么样" in question) and any(
+        len(term) >= 2 for term in search_terms))
 
     if is_person_eval_query:
         top_k, threshold = 6, 0.50
@@ -292,22 +285,14 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
     relevant_indices = relevant_indices[:top_k]
     logger.info(f"   🔍 [溯源完毕] 最终喂给大模型的片段数量: {len(relevant_indices)}")
 
-    return {
-        "relevant_indices": relevant_indices,
-        "scores": scores,
-        "current_focus_file": current_focus_file,
-    }
+    return {"relevant_indices": relevant_indices, "scores": scores, "current_focus_file": current_focus_file, }
 
 
 def build_context_text(relevant_indices: List[int], repo_state, logger) -> str:
     if not relevant_indices:
         return ""
-    expanded_indices = expand_neighbor_chunks(
-        top_chunk_indices=relevant_indices,
-        chunk_paths=repo_state.chunk_paths,
-        chunk_meta=repo_state.chunk_meta,
-        neighbor=1,
-    )
+    expanded_indices = expand_neighbor_chunks(top_chunk_indices=relevant_indices, chunk_paths=repo_state.chunk_paths,
+        chunk_meta=repo_state.chunk_meta, neighbor=1, )
     file_chunk_count = {}
     filtered_indices = []
     for idx in expanded_indices:
@@ -322,11 +307,9 @@ def build_context_text(relevant_indices: List[int], repo_state, logger) -> str:
     for idx in filtered_indices:
         meta = repo_state.chunk_meta[idx]
         context_blocks.append(
-            f"文件【{repo_state.chunk_paths[idx]}】（chunk #{meta['chunk_id']}，位置 {meta['start']}-{meta['end']}）：\n{repo_state.chunk_texts[idx]}"
-        )
+            f"文件【{repo_state.chunk_paths[idx]}】（chunk #{meta['chunk_id']}，位置 {meta['start']}-{meta['end']}）：\n{repo_state.chunk_texts[idx]}")
     logger.debug(
-        f"本次最终送入大模型的chunk文件列表: {list(dict.fromkeys([repo_state.chunk_paths[idx] for idx in filtered_indices]))}"
-    )
+        f"本次最终送入大模型的chunk文件列表: {list(dict.fromkeys([repo_state.chunk_paths[idx] for idx in filtered_indices]))}")
     return "【参考片段】:\n" + "\n---\n".join(context_blocks) + "\n\n"
 
 
