@@ -184,6 +184,10 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
                 flags=flags,
                 memory_buffer=memory_buffer,
                 last_effective_search_query=conversation_state.last_effective_search_query,
+                last_user_question=conversation_state.last_content_user_question,
+                last_answer_type=conversation_state.last_answer_type,
+                last_result_set_items=conversation_state.last_result_set_items,
+                last_result_set_entity_type=conversation_state.last_result_set_entity_type,
                 last_relevant_indices=last_relevant_indices,
                 logger=logger,
                 ollama_api_url=ollama_api_url,
@@ -229,6 +233,8 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
                 context_text=materials["context_text"],
                 timeline_evidence_text=materials["timeline_evidence_text"],
                 question=question,
+                event_name=event.name,
+                result_set_items=conversation_state.last_result_set_items,
             )
 
             response = client.models.generate_content(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import Counter
 from typing import Callable, Iterable, Sequence
 
@@ -238,3 +239,9 @@ def format_bytes(num_bytes: int) -> str:
             return f"{value:.2f}{unit}"
 
     return f"{num_bytes}B"
+
+def normalize_meta_question(text: str) -> str:
+    q = (text or "").strip().lower()
+    q = re.sub(r"[？?！!，,。.\s]+", "", q)
+    q = q.replace("的", "")
+    return q

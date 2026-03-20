@@ -9,7 +9,7 @@ from ai.capability_common import (
     LIST_FILE_KEYWORDS,
     TOTAL_SIZE_KEYWORDS,
     clean_text,
-    contains_any,
+    contains_any, normalize_meta_question,
 )
 
 LIST_BY_TOPIC_PATTERNS = (
@@ -23,7 +23,14 @@ LIST_BY_TOPIC_PATTERNS = (
 
 COUNT_KEYWORDS = ("多少文件", "多少个文件", "文件数量", "文档数量")
 FORMAT_KEYWORDS = ("哪些格式", "文件格式", "文档格式", "支持格式")
-TIME_KEYWORDS = ("最近更新", "最新文件", "最早文件")
+TIME_KEYWORDS = (
+    "最近更新",
+    "最新文件", "最早文件",
+    "最新文档", "最早文档",
+    "最新的文件", "最早的文件",
+    "最新的文档", "最早的文档",
+    "最晚的文件", "最晚的文档",
+)
 LIST_FOLLOWUP_KEYWORDS = ("列一下", "列一下吧", "列出来", "展开一下", "展开列一下")
 CATEGORY_FOLLOWUP_KEYWORDS = ("方面", "分类", "类别", "哪类", "怎么分", "如何分")
 EMPTY_TOPIC_WORDS = {"文件", "文档", "资料", "内容"}
@@ -86,7 +93,7 @@ def classify_repo_meta_question(
     last_user_question: str | None = None,
     last_local_topic: str | None = None,
 ) -> str | None:
-    q = clean_text(question)
+    q = normalize_meta_question(clean_text(question))
 
     topic_candidate = extract_topic_from_list_request(q)
     if topic_candidate:

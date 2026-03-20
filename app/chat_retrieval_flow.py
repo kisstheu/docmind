@@ -120,6 +120,10 @@ def build_search_query(
     flags: dict,
     memory_buffer: list[str],
     last_effective_search_query: str | None,
+    last_user_question: str | None = None,
+    last_answer_type: str | None = None,
+    last_result_set_items: list[str] | None = None,
+    last_result_set_entity_type: str | None = None,
     last_relevant_indices=None,
     logger,
     ollama_api_url: str,
@@ -134,16 +138,37 @@ def build_search_query(
         return normalized_question, ""
 
     normalized_question = normalize_question_for_retrieval(question)
-    base_query = normalized_question or question
-
-    # 关闭上一轮 query / merged_query 继承，避免把历史词串带进来
     context_anchor = ""
 
-    if getattr(event, "name", "") in {"content_followup", "action_request"}:
-        logger.info("🧼 [当前轮检索] 仅使用当前问题，不继承上一轮词串")
+    event_name = getattr(event, "name", "")
+    if event_name == "result_set_followup":
+        from app.dialog_state_machine import build_result_set_followup_query
 
-    if getattr(event, "merged_query", None):
-        logger.info("🧼 [当前轮检索] 忽略 merged_query，仅使用当前问题")
+        base_query = build_result_set_followup_query(
+            question=normalized_question or question,
+            last_user_question=last_user_question,
+            last_answer_type=last_answer_type,
+            last_result_set_items=last_result_set_items,
+            last_result_set_entity_type=last_result_set_entity_type,
+        )
+
+        logger.info(f"🔗 [结果集追问拼接] {base_query}")
+    else:
+        base_query = normalized_question or question
+
+        # 关闭上一轮 query / merged_query 继承，避免把历史词串带进来
+        if event_name in {"content_followup", "action_request"}:
+            logger.info("🧼 [当前轮检索] 仅使用当前问题，不继承上一轮词串")
+
+        if getattr(event, "merged_query", None):
+            logger.info("🧼 [当前轮检索] 忽略 merged_query，仅使用当前问题")
+
+    # 结果集追问：直接使用受控拼接后的查询，不再经过普通 rewrite/过滤链路
+    if event_name == "result_set_followup":
+        search_query = base_query.strip()
+        logger.info("🛡️ [结果集追问] 跳过 query rewrite 与新增词过滤，直接使用候选集合查询")
+        logger.info(f"🛡️ [强词保底后]：{search_query}")
+        return search_query, context_anchor
 
     raw_search_query = rewrite_search_query(
         base_query,
@@ -153,28 +178,28 @@ def build_search_query(
         logger,
     )
 
-    # rewrite 不允许新增当前问题里没有的词
+    allowed_question = normalized_question or question
+
     raw_search_query = keep_only_current_question_terms(
         raw_search_query,
-        normalized_question or question,
+        allowed_question,
         logger=logger,
     )
 
     search_query = merge_rewritten_query_with_strong_terms(
-        normalized_question or question,
+        allowed_question,
         raw_search_query,
         logger=logger,
     )
 
-    # merge 后再过滤一次，防止重新混入当前问题之外的词
     search_query = keep_only_current_question_terms(
         search_query,
-        normalized_question or question,
+        allowed_question,
         logger=logger,
     )
 
     if not search_query.strip():
-        search_query = normalized_question or question
+        search_query = allowed_question
 
     logger.info(f"🛡️ [强词保底后]：{search_query}")
     return search_query, context_anchor
@@ -243,8 +268,6 @@ def build_retrieval_materials(
         "current_focus_file": current_focus_file,
         "relevant_indices": relevant_indices,
     }
-
-
 def build_safe_final_prompt(
     *,
     memory_buffer: list[str],
@@ -253,16 +276,36 @@ def build_safe_final_prompt(
     context_text: str,
     timeline_evidence_text: str,
     question: str,
+    event_name: str | None = None,
+    result_set_items: list[str] | None = None,
 ) -> str:
     safe_memory_buffer = [redact_sensitive_text(x) for x in memory_buffer]
     safe_inventory_candidates_text = redact_sensitive_text(inventory_candidates_text)
     safe_context_text = redact_sensitive_text(timeline_evidence_text + context_text)
     safe_question = redact_sensitive_text(question)
+    safe_result_set_items = [redact_sensitive_text(x) for x in (result_set_items or [])]
+
+    constrained_context_text = safe_context_text
+    constrained_question = safe_question
+
+    if event_name == "result_set_followup" and safe_result_set_items:
+        result_set_block = (
+            "【上一轮候选集合】\n"
+            + "\n".join(f"- {item}" for item in safe_result_set_items[:20])
+            + "\n\n"
+            "【结果集追问约束】\n"
+            "当前问题是在上一轮候选集合基础上的进一步筛选。\n"
+            "你只能在上述候选项中进行判断，不得新增集合外实体。\n"
+            "若证据不足，可回答“无法确定”，不要扩展候选集合。\n\n"
+        )
+        constrained_context_text = result_set_block + constrained_context_text
 
     return build_final_prompt(
         memory_buffer=safe_memory_buffer,
         current_focus_file=current_focus_file,
         inventory_candidates_text=safe_inventory_candidates_text,
-        context_text=safe_context_text,
+        context_text=constrained_context_text,
         question=safe_question,
+        event_name=event_name,
+        result_set_items=safe_result_set_items,
     )
