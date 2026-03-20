@@ -20,14 +20,17 @@ from app.dialog_utils import (
 
 @dataclass
 class ConversationState:
-    mode: str = "idle"  # idle / repo_meta / content / smalltalk
+    mode: str = "idle"
+    last_user_question: str | None = None
+    last_route: str | None = None
+    last_local_topic: str | None = None
+    last_answer_preview: str | None = None
 
-    last_route: Optional[str] = None
-    last_local_topic: Optional[str] = None
+    last_content_user_question: str | None = None
+    last_content_route: str | None = None
+    last_content_topic: str | None = None
 
-    last_content_user_question: Optional[str] = None
-    last_content_route: Optional[str] = None
-    last_content_topic: Optional[str] = None
+    last_effective_search_query: str | None = None
 
 
 # =========================

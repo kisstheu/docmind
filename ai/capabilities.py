@@ -452,10 +452,14 @@ def answer_repo_meta_question(
 
 
 def answer_system_capability_question(question: str):
-    if any(k in question for k in ["你是谁", "介绍一下"]):
+    q = (question or "").strip().lower()
+
+    if any(k in q for k in ["你是谁", "介绍一下"]):
         return "我是你的 DocMind 随身助理，主要负责根据你的本地笔记和文档回答问题、整理线索，并做有限归纳。"
-    if any(k in question for k in [
-        "能干啥", "你能做什么", "能做什么", "可以做什么", "你可以做什么", "你的功能", "有什么功能", "有啥功能", "怎么用"
+
+    if any(k in q for k in [
+        "能干啥", "你能做什么", "能做什么", "可以做什么", "你可以做什么",
+        "你的功能", "有什么功能", "有啥功能", "怎么用"
     ]):
         return (
             "我现在主要能做这几类事：\n"
@@ -465,8 +469,8 @@ def answer_system_capability_question(question: str):
             "4. 帮你做一些仓库层面的统计，比如文件数量、文件格式、最近更新情况等。\n"
             "5. 对于明显是闲聊、寒暄或系统介绍类问题，我也可以直接回答，不必走文档检索。"
         )
-    return None
 
+    return None
 
 def answer_smalltalk(question: str, dialog_state=None) -> str | None:
     q = (question or "").strip().lower()
@@ -489,26 +493,27 @@ def answer_smalltalk(question: str, dialog_state=None) -> str | None:
         return "不客气。"
 
     if any(x in q for x in ["不少", "挺多", "很多"]):
-        if dialog_state and dialog_state.get("last_route") == "repo_meta":
-            if dialog_state.get("last_local_topic") == "list_files":
+        if dialog_state and getattr(dialog_state, "last_route", None) == "repo_meta":
+            if getattr(dialog_state, "last_local_topic", None) == "list_files":
                 return "是的，现在已经积累得挺多了。"
         return "嗯，确实不少。"
 
     if any(x in q for x in ["太细了", "太碎了", "别那么细", "不要太细"]):
-        if dialog_state and dialog_state.get("last_route") == "repo_meta":
-            if dialog_state.get("last_local_topic") in {"category", "category_summary"}:
+        if dialog_state and getattr(dialog_state, "last_route", None) == "repo_meta":
+            if getattr(dialog_state, "last_local_topic", None) in {"category", "category_summary"}:
                 return "嗯，我按更大的方面再给你归并一下。"
         return "嗯，我换个更粗的角度说。"
+
     if q in {"😁", "😄", "😆", "😂", "🤣", "😊", "😅", "🙂", "😉"}:
-        if dialog_state and dialog_state.get("last_route") == "system_capability":
+        if dialog_state and getattr(dialog_state, "last_route", None) == "system_capability":
             return "先别急着夸，真问起来我再表现。"
         return "哈哈。"
-    if any(x in q for x in ["挺强", "真强", "厉害", "牛", "不错", "可以啊", "真行"]):
-        if dialog_state and dialog_state.get("last_route") == "system_capability":
+
+    if any(x in q for x in ["挺强", "真强", "厉害", "牛", "不错", "可以啊", "真行", "这么强", "看着挺强"]):
+        if dialog_state and getattr(dialog_state, "last_route", None) == "system_capability":
             return "功能先说在前面，真干活还得看你怎么使唤我。"
         return "你这么一说，我都有点不好意思了。"
 
-    # 轻调侃
     if any(x in q for x in ["不谦虚", "挺自信", "还真敢讲", "你还挺会说"]):
         return "先把活干明白再谦虚，也不迟。"
 

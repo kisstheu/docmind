@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import re
 from pathlib import Path
 from typing import Dict, List
 
@@ -35,7 +36,7 @@ def is_weak_query(question: str, search_terms: list[str]) -> bool:
         return True
 
     joined = "".join(search_terms).strip()
-    if len(joined) <= 4:
+    if len(search_terms) == 1 and len(joined) <= 2:
         return True
 
     weak_terms = {"能做啥", "做啥", "干啥", "功能", "帮助", "help"}
@@ -79,11 +80,111 @@ def determine_query_flags(question: str):
     }
 
 
+def is_over_generic_term(term: str) -> bool:
+    t = (term or "").strip().lower()
+
+    generic_terms = {
+        "公司", "事情", "情况", "问题", "内容", "资料", "文件",
+        "记录", "信息", "人员", "地方", "时间", "东西", "方面",
+    }
+
+    return t in generic_terms
+
+
+def is_date_like_term(term: str) -> bool:
+    t = (term or "").strip().lower()
+
+    # 纯数字，且位数很短，通常是日期/编号噪音
+    if re.fullmatch(r"\d{1,4}", t):
+        return True
+
+    # 常见中文日期表达
+    if re.fullmatch(r"\d{1,2}号", t):
+        return True
+    if re.fullmatch(r"\d{1,2}日", t):
+        return True
+    if re.fullmatch(r"\d{1,2}月", t):
+        return True
+    if re.fullmatch(r"\d{4}年", t):
+        return True
+    if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}", t):
+        return True
+
+    return False
+
+
+def is_sentence_like_term(term: str) -> bool:
+    t = (term or "").strip()
+    if not t:
+        return False
+    if term in {"动作", "情况", "事情"}:
+        return True
+    # 太长的中文串，大概率不是关键词，而是整句/短语
+    if re.fullmatch(r"[\u4e00-\u9fa5]{7,}", t):
+        return True
+
+    # 明显带动作语气的短句
+    if re.search(r"(给我|帮我|我想|我先|分析|整理|梳理|看下|看看|说说|讲讲)", t):
+        return True
+
+    return False
+
+
+def should_score_filename_term(term: str) -> bool:
+    t = (term or "").strip().lower()
+    if not t:
+        return False
+    if is_date_like_term(t):
+        return False
+    if is_sentence_like_term(t):
+        return False
+    return True
+
+
+def should_score_body_term(term: str) -> bool:
+    t = (term or "").strip().lower()
+    if not t:
+        return False
+
+    if is_over_generic_term(t):
+        return False
+    if is_date_like_term(t):
+        return False
+    if is_sentence_like_term(t):
+        return False
+
+    # 中文词太短，默认不参与正文打分
+    if re.fullmatch(r"[\u4e00-\u9fa5]+", t) and len(t) <= 2:
+        return False
+
+    # 纯英文/数字太短，也不参与正文打分
+    if re.fullmatch(r"[a-z0-9_]+", t) and len(t) <= 2:
+        return False
+
+    return True
+
+
 def perform_retrieval(question: str, search_query: str, repo_state, model_emb, logger, current_focus_file: str | None):
     q_emb = model_emb.encode(["为这个句子生成表示以用于检索相关文章：" + search_query])[0]
     scores = np.dot(repo_state.chunk_embeddings, q_emb)
 
-    search_terms = extract_query_terms(search_query, question)
+    raw_search_terms = extract_query_terms(search_query, question)
+
+    search_terms = []
+    for term in raw_search_terms:
+        t = (term or "").strip()
+        if not t:
+            continue
+
+        # 先去掉明显整句型垃圾
+        if is_sentence_like_term(t):
+            logger.debug(f"   🚫 [过滤整句词] '{t}'")
+            continue
+
+        # 去重保序
+        if t not in search_terms:
+            search_terms.append(t)
+
     logger.debug(f"提取到的核心搜索词: {search_terms}")
 
     now = datetime.datetime.now()
@@ -101,32 +202,37 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
 
     for i, chunk_text_item in enumerate(repo_state.chunk_texts):
         path_no_ext = Path(repo_state.chunk_paths[i]).stem.lower()
+        chunk_text_lower = chunk_text_item.lower()
+
         for term in search_terms:
             term_lower = term.lower()
-            if term_lower in path_no_ext:
+
+            # ---------- 文件名命中 ----------
+            if should_score_filename_term(term_lower) and term_lower in path_no_ext:
                 if term_lower in EXTENSION_TERMS:
                     scores[i] += 0.02
-                elif len(term_lower) <= 2:  # 如果匹配到的词太短，降低文件名权重的加分
+                elif len(term_lower) <= 2:
                     scores[i] += 0.05
                     logger.debug(f"   [chunk文件名短词命中降权] '{term}' -> {repo_state.chunk_paths[i]}")
                 else:
-                    scores[i] += 0.25  # 只有长词/特异词匹配文件名时，才给予高额加分
+                    scores[i] += 0.25
                     logger.debug(f"   [chunk文件名命中] '{term}' -> {repo_state.chunk_paths[i]}")
-            elif term_lower in chunk_text_item.lower():
+                continue
+
+            # ---------- 正文命中 ----------
+            if not should_score_body_term(term_lower):
+                continue
+
+            if term_lower in chunk_text_lower:
                 if term_lower in EXTENSION_TERMS:
                     scores[i] += 0.02
                 elif term_lower.isascii() and term_lower.replace('_', '').isalnum():
-                    scores[i] += 0.25
+                    # 英文标识符保留较高权重，但不要太离谱
+                    scores[i] += 0.18
                     logger.debug(f"   [chunk英文命中] '{term}' -> {repo_state.chunk_paths[i]}")
                 else:
-                    # 如果匹配的中文词太短且大概率是泛词，降低它的加权
-                    if len(term_lower) <= 2:
-                        scores[i] += 0.03  # 泛词仅给微小加分
-                        logger.debug(f"   [chunk正文短词命中降权] '{term}' -> {repo_state.chunk_paths[i]}")
-                    else:
-                        scores[i] += 0.12
-                        logger.debug(f"   [chunk正文命中] '{term}' -> {repo_state.chunk_paths[i]}")
-
+                    scores[i] += 0.12
+                    logger.debug(f"   [chunk正文命中] '{term}' -> {repo_state.chunk_paths[i]}")
     shift_keywords = ["其他", "别的", "所有", "全局", "抛开", "除了", "另外", "换个", "不说", "那"]
     ignored_file = None
     if any(k in question for k in shift_keywords) or len(question) < 4:
