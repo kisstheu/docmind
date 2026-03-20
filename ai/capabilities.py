@@ -469,7 +469,7 @@ def answer_system_capability_question(question: str):
 
 
 def answer_smalltalk(question: str, dialog_state=None) -> str | None:
-    q = question.strip().lower()
+    q = (question or "").strip().lower()
 
     judgment_like = [
         "胡闹吗", "合理吗", "过分吗", "离谱吗",
@@ -499,6 +499,18 @@ def answer_smalltalk(question: str, dialog_state=None) -> str | None:
             if dialog_state.get("last_local_topic") in {"category", "category_summary"}:
                 return "嗯，我按更大的方面再给你归并一下。"
         return "嗯，我换个更粗的角度说。"
+    if q in {"😁", "😄", "😆", "😂", "🤣", "😊", "😅", "🙂", "😉"}:
+        if dialog_state and dialog_state.get("last_route") == "system_capability":
+            return "先别急着夸，真问起来我再表现。"
+        return "哈哈。"
+    if any(x in q for x in ["挺强", "真强", "厉害", "牛", "不错", "可以啊", "真行"]):
+        if dialog_state and dialog_state.get("last_route") == "system_capability":
+            return "功能先说在前面，真干活还得看你怎么使唤我。"
+        return "你这么一说，我都有点不好意思了。"
+
+    # 轻调侃
+    if any(x in q for x in ["不谦虚", "挺自信", "还真敢讲", "你还挺会说"]):
+        return "先把活干明白再谦虚，也不迟。"
 
     if any(x in q for x in ["好", "好的", "行", "可以", "明白了", "知道了"]):
         return "好。"

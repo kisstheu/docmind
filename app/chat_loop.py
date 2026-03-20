@@ -13,14 +13,10 @@ from ai.capabilities import (
 )
 from ai.prompt_builder import build_final_prompt
 from ai.query_rewriter import rewrite_search_query
-from app.dialog_utils import (
-    is_followup_question,
-    is_judgment_request,
-    is_repo_meta_confirmation,
-    is_action_request,
-    is_content_followup_question,
-    is_relationship_analysis_request,
-    is_query_correction, is_structured_output_request,
+from app.dialog_state_machine import (
+    ConversationState,
+    apply_event_to_state,
+    detect_dialog_event,
 )
 from retrieval.search_engine import (
     build_context_text,
@@ -54,11 +50,12 @@ dialog_state = {
     "last_route": None,
     "last_local_topic": None,
     "last_answer_preview": None,
-
     "last_content_user_question": None,
     "last_content_route": None,
     "last_content_topic": None,
 }
+
+conversation_state = ConversationState()
 
 
 def _call_local_ollama(prompt: str, logger, ollama_api_url: str, ollama_model: str) -> str:
@@ -77,16 +74,16 @@ def _call_local_ollama(prompt: str, logger, ollama_api_url: str, ollama_model: s
 
 def redact_sensitive_text(text: str) -> str:
     t = text or ""
-
     t = re.sub(r"\b\d{17}[\dXx]\b", "[身份证号已脱敏]", t)
     t = re.sub(r"\b1[3-9]\d{9}\b", "[手机号已脱敏]", t)
     t = re.sub(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b", "[邮箱已脱敏]", t)
     t = re.sub(r"\b\d{16,19}\b", "[长数字已脱敏]", t)
-
     return t
 
 
 def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: str, ollama_model: str, logger):
+    global conversation_state
+
     chat_config = types.GenerateContentConfig(
         system_instruction=(
             "你是用户的个人笔记助理，擅长根据给定材料回答问题、整理线索、做有限归纳。\n"
@@ -118,59 +115,15 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
         try:
             from ai.query_router import route_question
 
-            forced_route = None
-
             prev_content_user_question = dialog_state.get("last_content_user_question")
             prev_content_route = dialog_state.get("last_content_route")
-            last_local_topic = dialog_state.get("last_local_topic")
 
-            # 先判断是否属于“查询纠偏”
-            is_correction = bool(is_query_correction(question) and prev_content_user_question)
+            event = detect_dialog_event(question, conversation_state)
+            conversation_state = apply_event_to_state(conversation_state, event)
 
-            if is_correction:
-                forced_route = "normal_retrieval"
-                logger.info(f"🧭 [查询纠偏] 问题: {question} -> normal_retrieval")
-            elif is_structured_output_request(question):
-                forced_route = "normal_retrieval"
-                logger.info(f"🧭 [结构化请求] 问题: {question} -> normal_retrieval")
-            elif is_relationship_analysis_request(question):
-                forced_route = "normal_retrieval"
-                logger.info(f"🧭 [关系判断] 问题: {question} -> normal_retrieval")
-
-            elif is_action_request(question):
-                forced_route = "normal_retrieval"
-                logger.info(f"🧭 [动作意图] 问题: {question} -> normal_retrieval")
-
-            elif is_judgment_request(question):
-                forced_route = "normal_retrieval"
-                logger.info(f"🧭 [语义判断] 问题: {question} -> normal_retrieval")
-
-            elif prev_content_route == "repo_meta":
-                if is_followup_question(question):
-                    forced_route = "repo_meta"
-                    logger.info(f"🧭 [追问继承] 问题: {question} -> repo_meta")
-
-                elif (
-                    last_local_topic in {"category", "category_summary", "category_confirm"}
-                    and is_repo_meta_confirmation(question)
-                ):
-                    forced_route = "repo_meta"
-                    logger.info(f"🧭 [分类确认继承] 问题: {question} -> repo_meta")
-
-                elif (
-                    len(question.strip()) <= 12
-                    and any(x in question for x in ["粗", "细", "大类", "概括", "方面", "分类"])
-                ):
-                    forced_route = "repo_meta"
-                    logger.info(f"🧭 [短句语义继承] 问题: {question} -> repo_meta")
-
-            elif prev_content_route == "normal_retrieval":
-                if is_content_followup_question(question):
-                    forced_route = "normal_retrieval"
-                    logger.info(f"🧭 [内容追问继承] 问题: {question} -> normal_retrieval")
-
-            if forced_route:
-                route = forced_route
+            if event.route_hint:
+                route = event.route_hint
+                logger.info(f"🧭 [状态机事件] {event.name}: {question} -> {route}")
             else:
                 route_info = route_question(question, ollama_api_url, ollama_model, logger)
                 route = route_info["route"]
@@ -190,6 +143,9 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
                     dialog_state["last_route"] = "system_capability"
                     dialog_state["last_local_topic"] = None
                     dialog_state["last_answer_preview"] = clean_reply[:200]
+
+                    conversation_state.last_route = "system_capability"
+                    conversation_state.last_local_topic = None
 
                     print(f"⏱️ 耗时: {time.time() - start_qa:.2f}s")
                     continue
@@ -221,10 +177,16 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
                     dialog_state["last_route"] = "repo_meta"
                     dialog_state["last_local_topic"] = local_topic
                     dialog_state["last_answer_preview"] = clean_reply[:200]
-
                     dialog_state["last_content_user_question"] = question
                     dialog_state["last_content_route"] = "repo_meta"
                     dialog_state["last_content_topic"] = local_topic
+
+                    conversation_state.mode = "repo_meta"
+                    conversation_state.last_route = "repo_meta"
+                    conversation_state.last_local_topic = local_topic
+                    conversation_state.last_content_user_question = question
+                    conversation_state.last_content_route = "repo_meta"
+                    conversation_state.last_content_topic = local_topic
 
                     print(f"⏱️ 耗时: {time.time() - start_qa:.2f}s")
                     continue
@@ -244,6 +206,10 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
                     dialog_state["last_local_topic"] = None
                     dialog_state["last_answer_preview"] = clean_reply[:200]
 
+                    conversation_state.mode = "smalltalk"
+                    conversation_state.last_route = "smalltalk"
+                    conversation_state.last_local_topic = None
+
                     print(f"⏱️ 耗时: {time.time() - start_qa:.2f}s")
                     continue
 
@@ -252,38 +218,23 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
             dialog_state["last_route"] = "normal_retrieval"
             dialog_state["last_local_topic"] = None
 
-            flags = determine_query_flags(question)
+            conversation_state.mode = "content"
+            conversation_state.last_route = "normal_retrieval"
+            conversation_state.last_local_topic = None
 
-            is_retrieval_followup = (
-                prev_content_route == "normal_retrieval"
-                and is_content_followup_question(question)
-            )
+            flags = determine_query_flags(question)
 
             if flags["skip_retrieval"] or flags["is_inventory_query"]:
                 search_query = question
-
-            elif is_correction and prev_content_user_question:
-                merged_q = f"{prev_content_user_question} {question}"
-                logger.info(f"🧩 [纠偏拼接检索] parent={prev_content_user_question} | current={question}")
+            elif event.merged_query:
+                logger.info(f"🧩 [状态机拼接检索] merged={event.merged_query}")
                 search_query = rewrite_search_query(
-                    merged_q,
+                    event.merged_query,
                     memory_buffer,
                     ollama_api_url,
                     ollama_model,
                     logger,
                 )
-
-            elif is_retrieval_followup and prev_content_user_question:
-                merged_q = f"{prev_content_user_question} {question}"
-                logger.info(f"🧩 [追问拼接检索] parent={prev_content_user_question} | current={question}")
-                search_query = rewrite_search_query(
-                    merged_q,
-                    memory_buffer,
-                    ollama_api_url,
-                    ollama_model,
-                    logger,
-                )
-
             else:
                 search_query = rewrite_search_query(
                     question,
@@ -327,6 +278,10 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
                 dialog_state["last_content_route"] = "normal_retrieval"
                 dialog_state["last_content_topic"] = None
 
+                conversation_state.last_content_user_question = question
+                conversation_state.last_content_route = "normal_retrieval"
+                conversation_state.last_content_topic = None
+
                 print(f"⏱️ 耗时: {time.time() - start_qa:.2f}s")
                 continue
 
@@ -362,6 +317,10 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
             dialog_state["last_content_user_question"] = question
             dialog_state["last_content_route"] = "normal_retrieval"
             dialog_state["last_content_topic"] = None
+
+            conversation_state.last_content_user_question = question
+            conversation_state.last_content_route = "normal_retrieval"
+            conversation_state.last_content_topic = None
 
             print(f"⏱️ 耗时: {time.time() - start_qa:.2f}s")
 
