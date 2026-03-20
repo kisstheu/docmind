@@ -98,6 +98,8 @@ def clean_shadow_tags(raw: str) -> str:
     seen = set()
 
     for p in parts:
+        if len(p) > 20 and p.count("_") > 2:
+            continue
         if len(p) > 60:
             continue
         if p in {"关键词", "核心关键词", "文本", "内容", "生活类", "技术类", "游戏类"}:

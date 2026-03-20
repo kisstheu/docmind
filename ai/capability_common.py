@@ -150,24 +150,38 @@ def iter_record_tags(record: dict) -> set[str]:
     return normalized_tags
 
 
-def extract_fine_topics(repo_state) -> list[tuple[str, int]]:
-    doc_records = getattr(repo_state, "doc_records", None) or []
-    print(f"📦 doc_records 数量: {len(doc_records)}")
-    if doc_records:
-        print(f"📦 示例: {doc_records[0]}")
+def extract_fine_topics(repo_state):
+    from collections import defaultdict
 
-    if not doc_records:
-        return []
+    tag_to_paths = defaultdict(list)
 
-    raw_counter = Counter()
-    for record in doc_records:
-        for normalized_tag in iter_record_tags(record):
-            raw_counter[normalized_tag] += 1
+    for record in getattr(repo_state, "doc_records", []):
+        path = record.get("path", "")
+        tags = (record.get("shadow_tags") or "").split()
 
-    if not raw_counter:
-        return []
+        for tag in tags:
+            tag = tag.strip()
+            if not tag:
+                continue
+            if len(tag) < 2:
+                continue
+            if len(tag) > 20:
+                continue
 
-    return merge_similar_tags(raw_counter).most_common()
+            tag_to_paths[tag].append(path)
+
+    results = []
+
+    for tag, paths in tag_to_paths.items():
+        results.append({
+            "tag": tag,
+            "count": len(paths),
+            "paths": list(dict.fromkeys(paths)),
+        })
+
+    results.sort(key=lambda x: x["count"], reverse=True)
+
+    return results
 
 
 def validate_summary_output(result: str) -> list[str]:
@@ -184,33 +198,34 @@ def validate_summary_output(result: str) -> list[str]:
 
 
 def summarize_topics_coarsely_with_local_llm(
-    fine_topics: Sequence[tuple[str, int]],
+    fine_topics,
     topic_summarizer: Callable[[str], str] | None,
 ) -> str:
     if not topic_summarizer:
         raise RuntimeError("未提供 topic_summarizer，本地模型概括不可用")
 
-    top_topics = [name for name, _ in fine_topics[:12]]
+    top_topics = [item["tag"] for item in fine_topics[:12]]
     if not top_topics:
-        raise RuntimeError("没有可用于概括的细主题")
+        raise RuntimeError("没有可用于概括的细标签")
 
     prompt = (
-        "下面是个人知识库中出现频率较高的一批细主题。\n"
+        "下面是个人知识库中出现频率较高的一批细标签。\n"
         "请把它们压缩概括成 4 到 6 个更大的内容方面。\n"
         "必须遵守：\n"
         "1. 只输出列表\n"
         "2. 每行必须以“- ”开头\n"
         "3. 不要写前言，不要解释，不要总结\n"
-        "4. 不要逐条复述原始细主题\n"
+        "4. 不要逐条复述原始细标签\n"
         "5. 要把相近内容合并成更大的方面\n"
         "6. 用自然中文，不要太学术\n"
         "7. 表达像人在整理自己的文档，而不是写报告\n\n"
-        "细主题：\n"
+        "细标签：\n"
         + "\n".join(f"- {topic}" for topic in top_topics)
     )
 
     bullet_lines = validate_summary_output(topic_summarizer(prompt))
     return "按更大的方面看，当前知识库主要集中在这些板块：\n" + "\n".join(bullet_lines)
+
 def format_bytes(num_bytes: int) -> str:
     if num_bytes < 1024:
         return f"{num_bytes}B"

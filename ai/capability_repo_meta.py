@@ -1,23 +1,16 @@
 from __future__ import annotations
 
+import re
 from typing import Sequence
 
-from ai.capability_common import (
-    BAD_CANDIDATE_FRAGMENTS,
-    CANDIDATE_SUFFIXES,
-    CATEGORY_CONFIRM_KEYWORDS,
-    CATEGORY_KEYWORDS,
-    CATEGORY_SUMMARY_KEYWORDS,
-    CONFIRMATION_BAD_CANDIDATES,
-    CONFIRMATION_STOP_PHRASES,
-    LIST_FILE_KEYWORDS,
-    contains_any,
-    clean_text,
-    dedupe_keep_order,
-    extract_fine_topics,
-    split_cn_text,
-    summarize_topics_coarsely_with_local_llm, TOTAL_SIZE_KEYWORDS, format_bytes,
-)
+import numpy as np
+
+
+from ai.capability_common import (BAD_CANDIDATE_FRAGMENTS, CANDIDATE_SUFFIXES, CATEGORY_CONFIRM_KEYWORDS,
+                                  CATEGORY_KEYWORDS, CATEGORY_SUMMARY_KEYWORDS, CONFIRMATION_BAD_CANDIDATES,
+                                  CONFIRMATION_STOP_PHRASES, LIST_FILE_KEYWORDS, contains_any, clean_text,
+                                  dedupe_keep_order, extract_fine_topics, split_cn_text,
+                                  summarize_topics_coarsely_with_local_llm, TOTAL_SIZE_KEYWORDS, format_bytes, )
 
 
 def is_category_summary_request(question: str) -> bool:
@@ -29,23 +22,20 @@ def is_category_confirmation_request(question: str) -> bool:
 
 
 def is_followup_from_file_list(last_question: str | None, current_question: str) -> bool:
-    return contains_any(last_question, LIST_FILE_KEYWORDS) and contains_any(
-        current_question,
-        ("方面", "分类", "类别", "哪类", "怎么分", "如何分"),
-    )
+    return contains_any(last_question, LIST_FILE_KEYWORDS) and contains_any(current_question,
+        ("方面", "分类", "类别", "哪类", "怎么分", "如何分"), )
 
 
 def is_followup_from_category(last_question: str | None, current_question: str) -> bool:
     category_context_keywords = CATEGORY_KEYWORDS + CATEGORY_SUMMARY_KEYWORDS
     return contains_any(last_question, category_context_keywords) and (
-        is_category_summary_request(current_question)
-        or is_category_confirmation_request(current_question)
-    )
+            is_category_summary_request(current_question) or is_category_confirmation_request(current_question))
+
+
 def is_followup_to_list_files(last_topic: str | None, current_question: str) -> bool:
-    return (
-        last_topic in {"count", "list_files"}
-        and contains_any(current_question, ("列一下", "列一下吧", "列出来", "展开一下", "展开列一下"))
-    )
+    return (last_topic in {"count", "list_files"} and contains_any(current_question,
+                                                                   ("列一下", "列一下吧", "列出来", "展开一下",
+                                                                    "展开列一下")))
 
 
 def calc_repo_total_bytes(repo_state) -> int:
@@ -58,35 +48,38 @@ def calc_repo_total_bytes(repo_state) -> int:
         if not isinstance(record, dict):
             continue
 
-        total_bytes += int(
-            record.get("file_size", 0)
-            or record.get("size", 0)
-            or record.get("bytes", 0)
-            or 0
-        )
+        total_bytes += int(record.get("file_size", 0) or record.get("size", 0) or record.get("bytes", 0) or 0)
 
     return total_bytes
 
-def is_followup_to_list_files(last_topic: str | None, current_question: str) -> bool:
-    return (
-        last_topic in {"count", "list_files"}
-        and contains_any(current_question, ("列一下", "列一下吧", "列出来", "展开一下"))
-    )
 
-def classify_repo_meta_question(
-    question: str,
-    last_user_question: str | None = None,
-    last_local_topic: str | None = None,
-) -> str | None:
+def extract_topic_from_list_request(question: str) -> str:
+    q = (question or "").strip()
+
+    patterns = [r"列一下(.+?)的文件", r"列出(.+?)的文件", r"把(.+?)相关文件列出来", r"把(.+?)的文件列出来",
+        r"(.+?)有哪些文件", r"(.+?)相关文档", ]
+
+    for pattern in patterns:
+        m = re.search(pattern, q)
+        if m:
+            topic = m.group(1).strip()
+            if topic and topic not in {"文件", "文档", "资料", "内容"}:
+                return topic
+
+    return ""
+
+
+def classify_repo_meta_question(question: str, last_user_question: str | None = None,
+        last_local_topic: str | None = None, ) -> str | None:
     q = clean_text(question)
 
-    rules: list[tuple[str, tuple[str, ...]]] = [
-        ("count", ("多少文件", "多少个文件", "文件数量", "文档数量")),
-        ("total_size", TOTAL_SIZE_KEYWORDS),
-        ("format", ("哪些格式", "文件格式", "文档格式", "支持格式")),
-        ("time", ("最近更新", "最新文件", "最早文件")),
-        ("list_files", LIST_FILE_KEYWORDS),
-    ]
+    topic_candidate = extract_topic_from_list_request(q)
+    if topic_candidate:
+        return "list_files_by_topic"
+
+    rules: list[tuple[str, tuple[str, ...]]] = [("count", ("多少文件", "多少个文件", "文件数量", "文档数量")),
+        ("total_size", TOTAL_SIZE_KEYWORDS), ("format", ("哪些格式", "文件格式", "文档格式", "支持格式")),
+        ("time", ("最近更新", "最新文件", "最早文件")), ("list_files", LIST_FILE_KEYWORDS), ]
 
     for topic, keywords in rules:
         if contains_any(q, keywords):
@@ -115,16 +108,19 @@ def classify_repo_meta_question(
 
     return None
 
+
 def answer_repo_content_category_question(repo_state) -> str:
     fine_topics = extract_fine_topics(repo_state)
-    if not fine_topics:
-        return "当前标签信息不足，暂时还无法按内容主题分类。"
 
-    lines = [f"- {tag}：约 {count} 个文件" for tag, count in fine_topics[:12]]
+    lines = [
+        f"- {item['tag']}：约 {item['count']} 个文件"
+        for item in fine_topics[:12]
+    ]
+
     return (
-        "按内容主题粗略来看，当前知识库主要集中在这些方面：\n"
+        "按内容标签粗略来看，当前知识库主要集中在这些方面：\n"
         + "\n".join(lines)
-        + "\n\n这是基于影子标签自动归纳出来的，不是按文件后缀硬分的。"
+        + "\n\n这是基于影子标签自动归纳出来的。"
     )
 
 
@@ -133,10 +129,7 @@ def answer_repo_content_category_summary_question(repo_state, topic_summarizer) 
     if not fine_topics:
         return "当前标签信息不足，暂时还无法按更大的方面概括。"
 
-    return summarize_topics_coarsely_with_local_llm(
-        fine_topics=fine_topics,
-        topic_summarizer=topic_summarizer,
-    )
+    return summarize_topics_coarsely_with_local_llm(fine_topics=fine_topics, topic_summarizer=topic_summarizer, )
 
 
 def extract_confirmation_candidates(question: str) -> list[str]:
@@ -155,11 +148,7 @@ def extract_confirmation_candidates(question: str) -> list[str]:
             if segment:
                 parts.append(segment)
 
-    candidates = [
-        part
-        for part in parts
-        if len(part) >= 2 and part not in CONFIRMATION_BAD_CANDIDATES
-    ]
+    candidates = [part for part in parts if len(part) >= 2 and part not in CONFIRMATION_BAD_CANDIDATES]
     return dedupe_keep_order(candidates)
 
 
@@ -182,29 +171,25 @@ def expand_candidate_fragments(candidate: str) -> list[str]:
                 if len(fragment) >= 2:
                     fragments.add(fragment)
 
-    result = [
-        fragment
-        for fragment in fragments
-        if fragment not in BAD_CANDIDATE_FRAGMENTS and len(fragment) >= 2
-    ]
+    result = [fragment for fragment in fragments if fragment not in BAD_CANDIDATE_FRAGMENTS and len(fragment) >= 2]
     result.sort(key=len, reverse=True)
     return result
 
 
-def match_confirmation_candidates_to_topics(
-    candidates: Sequence[str],
-    fine_topics: Sequence[tuple[str, int]],
-) -> list[tuple[str, str, int]]:
+def match_confirmation_candidates_to_topics(candidates: Sequence[str], fine_topics) -> list[tuple[str, str, int]]:
     matches: list[tuple[str, str, int]] = []
 
     for candidate in candidates:
         best_match: tuple[str, str, int] | None = None
         fragments = expand_candidate_fragments(candidate)
 
-        for topic, count in fine_topics:
-            if any(fragment in topic or topic in fragment for fragment in fragments):
+        for item in fine_topics:
+            tag = item["tag"]
+            count = item["count"]
+
+            if any(fragment in tag or tag in fragment for fragment in fragments):
                 if best_match is None or count > best_match[2]:
-                    best_match = (candidate, topic, count)
+                    best_match = (candidate, tag, count)
 
         if best_match:
             matches.append(best_match)
@@ -219,41 +204,264 @@ def answer_repo_content_category_confirm_question(question: str, repo_state) -> 
 
     candidates = extract_confirmation_candidates(question)
     if not candidates:
-        top_preview = "、".join(name for name, _ in fine_topics[:3])
+        top_preview = "、".join(item["tag"] for item in fine_topics[:3])
         return f"我大概明白你的意思，不过这句话里可直接比对的主题词不够明显。当前更突出的主题大致有：{top_preview}。"
 
     matches = match_confirmation_candidates_to_topics(candidates, fine_topics)
     if not matches:
-        top_preview = "、".join(f"{name}（约{count}）" for name, count in fine_topics[:5])
-        return (
-            f"不一定。按当前影子标签归纳的结果，"
-            f"我还看不出“{'、'.join(candidates)}”是最突出的那一类。"
-            f"目前更靠前的主题有：{top_preview}。"
-        )
+        top_preview = "、".join(f"{item['tag']}（约{item['count']}）" for item in fine_topics[:5])
+        return (f"不一定。按当前影子标签归纳的结果，"
+                f"我还看不出“{'、'.join(candidates)}”是最突出的那一类。"
+                f"目前更靠前的主题有：{top_preview}。")
 
     _best_candidate, best_topic, best_count = max(matches, key=lambda item: item[2])
-    top_count = fine_topics[0][1]
+    top_count = fine_topics[0]["count"]
 
     if best_count >= max(3, int(top_count * 0.7)):
-        return (
-            f"可以这么理解。按当前影子标签归纳结果看，"
-            f"“{best_topic}”这一类确实算比较突出的主题之一，"
-            f"大约对应 {best_count} 个文件。"
-        )
+        return (f"可以这么理解。按当前影子标签归纳结果看，"
+                f"“{best_topic}”这一类确实算比较突出的主题之一，"
+                f"大约对应 {best_count} 个文件。")
 
-    return (
-        f"可以稍微这样理解，但没到特别压倒性的程度。"
-        f"按当前结果看，和你这句话最接近的是“{best_topic}”，"
-        f"大约对应 {best_count} 个文件。"
+    return (f"可以稍微这样理解，但没到特别压倒性的程度。"
+            f"按当前结果看，和你这句话最接近的是“{best_topic}”，"
+            f"大约对应 {best_count} 个文件。")
+
+
+
+
+
+
+
+def extract_tag_buckets(repo_state):
+    return extract_fine_topics(repo_state)
+
+def cosine_sim(a, b):
+    a = np.asarray(a)
+    b = np.asarray(b)
+    denom = (np.linalg.norm(a) * np.linalg.norm(b))
+    if denom == 0:
+        return 0.0
+    return float(np.dot(a, b) / denom)
+
+def find_files_by_semantic_tag(repo_state, model_emb, query: str, top_k_tags: int = 5, limit: int = 50):
+    if model_emb is None:
+        return [], []
+
+    buckets = extract_tag_buckets(repo_state)
+    if not buckets:
+        return [], []
+
+    tag_texts = [item["tag"] for item in buckets]
+    query_vec = model_emb.encode([query])[0]
+    tag_vecs = model_emb.encode(tag_texts)
+
+    scored = []
+    for item, vec in zip(buckets, tag_vecs):
+        sim = cosine_sim(query_vec, vec)
+        scored.append((item, sim))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    selected = []
+    for idx, (item, sim) in enumerate(scored[:top_k_tags]):
+        if idx == 0 or sim >= 0.35:
+            selected.append((item, sim))
+    if not selected:
+        return [], []
+
+    merged_paths = []
+    seen = set()
+    for item, _sim in selected:
+        for p in item["paths"]:
+            # 过滤明显无关的文件名
+            if len(query) >= 2 and query not in p:
+                pass
+
+            if p not in seen:
+                seen.add(p)
+                merged_paths.append(p)
+
+    matched_tags = [item["tag"] for item, _sim in selected]
+    return merged_paths[:limit], matched_tags
+
+
+def build_tag_clusters(repo_state, model_emb, sim_threshold=0.65):
+    buckets = extract_tag_buckets(repo_state)
+    if not buckets:
+        return []
+
+    tags = [item["tag"] for item in buckets]
+    vecs = model_emb.encode(tags)
+
+    clusters = []
+    used = set()
+
+    for i, (tag, vec) in enumerate(zip(tags, vecs)):
+        if i in used:
+            continue
+
+        cluster = {
+            "tags": [tag],
+            "paths": set(buckets[i]["paths"]),
+        }
+        used.add(i)
+
+        for j in range(i + 1, len(tags)):
+            if j in used:
+                continue
+
+            sim = cosine_sim(vec, vecs[j])
+
+            if sim >= sim_threshold:
+                cluster["tags"].append(tags[j])
+                cluster["paths"].update(buckets[j]["paths"])
+                used.add(j)
+
+        clusters.append(cluster)
+
+    # 排序（按文件数）
+    clusters.sort(key=lambda x: len(x["paths"]), reverse=True)
+
+    return clusters
+
+def generate_cluster_label(cluster, topic_summarizer):
+    if not topic_summarizer:
+        return cluster["tags"][0]
+
+    top_tags = cluster["tags"][:6]
+
+    prompt = (
+        "下面是一组相关标签，请给它们起一个简洁的人类可读类别名称。\n"
+        "要求：\n"
+        "1. 2~6个字\n"
+        "2. 必须是一个自然类别\n"
+        "3. 不要解释\n\n"
+        "标签：\n"
+        + "、".join(top_tags)
     )
 
+    try:
+        result = topic_summarizer(prompt).strip()
+        if not result:
+            return top_tags[0]
+
+        result = result.replace("\n", "").strip("：: ")
+
+        if len(result) > 10:
+            return top_tags[0]
+
+        return result
+
+    except Exception:
+        return top_tags[0]
 
 
+def score_file_against_query(query: str, path: str, shadow_tags: str) -> float:
+    q = (query or "").strip().lower()
+    path_l = (path or "").lower()
+    tags_l = (shadow_tags or "").lower()
 
+    score = 0.0
+
+    if not q:
+        return score
+
+    # 1. 整体短语直接命中
+    if q in path_l:
+        score += 6.0
+    if q in tags_l:
+        score += 5.0
+
+    # 2. query 拆词后分别命中
+    parts = [x for x in re.split(r"[\s/、，,]+", q) if len(x) >= 2]
+    if not parts:
+        parts = [q]
+
+    for part in parts:
+        if part in path_l:
+            score += 3.0
+        if part in tags_l:
+            score += 2.5
+
+    # 3. 路径越短、越像“主题文件名”，轻微加分
+    path_len = len(path_l)
+    if path_len <= 20:
+        score += 0.8
+    elif path_len <= 40:
+        score += 0.4
+
+    return score
+
+
+def rerank_paths_in_cluster(repo_state, query: str, paths: list[str], limit: int = 50) -> list[str]:
+    path_to_record = {
+        str(record.get("path", "")): record
+        for record in getattr(repo_state, "doc_records", [])
+    }
+
+    scored = []
+    for path in paths:
+        record = path_to_record.get(path, {})
+        shadow_tags = str(record.get("shadow_tags", "") or "")
+        score = score_file_against_query(query, path, shadow_tags)
+        scored.append((path, score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [path for path, _score in scored[:limit]]
+
+
+def find_files_by_semantic_cluster(
+    repo_state,
+    model_emb,
+    query: str,
+    topic_summarizer=None,
+    limit=50,
+):
+    if model_emb is None:
+        return [], [], None
+
+    clusters = build_tag_clusters(repo_state, model_emb)
+    if not clusters:
+        return [], [], None
+
+    query_vec = model_emb.encode([query])[0]
+    scored = []
+
+    for cluster in clusters:
+        if len(cluster["paths"]) < 2:
+            continue
+
+        tag_vecs = model_emb.encode(cluster["tags"])
+        center_vec = np.mean(tag_vecs, axis=0)
+        sim = cosine_sim(query_vec, center_vec)
+        scored.append((cluster, sim))
+
+    if not scored:
+        return [], [], None
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    best_cluster, best_sim = scored[0]
+
+    if best_sim < 0.35:
+        return [], [], None
+
+    label = generate_cluster_label(best_cluster, topic_summarizer)
+    best_cluster = {
+        "label": label,
+        "tags": best_cluster["tags"],
+        "paths": best_cluster["paths"],
+    }
+
+    paths = list(best_cluster["paths"])
+    paths = rerank_paths_in_cluster(repo_state, query, paths, limit=limit)
+    tags = best_cluster["tags"]
+
+    return paths, tags, best_cluster
 
 def answer_repo_meta_question(
     question: str,
     repo_state,
+    model_emb=None,
     last_user_question: str | None = None,
     last_local_topic: str | None = None,
     topic_summarizer=None,
@@ -265,11 +473,8 @@ def answer_repo_meta_question(
     if not paths:
         return "当前知识库里还没有可用文档。", "empty"
 
-    topic = classify_repo_meta_question(
-        question,
-        last_user_question=last_user_question,
-        last_local_topic=last_local_topic,
-    )
+    topic = classify_repo_meta_question(question, last_user_question=last_user_question,
+        last_local_topic=last_local_topic, )
     if topic == "count":
         return f"当前知识库里共有 {len(paths)} 个可用文件。", topic
     if topic == "total_size":
@@ -279,24 +484,41 @@ def answer_repo_meta_question(
         suffixes = sorted({file.suffix.lower() or "[无后缀]" for file in all_files})
         answer = "当前知识库中的文件格式有：\n" + "\n".join(f"- {suffix}" for suffix in suffixes)
         return answer, topic
+    if topic == "list_files_by_topic":
+        target_topic = extract_topic_from_list_request(question)
 
+        matched, matched_tags, best_cluster = find_files_by_semantic_cluster(
+            repo_state,
+            model_emb,
+            target_topic,
+            topic_summarizer=topic_summarizer,
+            limit=50,
+        )
+
+        if not matched:
+            return f"当前知识库里暂时没有明显命中“{target_topic}”的文件。", "list_files_by_topic"
+
+        label = best_cluster["label"] if best_cluster else "相关内容"
+
+        lines = [
+            f"按语义上最接近的类别（{label}）来看，相关文件大约有 {len(matched)} 个，先列出这些："
+        ]
+        lines.extend(f"- {p}" for p in matched)
+
+        return "\n".join(lines), "list_files_by_topic"
     if topic == "time":
         latest_idx = max(range(len(file_times)), key=lambda i: file_times[i])
         earliest_idx = min(range(len(file_times)), key=lambda i: file_times[i])
-        answer = (
-            f"最早的文件：{paths[earliest_idx]}（{file_times[earliest_idx].strftime('%Y-%m-%d %H:%M:%S')}）\n"
-            f"最新的文件：{paths[latest_idx]}（{file_times[latest_idx].strftime('%Y-%m-%d %H:%M:%S')}）"
-        )
+        answer = (f"最早的文件：{paths[earliest_idx]}（{file_times[earliest_idx].strftime('%Y-%m-%d %H:%M:%S')}）\n"
+                  f"最新的文件：{paths[latest_idx]}（{file_times[latest_idx].strftime('%Y-%m-%d %H:%M:%S')}）")
         return answer, topic
 
     if topic == "list_files":
         show_n = min(50, len(paths))
         preview = "\n".join(f"- {path}" for path in paths[:show_n])
         if len(paths) > show_n:
-            answer = (
-                f"当前知识库里共有 {len(paths)} 个文件，先列出前 {show_n} 个：\n"
-                f"{preview}\n- ...(其余 {len(paths) - show_n} 个未展开)"
-            )
+            answer = (f"当前知识库里共有 {len(paths)} 个文件，先列出前 {show_n} 个：\n"
+                      f"{preview}\n- ...(其余 {len(paths) - show_n} 个未展开)")
         else:
             answer = f"当前知识库里的文件如下：\n{preview}"
         return answer, topic
@@ -305,13 +527,7 @@ def answer_repo_meta_question(
         return answer_repo_content_category_question(repo_state), topic
 
     if topic == "category_summary":
-        return (
-            answer_repo_content_category_summary_question(
-                repo_state,
-                topic_summarizer=topic_summarizer,
-            ),
-            topic,
-        )
+        return (answer_repo_content_category_summary_question(repo_state, topic_summarizer=topic_summarizer, ), topic,)
 
     if topic == "category_confirm":
         return answer_repo_content_category_confirm_question(question, repo_state), topic
