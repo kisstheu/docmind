@@ -70,9 +70,25 @@ def is_system_capability_request(question: str) -> bool:
         "你是谁", "介绍一下",
         "能干啥", "你能做什么", "能做什么", "可以做什么",
         "你可以做什么", "你的功能", "有什么功能", "有啥功能", "怎么用",
+        "你能做啥", "能做啥", "做啥", "干啥",
     ]
     return any(p in q for p in patterns)
+def is_repo_meta_request(question: str) -> bool:
+    q = (question or "").strip()
 
+    patterns = [
+        "多少文件", "多少个文件", "文件数量", "文档数量",
+        "有哪些文件", "都有哪些文件", "文件清单",
+        "有哪些文档", "都有哪些文档", "文档清单",
+        "列一下", "列出来",
+        "哪些类文档", "哪些类文件", "文档有哪些类", "文件有哪些类",
+        "怎么分类", "如何分类", "分成哪些",
+        "哪些格式", "文件格式", "文档格式",
+        "最近更新", "最新文件", "最早文件",
+
+        "占多大空间", "总共多大", "总大小", "总体积", "占用空间", "总容量",
+    ]
+    return any(p in q for p in patterns)
 
 def detect_dialog_event(question: str, state: ConversationState) -> DialogEvent:
     prev_q = state.last_content_user_question
@@ -81,7 +97,8 @@ def detect_dialog_event(question: str, state: ConversationState) -> DialogEvent:
 
     if is_system_capability_request(question):
         return DialogEvent(name="system_capability", route_hint="system_capability")
-
+    if is_repo_meta_request(question):
+        return DialogEvent(name="repo_meta_request", route_hint="repo_meta")
     # === 1. 纠偏
     if is_query_correction(question) and prev_q:
         return DialogEvent(

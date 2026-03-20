@@ -129,6 +129,7 @@ def read_changed_file(notes_dir: Path, relative_path: str, logger):
         "path": relative_path,
         "doc": content,
         "file_time": mtime,
+        "file_size": stat.st_size,
         "file_info": f"- {relative_path} (大小: {size_kb:.1f}KB, 更新于: {mtime.strftime('%Y-%m-%d')})",
         "used_sidecar": used_sidecar,
     }
@@ -375,6 +376,7 @@ def load_or_build_embeddings(scanned, cache_file: Path, model_emb, logger, ollam
             "fingerprint": fingerprint,
             "doc": doc,
             "file_time": file_time.timestamp(),
+            "file_size": int(file_record["file_size"]),
             "file_info": file_record["file_info"],
             "shadow_tags": shadow_tags,
             "embedding": np.asarray(doc_embedding),
@@ -418,6 +420,7 @@ def load_or_build_embeddings(scanned, cache_file: Path, model_emb, logger, ollam
             "path": path,
             "shadow_tags": doc_entry.get("shadow_tags", "") or "",
             "file_time": datetime.datetime.fromtimestamp(float(doc_entry["file_time"])),
+            "file_size": int(doc_entry.get("file_size", 0) or 0),
             "file_info": doc_entry["file_info"],
         })
 

@@ -348,6 +348,7 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
                     question,
                     repo_state,
                     last_user_question=prev_content_user_question,
+                    last_local_topic=conversation_state.last_local_topic,
                     topic_summarizer=lambda prompt: _call_local_ollama(
                         prompt,
                         logger=logger,
