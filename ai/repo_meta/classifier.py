@@ -9,7 +9,7 @@ from ai.capability_common import (
     LIST_FILE_KEYWORDS,
     TOTAL_SIZE_KEYWORDS,
     clean_text,
-    contains_any, normalize_meta_question,
+    contains_any, normalize_meta_question, CATEGORY_COUNT_KEYWORDS,
 )
 
 LIST_BY_TOPIC_PATTERNS = (
@@ -21,7 +21,14 @@ LIST_BY_TOPIC_PATTERNS = (
     r"(.+?)相关文档",
 )
 
-COUNT_KEYWORDS = ("多少文件", "多少个文件", "文件数量", "文档数量")
+COUNT_KEYWORDS = (
+    "多少文件", "多少个文件", "文件数量",
+    "多少文档", "多少个文档", "文档数量",
+    "有多少文件", "有多少文档",
+    "目前有多少文件", "目前有多少文档",
+    "现在有多少文件", "现在有多少文档",
+    "总共有多少文件", "总共有多少文档",
+)
 FORMAT_KEYWORDS = ("哪些格式", "文件格式", "文档格式", "支持格式")
 TIME_KEYWORDS = (
     "最近更新",
@@ -97,31 +104,44 @@ def classify_repo_meta_question(
 
     topic_candidate = extract_topic_from_list_request(q)
     if topic_candidate:
-        return "list_files_by_topic"
+        topic = "list_files_by_topic"
+        print(f"[repo_meta分类] q={q} -> {topic}")
+        return topic
 
     for topic, keywords in RULES:
         if contains_any(q, keywords):
+            print(f"[repo_meta分类] q={q} -> {topic}")
             return topic
 
     if is_followup_to_list_files(last_local_topic, q):
+        print(f"[repo_meta分类] q={q} -> list_files")
         return "list_files"
 
     if is_category_summary_request(q):
+        print(f"[repo_meta分类] q={q} -> category_summary")
         return "category_summary"
-
+    if last_local_topic in {"category", "category_summary"} and contains_any(q, ("仓库里呢", "本地存的", "本地的")):
+        return "category_summary"
     if is_category_confirmation_request(q):
+        print(f"[repo_meta分类] q={q} -> category_confirm")
         return "category_confirm"
-
+    if contains_any(q, CATEGORY_COUNT_KEYWORDS):
+        return "category_summary"
     if contains_any(q, CATEGORY_KEYWORDS):
+        print(f"[repo_meta分类] q={q} -> category")
         return "category"
 
     if is_followup_from_file_list(last_user_question, q):
+        print(f"[repo_meta分类] q={q} -> category")
         return "category"
 
     if is_followup_from_category(last_user_question, q):
         if is_category_summary_request(q):
+            print(f"[repo_meta分类] q={q} -> category_summary")
             return "category_summary"
         if is_category_confirmation_request(q):
+            print(f"[repo_meta分类] q={q} -> category_confirm")
             return "category_confirm"
 
+    print(f"[repo_meta分类] q={q} -> None")
     return None

@@ -113,6 +113,26 @@ def filter_reused_indices_for_question(question: str, candidate_indices, repo_st
 
     return list(candidate_indices)
 
+
+def should_keep_followup_anchor(question: str) -> bool:
+    q = (question or "").strip()
+    if not q:
+        return False
+
+    weak_followups = {
+        "我能赢吗", "能赢吗", "能不能赢",
+        "有胜算吗", "胜算大吗", "赢面大吗", "把握大吗",
+        "合理吗", "合法吗", "过分吗",
+        "怎么办", "会怎样", "结果呢", "然后呢", "后来呢",
+        "为什么", "依据是什么", "有哪些证据",
+    }
+
+    if q in weak_followups:
+        return True
+
+    # 短句且语义不完整，保留上一轮锚点
+    return len(q) <= 12
+
 def build_search_query(
     *,
     question: str,
@@ -154,14 +174,15 @@ def build_search_query(
 
         logger.info(f"🔗 [结果集追问拼接] {base_query}")
     else:
-        base_query = normalized_question or question
-
-        # 关闭上一轮 query / merged_query 继承，避免把历史词串带进来
-        if event_name in {"content_followup", "action_request"}:
-            logger.info("🧼 [当前轮检索] 仅使用当前问题，不继承上一轮词串")
-
-        if getattr(event, "merged_query", None):
-            logger.info("🧼 [当前轮检索] 忽略 merged_query，仅使用当前问题")
+        if event_name in {"content_followup", "action_request", "judgment_request"}:
+            if getattr(event, "merged_query", None) and should_keep_followup_anchor(question):
+                base_query = event.merged_query
+                logger.info(f"🔗 [追问继承拼接] {base_query}")
+            else:
+                base_query = normalized_question or question
+                logger.info("🧼 [当前轮检索] 当前问题足够具体，仅使用当前问题")
+        else:
+            base_query = normalized_question or question
 
     # 结果集追问：直接使用受控拼接后的查询，不再经过普通 rewrite/过滤链路
     if event_name == "result_set_followup":
@@ -177,6 +198,13 @@ def build_search_query(
         ollama_model,
         logger,
     )
+
+    # 弱追问 / 判断追问：不要把补全出来的主题词再过滤掉
+    if event_name in {"judgment_request", "content_followup"} and should_keep_followup_anchor(question):
+        search_query = raw_search_query.strip() or base_query.strip()
+        logger.info("🛡️ [弱追问保锚] 跳过新增词过滤，保留主题补全词")
+        logger.info(f"🛡️ [强词保底后]：{search_query}")
+        return search_query, context_anchor
 
     allowed_question = normalized_question or question
 

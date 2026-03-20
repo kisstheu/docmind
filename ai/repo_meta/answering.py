@@ -27,7 +27,7 @@ def calc_repo_total_bytes(repo_state) -> int:
 
 
 def _answer_count(paths: list[str]) -> tuple[str, str]:
-    return f"当前知识库里共有 {len(paths)} 个可用文件。", "count"
+    return f"当前知识库共有 {len(paths)} 个文件。", "count"
 
 
 
@@ -117,7 +117,12 @@ def answer_repo_meta_question(
     if topic == "format":
         return _answer_format(all_files)
     if topic == "list_files_by_topic":
-        return _answer_list_files_by_topic(question, repo_state, model_emb=model_emb, topic_summarizer=topic_summarizer)
+        return _answer_list_files_by_topic(
+            question,
+            repo_state,
+            model_emb=model_emb,
+            topic_summarizer=topic_summarizer,
+        )
     if topic == "time":
         return _answer_time(paths, file_times)
     if topic == "list_files":
@@ -125,8 +130,11 @@ def answer_repo_meta_question(
     if topic == "category":
         return answer_repo_content_category_question(repo_state), topic
     if topic == "category_summary":
-        return answer_repo_content_category_summary_question(repo_state, topic_summarizer=topic_summarizer), topic
+        return answer_repo_content_category_summary_question(
+            repo_state,
+            topic_summarizer=topic_summarizer,
+        ), topic
     if topic == "category_confirm":
         return answer_repo_content_category_confirm_question(question, repo_state), topic
 
-    return None, None
+    return "我识别到你在问知识库的文件信息，但暂时没分清是数量、格式、时间还是列表。你可以换个更直接的问法。", "unknown_repo_meta"

@@ -170,7 +170,6 @@ def update_state_after_retrieval_answer(state, question: str, answer_text: str):
                 company_items.append(cleaned)
 
         state.last_result_set_items = company_items
-        state.last_result_set_entity_type = "company"
 
         print(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
         print(f"🧪 [候选集合提取] raw_items={raw_items}")

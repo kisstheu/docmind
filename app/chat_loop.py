@@ -118,7 +118,7 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
 
             # 1) system capability
             local_answer = try_handle_system_capability(route, question)
-            if local_answer:
+            if local_answer is not None:
                 print_answer(local_answer, start_qa)
                 append_memory(memory_buffer, question, local_answer)
                 conversation_state = update_state_after_local_answer(
@@ -142,7 +142,7 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
                 ollama_api_url,
                 ollama_model,
             )
-            if local_answer:
+            if local_answer is not None:
                 print_answer(local_answer, start_qa)
                 append_memory(memory_buffer, question, local_answer)
                 conversation_state = update_state_after_local_answer(
@@ -157,7 +157,7 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
 
             # 3) smalltalk
             local_answer = try_handle_smalltalk(route, question)
-            if local_answer:
+            if local_answer is not None:
                 print_answer(local_answer, start_qa)
                 append_memory(memory_buffer, question, local_answer)
                 conversation_state = update_state_after_local_answer(
