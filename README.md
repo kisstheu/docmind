@@ -1,3 +1,34 @@
+## 🧠 DocMind：个人本地知识检索与问答系统
+
+DocMind 是一个面向**混合格式本地文档（txt / md / docx / pdf）**的个人知识助手，
+用于解决**随手记录内容分散、命名混乱、难以检索与总结**的问题。
+
+### 核心能力
+
+* 📂 多格式文档解析（含 OCR 扫描件自动识别）
+* 🔍 混合检索（语义向量 + 关键词增强）
+* 🧠 基于 RAG 的问答与总结
+* ⏳ 时间线推理与跨文档信息整合
+* 🛡️ 抗幻觉与上下文隔离机制
+
+### 技术架构
+
+* 本地向量模型：BGE（GPU 加速）
+* 本地预处理：Ollama（影子索引）
+* 云端推理：Gemini（总结与推理）
+* 检索策略：Dense + Sparse Hybrid Search
+* 对话控制：Dialog State Machine
+
+### 项目亮点
+
+* OCR 伴生文件机制（一次解析，永久复用）
+* Shadow Index（AI 语义预处理）
+* Query Rewriting + Intent Routing
+* 动态检索范围（Deep Retrieval Mode）
+* 完整模块化重构 + 状态机驱动
+
+---
+
 # DocMind
 
 写的随手记太多了，要是能自动整理就好了，可能 AI 能帮忙？
