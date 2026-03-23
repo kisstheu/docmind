@@ -15,7 +15,7 @@ from app.chat_text_utils import (
     extract_strong_terms_from_question,
     extract_timeline_evidence_from_chunks,
     is_result_expansion_followup,
-    keep_only_current_question_terms,
+    keep_only_allowed_terms,
     merge_rewritten_query_with_strong_terms,
     needs_timeline_evidence,
     normalize_question_for_retrieval,
@@ -198,17 +198,25 @@ def build_search_query(
         ollama_model,
         logger,
     )
+    # 结构化请求：不要把补全出来的主题词再过滤掉
+    if event_name == "structured_request" and any(k in question for k in ["时间线", "按时间", "顺序"]):
+        search_query = raw_search_query.strip() or base_query.strip()
+        logger.debug(f"🧩 [结构化请求原始检索词] {raw_search_query}")
+        logger.info("🛡️ [结构化请求保锚] 跳过新增词过滤，保留主题补全词")
+        logger.info(f"🛡️ [强词保底后]：{search_query}")
+        return search_query, context_anchor
 
     # 弱追问 / 判断追问：不要把补全出来的主题词再过滤掉
-    if event_name in {"judgment_request", "content_followup"} and should_keep_followup_anchor(question):
+    if event_name in {"judgment_request", "content_followup", "action_request"} and should_keep_followup_anchor(
+            question):
         search_query = raw_search_query.strip() or base_query.strip()
         logger.info("🛡️ [弱追问保锚] 跳过新增词过滤，保留主题补全词")
         logger.info(f"🛡️ [强词保底后]：{search_query}")
         return search_query, context_anchor
 
-    allowed_question = normalized_question or question
+    allowed_question = base_query or normalized_question or question
 
-    raw_search_query = keep_only_current_question_terms(
+    raw_search_query = keep_only_allowed_terms(
         raw_search_query,
         allowed_question,
         logger=logger,
@@ -220,7 +228,7 @@ def build_search_query(
         logger=logger,
     )
 
-    search_query = keep_only_current_question_terms(
+    search_query = keep_only_allowed_terms(
         search_query,
         allowed_question,
         logger=logger,

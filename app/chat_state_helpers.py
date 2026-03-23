@@ -171,12 +171,12 @@ def update_state_after_retrieval_answer(state, question: str, answer_text: str, 
 
         state.last_result_set_items = company_items
 
-        print(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
-        print(f"🧪 [候选集合提取] raw_items={raw_items}")
-        print(f"🧪 [候选集合提取] company_items={company_items}")
+        logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
+        logger.debug(f"🧪 [候选集合提取] raw_items={raw_items}")
+        logger.debug(f"🧪 [候选集合提取] company_items={company_items}")
 
     else:
-        print(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
+        logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
 
     logger.debug(
         f"💾 [状态写回] "

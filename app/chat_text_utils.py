@@ -94,7 +94,7 @@ def normalize_question_for_retrieval(question: str) -> str:
     return q
 
 
-def keep_only_current_question_terms(query: str, question: str, logger=None) -> str:
+def keep_only_allowed_terms(query: str, question: str, logger=None) -> str:
     """
     只保留“当前问题里本来就出现过”的词。
     rewrite 可以重排，但不允许新增词。
@@ -178,7 +178,7 @@ def extract_strong_terms_from_question(question: str) -> list[str]:
 
 def merge_rewritten_query_with_strong_terms(question: str, rewritten_query: str, logger=None) -> str:
     # rewrite 只能重排当前问题已有的词，不允许新增
-    safe_rewritten = keep_only_current_question_terms(
+    safe_rewritten = keep_only_allowed_terms(
         rewritten_query,
         question,
         logger=logger,
