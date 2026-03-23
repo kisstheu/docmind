@@ -171,9 +171,7 @@ def update_state_after_local_answer(
         file_items = extract_file_items(answer)
         state.last_result_set_items = file_items
         state.last_result_set_entity_type = "文件"
-    else:
-        state.last_result_set_items = None
-        state.last_result_set_entity_type = None
+
 
     return state
 

@@ -181,7 +181,7 @@ def _answer_time(question: str, paths, file_times) -> tuple[str, str]:
     sorted_earliest = sorted(pairs, key=lambda x: x[1])
 
     ask_latest = any(x in q for x in ["最新", "最近更新", "最近修改", "最晚"])
-    ask_earliest = any(x in q for x in ["最早"])
+    ask_earliest = any(x in q for x in ["最早", "最旧"])
     ask_both = not ask_latest and not ask_earliest
 
     lines = []
@@ -235,6 +235,27 @@ def _answer_list_files(paths: list[str]) -> tuple[str, str]:
     return answer, "list_files"
 
 
+def _answer_list_files_with_time(paths: list[str], file_times) -> tuple[str, str]:
+    """列出所有文件并附带时间"""
+    pairs = list(zip(paths, file_times))
+    # 按时间倒序排列
+    pairs_sorted = sorted(pairs, key=lambda x: x[1], reverse=True)
+
+    show_n = min(50, len(pairs_sorted))
+    lines = []
+    for path, dt in pairs_sorted[:show_n]:
+        lines.append(f"- {path}（{dt.strftime('%Y-%m-%d %H:%M:%S')}）")
+
+    preview = "\n".join(lines)
+    if len(paths) > show_n:
+        answer = (
+            f"当前知识库里共有 {len(paths)} 个文件（按时间倒序），先列出前 {show_n} 个：\n"
+            f"{preview}\n- ...(其余 {len(paths) - show_n} 个未展开)"
+        )
+    else:
+        answer = f"当前知识库里的文件如下（按时间倒序）：\n{preview}"
+    return answer, "list_files_with_time"
+
 
 def _answer_list_files_by_topic(question: str, repo_state, model_emb=None, topic_summarizer=None) -> tuple[str, str]:
     target_topic = extract_topic_from_list_request(question)
@@ -247,7 +268,7 @@ def _answer_list_files_by_topic(question: str, repo_state, model_emb=None, topic
     )
 
     if not matched:
-        return f"当前知识库里暂时没有明显命中“{target_topic}”的文件。", "list_files_by_topic"
+        return f"当前知识库里暂时没有明显命中\"{target_topic}\"的文件。", "list_files_by_topic"
 
     label = best_cluster["label"] if best_cluster else "相关内容"
     lines = [f"按语义上最接近的类别（{label}）来看，相关文件大约有 {len(matched)} 个，先列出这些："]
@@ -294,6 +315,8 @@ def answer_repo_meta_question(
         return _answer_time(question, paths, file_times)
     if topic == "list_files":
         return _answer_list_files(paths)
+    if topic == "list_files_with_time":
+        return _answer_list_files_with_time(paths, file_times)
     if topic == "category":
         return answer_repo_content_category_question(repo_state), topic
     if topic == "category_summary":

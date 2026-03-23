@@ -12,6 +12,7 @@ from app.dialog_state_machine import (
     apply_event_to_state,
     detect_dialog_event,
 )
+from app.dialog_state_machine import extract_result_set_from_answer
 from retrieval.search_engine import determine_query_flags
 
 from app.chat_retrieval_flow import (
@@ -63,6 +64,14 @@ def try_handle_repo_meta(
         topic_summarizer=build_topic_summarizer(logger, ollama_api_url, ollama_model),
     )
     logger.info(f"📦 repo_meta 返回值: {repr(local_answer)[:200]} | topic={local_topic}")
+
+    if local_topic == "time" and "份 Word 文档是" in local_answer:  # 针对时间查询的列表
+        items, entity_type = extract_result_set_from_answer(local_answer, "文件")
+        conversation_state.last_result_set_items = items
+        conversation_state.last_result_set_entity_type = entity_type
+        conversation_state.last_result_set_query = question  # 可选，记录原查询
+        logger.info(f"🗂️ [结果集提取] 捕获 {len(items)} 个项: {items}")
+
     return local_answer, local_topic
 
 

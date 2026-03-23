@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 from typing import Optional
+import re
+
+def extract_result_set_from_answer(answer: str, entity_type: str = "文件") -> tuple[list[str], str]:
+    items = re.findall(r"\d+\.\s*([^（]+?)\s*（", answer)
+    items = [item.strip() for item in items if item.strip()]
+    return items, entity_type
 
 from ai.capability_common import normalize_meta_question
 from app.dialog_utils import (
@@ -113,6 +118,24 @@ RESULT_SET_FOLLOWUP_PATTERNS = [
     r"^目前知道的是哪几家",
     r"^所以.*哪几个",
     r"^所以.*哪几家",
+    r"^这两个",
+    r"^这两个是",
+    r"^这两个其实",
+    r"^是不是说这两个",
+    r"^这两个.*相同",
+    r"^这两个.*一致",
+    r"^它们是",
+    r"^它们.*相同",
+    r"^它们.*一致",
+    r"^也就是说",
+    r"^也就是说其实",
+    r"^其实是",
+    r"^其实.*一样",
+    r"^其实.*相同",
+    r"^其实.*一致",
+    r"^也就是说.*相同",
+    r"^也就是说.*一致",
+    r"^也就是说.*一样",
 ]
 RESULT_SET_CONTINUATION_PATTERNS = [
     r"^还有吗",
@@ -287,20 +310,42 @@ def is_repo_meta_request(question: str) -> bool:
     return any(p in q for p in patterns)
 
 
-def looks_like_repo_time_question(question: str) -> bool:
+def looks_like_repo_time_question(question: str, state: ConversationState | None = None) -> bool:
     q = normalize_meta_question(question)
 
-    # 先要求问题里确实提到了文件/文档
+    # 显式提到文件/文档 + 时间信号
     mentions_doc = any(x in q for x in ["文件", "文档", "资料", "pdf", "txt", "docx"])
-    if not mentions_doc:
-        return False
+    time_signals = ["最新", "最早", "最晚", "最旧", "最近更新", "最近修改",
+                    "修改时间", "创建时间", "时间最新", "时间最早"]
+    
+    if mentions_doc and any(x in q for x in time_signals):
+        return True
 
-    # 再判断是否在问时间排序
-    time_signals = [
-        "最新", "最早", "最晚", "最近更新", "最近修改",
-        "修改时间", "创建时间", "时间最新", "时间最早",
+    # 短句 + 时间信号 + 量词模式 = 独立的文件时间查询
+
+    if len(q) <= 15:
+        has_time_signal = any(x in q for x in time_signals)
+        has_quantity = any(x in q for x in ["份", "个", "两", "三", "几"])
+        if has_time_signal and has_quantity:
+            return True
+
+    return False
+
+def is_list_format_modifier(question: str) -> bool:
+    """识别对上一轮列表的格式修饰请求，如"带时间""加上大小"等"""
+    q = (question or "").strip()
+    if len(q) > 15:
+        return False
+    
+    patterns = [
+        "带时间", "加时间", "加上时间", "要时间", "显示时间",
+        "带大小", "加大小", "加上大小", "要大小", "显示大小",
+        "带日期", "加日期", "加上日期",
+        "按时间排", "按时间排序", "按日期排", "按日期排序",
+        "按大小排", "按大小排序",
     ]
-    return any(x in q for x in time_signals)
+    return any(p in q for p in patterns)
+
 
 def detect_dialog_event(question: str, state: ConversationState, logger) -> DialogEvent:
     rs_match = looks_like_result_set_followup(question)
@@ -322,7 +367,11 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
     prev_route = state.last_content_route
     last_topic = state.last_local_topic
 
-    if looks_like_repo_time_question(question):
+
+    if state.last_route == "repo_meta" and last_topic == "list_files" and is_list_format_modifier(question):
+        return DialogEvent(name="repo_meta_request", route_hint="repo_meta")
+
+    if looks_like_repo_time_question(question, state):
         return DialogEvent(name="repo_meta_request", route_hint="repo_meta")
 
     if is_system_capability_request(question):
@@ -395,6 +444,9 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
                                    state.last_answer_type in {"enumeration_company", "enumeration_file",
                                                               "enumeration_person"}
                            ) or enum_like
+
+    if state.last_result_set_items and any(term in question.lower() for term in ["内容", "一样", "相同", "一致"]) and "文件" in question.lower():
+        rs_match = True  # 强制设置匹配
 
     if prev_route in {"normal_retrieval", "repo_meta"} and rs_match and is_result_set_answer:
         return DialogEvent(name="result_set_followup", route_hint="normal_retrieval")

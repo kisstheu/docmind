@@ -14,6 +14,11 @@ from ai.capability_common import (
     CATEGORY_COUNT_KEYWORDS,
 )
 
+LIST_FORMAT_MODIFIERS = (
+    "带时间", "加时间", "加上时间", "要时间", "显示时间",
+    "带日期", "加日期", "加上日期",
+)
+
 LIST_BY_TOPIC_PATTERNS = (
     r"列一下(.+?)的文件",
     r"列出(.+?)的文件",
@@ -44,12 +49,12 @@ TIME_KEYWORDS = (
     "最近修改",
     "修改时间",
     "创建时间",
-    "最新文件", "最早文件", "最晚文件",
-    "最新文档", "最早文档", "最晚文档",
-    "最新的文件", "最早的文件", "最晚的文件",
-    "最新的文档", "最早的文档", "最晚的文档",
-    "文件最新", "文件最早", "文件最晚",
-    "文档最新", "文档最早", "文档最晚",
+    "最新文件", "最早文件", "最晚文件", "最旧文件",
+    "最新文档", "最早文档", "最晚文档", "最旧文档",
+    "最新的文件", "最早的文件", "最晚的文件", "最旧的文件",
+    "最新的文档", "最早的文档", "最晚的文档", "最旧的文档",
+    "文件最新", "文件最早", "文件最晚", "文件最旧",
+    "文档最新", "文档最早", "文档最晚", "文档最旧",
 )
 
 LIST_FOLLOWUP_KEYWORDS = ("列一下", "列一下吧", "列出来", "展开一下", "展开列一下")
@@ -109,6 +114,11 @@ def classify_repo_meta_question(
 ) -> str | None:
     q = normalize_meta_question(clean_text(question))
 
+    # 对上一轮 list_files 的时间格式修饰
+    if last_local_topic == "list_files" and any(x in q for x in LIST_FORMAT_MODIFIERS):
+        print(f"[repo_meta分类] q={q} -> list_files_with_time")
+        return "list_files_with_time"
+
     topic_candidate = extract_topic_from_list_request(q)
     if topic_candidate:
         topic = "list_files_by_topic"
@@ -122,12 +132,18 @@ def classify_repo_meta_question(
         "ppt", "pptx",
     ))
     has_time_word = any(x in q for x in (
-        "最新", "最早", "最晚",
+        "最新", "最早", "最晚", "最旧",
         "最近更新", "最近修改",
         "修改时间", "创建时间",
     ))
 
-    if (has_doc_word or has_format_word) and has_time_word:
+    # 时间查询优先级高于格式查询
+    if has_time_word and (has_doc_word or has_format_word):
+        print(f"[repo_meta分类] q={q} -> time")
+        return "time"
+
+    # 短句 + 时间信号 + 量词 = 时间查询
+    if has_time_word and len(q) <= 15 and any(x in q for x in ("份", "个", "两", "三", "几")):
         print(f"[repo_meta分类] q={q} -> time")
         return "time"
 
