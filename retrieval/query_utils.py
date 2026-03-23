@@ -3,8 +3,18 @@ from __future__ import annotations
 import re
 from typing import Optional, Tuple
 
-EXTENSION_TERMS = {"pdf", "docx", "txt", "md"}
-SUPPORTED_EXT = {".txt", ".md", ".docx", ".pdf"}
+EXTENSION_TERMS = {
+    "pdf", "doc", "docx", "txt", "md",
+    "xls", "xlsx", "csv",
+    "ppt", "pptx",
+    "word", "excel", "ppt",
+}
+
+SUPPORTED_EXT = {
+    ".txt", ".md", ".doc", ".docx", ".pdf",
+    ".xls", ".xlsx", ".csv",
+    ".ppt", ".pptx",
+}
 
 
 def extract_company_candidates(text: str):
@@ -50,6 +60,28 @@ def classify_org_candidate(name: str):
     return "ambiguous"
 
 
+def normalize_extension_term(term: str) -> str:
+    t = (term or "").strip().lower()
+
+    alias_map = {
+        "word": "word",
+        "word文档": "word",
+        "doc": "doc",
+        "docx": "docx",
+        "pdf": "pdf",
+        "txt": "txt",
+        "md": "md",
+        "markdown": "md",
+        "excel": "excel",
+        "xls": "xls",
+        "xlsx": "xlsx",
+        "csv": "csv",
+        "ppt": "ppt",
+        "pptx": "pptx",
+    }
+    return alias_map.get(t, t)
+
+
 def extract_query_terms(search_query: str, question: str):
     text = f"{search_query} {question}"
     text = re.sub(r"[^\w\s\u4e00-\u9fa5]", " ", text)
@@ -71,6 +103,13 @@ def extract_query_terms(search_query: str, question: str):
         term = term.strip()
         if len(term) < 2 or term in stop_terms:
             continue
+
+        normalized = normalize_extension_term(term)
+
+        if normalized in EXTENSION_TERMS:
+            cleaned.append(normalized)
+            continue
+
         if "公司" in term and term != "公司":
             cleaned.append("公司")
             continue
@@ -91,11 +130,19 @@ def extract_query_terms(search_query: str, question: str):
 
 def detect_inventory_target(question: str) -> Tuple[Optional[str], Optional[str]]:
     q = re.sub(r"[^\w\s\u4e00-\u9fa5]", "", question)
+
+    # 先判断更具体的文档格式类目标
+    doc_aliases = ["word", "word文档", "doc", "docx", "pdf", "txt", "md", "excel", "xls", "xlsx", "csv", "ppt", "pptx"]
+    for alias in doc_aliases:
+        if alias in q.lower():
+            return "document", alias
+
     target_aliases = {
         "company": ["公司", "单位", "组织", "企业"],
         "person": ["人", "人名", "人物", "同事", "员工"],
         "project": ["项目", "系统", "方案"],
         "place": ["地点", "地方", "城市", "位置"],
+        "document": ["文件", "文档", "资料", "word文档", "pdf文档"],
     }
     for target_type, aliases in target_aliases.items():
         for alias in aliases:

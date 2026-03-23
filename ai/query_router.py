@@ -27,8 +27,13 @@ def _is_smalltalk(q: str) -> bool:
 
 
 def _is_repo_meta(q: str) -> bool:
-    patterns = ["多少文件", "多少个文件", "文件数量", "有哪些格式", "文件格式"]
-    return any(p in q for p in patterns)
+    has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
+    has_meta_word = any(x in q for x in [
+        "多少", "数量", "格式", "分类", "清单",
+        "最新", "最早", "最晚", "最近更新", "最近修改",
+        "修改时间", "创建时间", "占多大", "总大小", "空间",
+    ])
+    return has_doc_word and has_meta_word
 
 
 def route_question(question: str, ollama_api_url: str, ollama_model: str, logger) -> dict:

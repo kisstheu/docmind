@@ -38,7 +38,7 @@ def _is_supported_file(file: Path) -> bool:
         return False
     if file.suffix.lower() not in SUPPORTED_EXT:
         return False
-    if file.name.endswith(".ocr.txt") or file.name.startswith("~$"):
+    if file.name.endswith(".ocr.txt") or file.name.startswith("~$") or file.name.endswith(".converted.txt"):
         return False
     stat = file.stat()
     if stat.st_size == 0:

@@ -8,7 +8,7 @@ from logging.handlers import RotatingFileHandler
 def build_logger(
     name: str = "DocMind",
     log_file: str = "docmind_sys.log",
-    console_level: int = logging.INFO,
+    console_level: int = logging.DEBUG,
     file_level: int = logging.DEBUG,
     max_bytes: int = 5 * 1024 * 1024,
     backup_count: int = 3,

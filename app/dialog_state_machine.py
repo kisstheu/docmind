@@ -71,7 +71,6 @@ def is_structured_output_request(question: str) -> bool:
 # 事件识别核心
 # =========================
 
-
 RESULT_SET_FOLLOWUP_PATTERNS = [
     r"^哪些是",
     r"^哪个是",
@@ -98,6 +97,12 @@ RESULT_SET_FOLLOWUP_PATTERNS = [
     r"^具体是哪些",
     r"^都是什么",
     r"^分别是什么",
+    r"^分别是关于什么",
+    r"^分别是关于什么的",
+    r"^各自是关于什么",
+    r"^各自讲了什么",
+    r"^分别讲了什么",
+    r"^分别在说什么",
     r"^列一下",
     r"^展开说",
     r"^还有别的",
@@ -208,6 +213,12 @@ def build_result_set_followup_query(
                 f"原问题：{q}"
             )
 
+        if entity_type == "文件":
+            return (
+                f"已知文件如下：{item_text}。"
+                f"请基于这些文件的内容回答：{q}"
+            )
+
         return (
             f"候选{entity_type}如下：{item_text}。"
             f"请只在这些候选项中回答：{q}"
@@ -278,7 +289,18 @@ def is_repo_meta_request(question: str) -> bool:
 
 def looks_like_repo_time_question(question: str) -> bool:
     q = normalize_meta_question(question)
-    return any(x in q for x in ["最早文件", "最早文档", "最新文件", "最新文档", "最近更新"])
+
+    # 先要求问题里确实提到了文件/文档
+    mentions_doc = any(x in q for x in ["文件", "文档", "资料", "pdf", "txt", "docx"])
+    if not mentions_doc:
+        return False
+
+    # 再判断是否在问时间排序
+    time_signals = [
+        "最新", "最早", "最晚", "最近更新", "最近修改",
+        "修改时间", "创建时间", "时间最新", "时间最早",
+    ]
+    return any(x in q for x in time_signals)
 
 def detect_dialog_event(question: str, state: ConversationState, logger) -> DialogEvent:
     rs_match = looks_like_result_set_followup(question)
@@ -374,7 +396,7 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
                                                               "enumeration_person"}
                            ) or enum_like
 
-    if prev_route == "normal_retrieval" and rs_match and is_result_set_answer:
+    if prev_route in {"normal_retrieval", "repo_meta"} and rs_match and is_result_set_answer:
         return DialogEvent(name="result_set_followup", route_hint="normal_retrieval")
     # === 8. 内容追问继承
     if prev_route == "normal_retrieval" and is_context_dependent_question(question, state.last_effective_search_query):

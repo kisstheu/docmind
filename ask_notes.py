@@ -79,7 +79,7 @@ def main():
 
     from google import genai
 
-    notes_dir = Path("examples/demo_notes")
+    notes_dir = Path("E:/test/kisstheu")
     cache_file = _resolve_cache_file(notes_dir, logger)
 
     model_id = "gemini-2.5-flash"

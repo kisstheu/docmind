@@ -75,6 +75,36 @@ def extract_numbered_items(answer_text: str) -> list[str]:
 
     return items
 
+def extract_file_items(answer_text: str) -> list[str]:
+    items: list[str] = []
+
+    for item in extract_numbered_items(answer_text):
+        t = item.strip()
+
+        t = re.sub(r"（\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}）$", "", t).strip()
+
+        if t:
+            items.append(t)
+
+    return items
+
+
+def infer_local_answer_type(user_question: str, answer_text: str, local_topic: str | None) -> str | None:
+    q = (user_question or "").strip()
+    a = (answer_text or "").strip()
+    topic = (local_topic or "").strip()
+
+    if topic == "time" and ("文件" in q or "文档" in q):
+        items = extract_file_items(a)
+        if len(items) >= 1:
+            return "enumeration_file"
+
+    if topic in {"list_files", "list_files_by_topic"}:
+        items = extract_file_items(a)
+        if len(items) >= 1:
+            return "enumeration_file"
+
+    return None
 
 def normalize_company_item(text: str) -> str:
     t = text.strip()
@@ -134,10 +164,16 @@ def update_state_after_local_answer(
         state.last_content_route = route
         state.last_content_topic = local_topic
 
-    # 本地回答一般不参与结果集追问
-    state.last_answer_type = None
-    state.last_result_set_items = None
-    state.last_result_set_entity_type = None
+    local_answer_type = infer_local_answer_type(question, answer, local_topic)
+    state.last_answer_type = local_answer_type
+
+    if local_answer_type == "enumeration_file":
+        file_items = extract_file_items(answer)
+        state.last_result_set_items = file_items
+        state.last_result_set_entity_type = "文件"
+    else:
+        state.last_result_set_items = None
+        state.last_result_set_entity_type = None
 
     return state
 

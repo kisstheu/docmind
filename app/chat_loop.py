@@ -253,4 +253,7 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
             )
 
         except Exception as e:
+            err = str(e)
+            if "UNEXPECTED_EOF_WHILE_READING" in err or "EOF occurred in violation of protocol" in err:
+                logger.error( "模型服务连接被中途断开，可能是代理或网络波动导致，请重试。")
             logger.error(f"\n调用失败: {e}")
