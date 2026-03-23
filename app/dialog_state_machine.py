@@ -280,7 +280,7 @@ def looks_like_repo_time_question(question: str) -> bool:
     q = normalize_meta_question(question)
     return any(x in q for x in ["最早文件", "最早文档", "最新文件", "最新文档", "最近更新"])
 
-def detect_dialog_event(question: str, state: ConversationState) -> DialogEvent:
+def detect_dialog_event(question: str, state: ConversationState, logger) -> DialogEvent:
     rs_match = looks_like_result_set_followup(question)
     has_state = state is not None
     last_answer_text = state.last_answer_text or state.last_answer_preview or ""
@@ -288,7 +288,7 @@ def detect_dialog_event(question: str, state: ConversationState) -> DialogEvent:
     enum_like = last_turn_looks_like_enumeration(last_answer_text)
     last_answer_type = state.last_answer_type
 
-    print(
+    logger.debug(
         f"🧪 [result_set_followup判定] "
         f"rs_match={rs_match} | "
         f"has_state={has_state} | "

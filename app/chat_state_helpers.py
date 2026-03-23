@@ -142,7 +142,7 @@ def update_state_after_local_answer(
     return state
 
 
-def update_state_after_retrieval_answer(state, question: str, answer_text: str):
+def update_state_after_retrieval_answer(state, question: str, answer_text: str, logger):
     state.last_user_question = question
     state.last_route = "normal_retrieval"
     state.last_local_topic = None
@@ -178,7 +178,7 @@ def update_state_after_retrieval_answer(state, question: str, answer_text: str):
     else:
         print(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
 
-    print(
+    logger.debug(
         f"💾 [状态写回] "
         f"last_user_question={state.last_user_question} | "
         f"last_content_route={state.last_content_route} | "

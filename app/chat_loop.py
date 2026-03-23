@@ -111,7 +111,7 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
 
             prev_content_user_question = conversation_state.last_content_user_question
 
-            event = detect_dialog_event(question, conversation_state)
+            event = detect_dialog_event(question, conversation_state,logger)
             conversation_state = apply_event_to_state(conversation_state, event)
 
             route = resolve_route(question, event, ollama_api_url, ollama_model, logger)
@@ -222,7 +222,7 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
                 conversation_state = update_state_after_retrieval_answer(
                     conversation_state,
                     question,
-                    fallback_answer,
+                    fallback_answer,logger
                 )
                 continue
 
@@ -249,7 +249,7 @@ def run_chat_loop(repo_state, model_emb, client, model_id: str, ollama_api_url: 
             conversation_state = update_state_after_retrieval_answer(
                 conversation_state,
                 question,
-                answer_text,
+                answer_text,logger
             )
 
         except Exception as e:

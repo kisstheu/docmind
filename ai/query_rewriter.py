@@ -39,7 +39,7 @@ def rewrite_search_query(question: str, memory_buffer, ollama_api_url: str, olla
         search_query = re.sub(r'\.(txt|md|pdf|docx)$', '', search_query, flags=re.IGNORECASE).strip()
         search_query = re.sub(r'[^\w\s\u4e00-\u9fa5]', ' ', search_query)
         search_query = re.sub(r'\s+', ' ', search_query).strip()
-        logger.info(f"🔍 [本地引擎意图重写]：{search_query}")
+        logger.debug(f"🔍 [本地引擎意图重写]：{search_query}")
         return search_query
     except Exception as e:
         logger.warning(f"⚠️ 本地意图提取失败，退回原问题：{e}")
