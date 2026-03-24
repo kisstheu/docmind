@@ -31,6 +31,12 @@ from app.chat_state_helpers import (
     update_state_after_retrieval_answer,
 )
 from app.chat_text_utils import normalize_colloquial_question
+from app.file_delete_flow import (
+    build_delete_preview,
+    is_delete_request,
+    parse_delete_confirmation_decision,
+    resolve_delete_source_file,
+)
 from app.file_rename_flow import (
     build_rename_preview,
     extract_new_name_candidate,
@@ -40,7 +46,7 @@ from app.file_rename_flow import (
     parse_confirmation_decision,
     resolve_source_file,
 )
-from app.repo_state_mutations import apply_repo_state_rename
+from app.repo_state_mutations import apply_repo_state_delete, apply_repo_state_rename
 from infra.file_change_store import FileChangeStore, collect_file_snapshot
 
 
@@ -319,6 +325,124 @@ def run_chat_loop(
                 )
                 continue
 
+            if conversation_state.pending_action_type == "delete":
+                decision = parse_delete_confirmation_decision(question)
+                if decision is None:
+                    remind = (
+                        "当前有待确认的删除操作。\n"
+                        f"{conversation_state.pending_action_preview or ''}\n"
+                        "请回复“确认删除”执行，或回复“取消”。"
+                    )
+                    print_answer(remind, start_qa)
+                    append_memory(memory_buffer, question, remind)
+                    conversation_state = update_state_after_local_answer(
+                        conversation_state,
+                        question=question,
+                        answer=remind,
+                        route="file_action",
+                        local_topic="delete_pending",
+                        is_content_answer=False,
+                    )
+                    continue
+
+                if decision == "cancel":
+                    canceled = "已取消本次删除操作。"
+                    _clear_pending_action_state()
+                    print_answer(canceled, start_qa)
+                    append_memory(memory_buffer, question, canceled)
+                    conversation_state = update_state_after_local_answer(
+                        conversation_state,
+                        question=question,
+                        answer=canceled,
+                        route="file_action",
+                        local_topic="delete_canceled",
+                        is_content_answer=False,
+                    )
+                    continue
+
+                source_rel = conversation_state.pending_action_source_path
+                target_rel = conversation_state.pending_action_target_path
+                requested_text = conversation_state.pending_action_requested_text or ""
+                if not source_rel or not target_rel:
+                    failed = "待执行的删除状态不完整，已取消。请重新发起删除请求。"
+                    _clear_pending_action_state()
+                    print_answer(failed, start_qa)
+                    append_memory(memory_buffer, question, failed)
+                    conversation_state = update_state_after_local_answer(
+                        conversation_state,
+                        question=question,
+                        answer=failed,
+                        route="file_action",
+                        local_topic="delete_failed",
+                        is_content_answer=False,
+                    )
+                    continue
+
+                source_abs = (notes_dir / source_rel).resolve()
+                target_abs = (notes_dir / target_rel).resolve()
+
+                if not source_abs.exists() or not source_abs.is_file():
+                    failed = f"原文件不存在或已被移动：{source_rel}。已取消本次删除。"
+                    _clear_pending_action_state()
+                    print_answer(failed, start_qa)
+                    append_memory(memory_buffer, question, failed)
+                    conversation_state = update_state_after_local_answer(
+                        conversation_state,
+                        question=question,
+                        answer=failed,
+                        route="file_action",
+                        local_topic="delete_failed",
+                        is_content_answer=False,
+                    )
+                    continue
+
+                target_abs.parent.mkdir(parents=True, exist_ok=True)
+                before = collect_file_snapshot(source_abs, notes_dir)
+                source_abs.rename(target_abs)
+                after = collect_file_snapshot(target_abs, notes_dir)
+                event_id = change_store.record_delete(
+                    notes_dir=notes_dir,
+                    before=before,
+                    after=after,
+                    reason="user_confirmed_soft_delete",
+                    requested_text=requested_text,
+                    confirmed_text=question,
+                )
+
+                apply_repo_state_delete(
+                    repo_state,
+                    notes_dir=notes_dir,
+                    old_rel_path=source_rel,
+                )
+                if current_focus_file == source_rel:
+                    current_focus_file = None
+                if conversation_state.last_result_set_items:
+                    conversation_state.last_result_set_items = [
+                        x for x in conversation_state.last_result_set_items if x != source_rel
+                    ]
+                    if not conversation_state.last_result_set_items:
+                        conversation_state.last_result_set_entity_type = None
+
+                _clear_pending_action_state()
+                success = (
+                    "删除完成（已移动到回收站）。\n"
+                    f"- 原路径: {source_rel}\n"
+                    f"- 回收站路径: {target_rel}\n"
+                    f"- 变更记录ID: {event_id}\n"
+                    f"- 文件SHA256: {after['sha256'][:16]}..."
+                )
+                print_answer(success, start_qa)
+                append_memory(memory_buffer, question, success)
+                conversation_state = update_state_after_local_answer(
+                    conversation_state,
+                    question=question,
+                    answer=success,
+                    route="file_action",
+                    local_topic="delete_done",
+                    is_content_answer=True,
+                )
+                continue
+
             # A.1) 重命名历史查询
             if is_rename_history_query(question):
                 recent_events = change_store.list_recent_renames(notes_dir=notes_dir, limit=20)
@@ -446,6 +570,63 @@ def run_chat_loop(
                     answer=preview_text,
                     route="file_action",
                     local_topic="rename_preview",
+                    is_content_answer=False,
+                )
+                continue
+
+            if is_delete_request(question):
+                source_hint = resolve_delete_source_file(
+                    question=question,
+                    current_focus_file=current_focus_file,
+                    last_result_set_items=conversation_state.last_result_set_items,
+                )
+                source_rel = _find_repo_path_by_reference(source_hint, list(repo_state.paths))
+                if not source_rel:
+                    tip = "我没定位到要删除的文件，请带上完整文件名再说一次。"
+                    print_answer(tip, start_qa)
+                    append_memory(memory_buffer, question, tip)
+                    conversation_state = update_state_after_local_answer(
+                        conversation_state,
+                        question=question,
+                        answer=tip,
+                        route="file_action",
+                        local_topic="delete_pending",
+                        is_content_answer=False,
+                    )
+                    continue
+
+                preview_text, payload = build_delete_preview(
+                    notes_dir=notes_dir,
+                    source_rel_path=source_rel,
+                )
+                if not preview_text or not payload:
+                    tip = "删除预检查失败：源文件不存在，或文件类型不支持。"
+                    print_answer(tip, start_qa)
+                    append_memory(memory_buffer, question, tip)
+                    conversation_state = update_state_after_local_answer(
+                        conversation_state,
+                        question=question,
+                        answer=tip,
+                        route="file_action",
+                        local_topic="delete_failed",
+                        is_content_answer=False,
+                    )
+                    continue
+
+                conversation_state.pending_action_type = "delete"
+                conversation_state.pending_action_source_path = payload["source_rel_path"]
+                conversation_state.pending_action_target_path = payload["target_rel_path"]
+                conversation_state.pending_action_requested_text = question
+                conversation_state.pending_action_preview = preview_text
+
+                print_answer(preview_text, start_qa)
+                append_memory(memory_buffer, question, preview_text)
+                conversation_state = update_state_after_local_answer(
+                    conversation_state,
+                    question=question,
+                    answer=preview_text,
+                    route="file_action",
+                    local_topic="delete_preview",
                     is_content_answer=False,
                 )
                 continue

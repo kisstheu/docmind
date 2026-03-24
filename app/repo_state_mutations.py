@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 
 def apply_repo_state_rename(repo_state, *, notes_dir: Path, old_rel_path: str, new_rel_path: str) -> None:
     old_rel = old_rel_path
@@ -46,3 +48,64 @@ def apply_repo_state_rename(repo_state, *, notes_dir: Path, old_rel_path: str, n
             else:
                 replaced.append(p)
         repo_state.all_files = replaced
+
+
+def _rebuild_earliest_latest(repo_state) -> None:
+    info_list = getattr(repo_state, "file_info_list", None) or []
+    if not info_list:
+        repo_state.earliest_note = "N/A"
+        repo_state.latest_note = "N/A"
+        return
+
+    repo_state.earliest_note = info_list[0]
+    repo_state.latest_note = info_list[-1]
+
+
+def apply_repo_state_delete(repo_state, *, notes_dir: Path, old_rel_path: str) -> None:
+    old_rel = old_rel_path
+    if not getattr(repo_state, "paths", None):
+        return
+
+    doc_remove_indices = [i for i, p in enumerate(repo_state.paths) if p == old_rel]
+    if not doc_remove_indices:
+        return
+
+    remove_set = set(doc_remove_indices)
+    repo_state.paths = [p for i, p in enumerate(repo_state.paths) if i not in remove_set]
+    repo_state.docs = [d for i, d in enumerate(repo_state.docs) if i not in remove_set]
+    repo_state.file_times = [t for i, t in enumerate(repo_state.file_times) if i not in remove_set]
+    repo_state.file_info_list = [x for i, x in enumerate(repo_state.file_info_list) if i not in remove_set]
+    repo_state.doc_records = [r for i, r in enumerate(repo_state.doc_records) if i not in remove_set]
+
+    if getattr(repo_state, "embeddings", None) is not None:
+        try:
+            repo_state.embeddings = np.delete(repo_state.embeddings, doc_remove_indices, axis=0)
+        except Exception:
+            pass
+
+    chunk_remove_indices = [i for i, p in enumerate(getattr(repo_state, "chunk_paths", []) or []) if p == old_rel]
+    chunk_remove_set = set(chunk_remove_indices)
+    repo_state.chunk_paths = [p for i, p in enumerate(repo_state.chunk_paths) if i not in chunk_remove_set]
+    repo_state.chunk_texts = [t for i, t in enumerate(repo_state.chunk_texts) if i not in chunk_remove_set]
+    repo_state.chunk_meta = [m for i, m in enumerate(repo_state.chunk_meta) if i not in chunk_remove_set]
+    repo_state.chunk_file_times = [t for i, t in enumerate(repo_state.chunk_file_times) if i not in chunk_remove_set]
+
+    if getattr(repo_state, "chunk_embeddings", None) is not None and chunk_remove_indices:
+        try:
+            repo_state.chunk_embeddings = np.delete(repo_state.chunk_embeddings, chunk_remove_indices, axis=0)
+        except Exception:
+            pass
+
+    if getattr(repo_state, "all_files", None):
+        kept = []
+        for p in repo_state.all_files:
+            try:
+                rel = Path(p).resolve().relative_to(notes_dir.resolve()).as_posix()
+            except Exception:
+                kept.append(p)
+                continue
+            if rel != old_rel:
+                kept.append(p)
+        repo_state.all_files = kept
+
+    _rebuild_earliest_latest(repo_state)
