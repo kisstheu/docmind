@@ -31,6 +31,7 @@ from app.chat_state_helpers import (
     update_state_after_retrieval_answer,
 )
 from app.chat_text_utils import normalize_colloquial_question
+from app.file_change_history_flow import extract_history_limit, is_change_history_query
 from app.file_delete_flow import (
     build_delete_preview,
     is_delete_request,
@@ -440,6 +441,39 @@ def run_chat_loop(
                     route="file_action",
                     local_topic="delete_done",
                     is_content_answer=True,
+                )
+                continue
+
+            if is_change_history_query(question):
+                limit = extract_history_limit(question, default=20, max_limit=100)
+                events = change_store.list_recent_events(notes_dir=notes_dir, limit=limit)
+                if not events:
+                    history_answer = "当前还没有文件变更记录。"
+                else:
+                    action_map = {
+                        "rename": "重命名",
+                        "delete": "删除(软删除)",
+                    }
+                    lines = [f"最近 {len(events)} 条文件变更记录（按时间倒序）："]
+                    for i, evt in enumerate(events, start=1):
+                        created_at = str(evt.get("created_at", "")).replace("T", " ").replace("+00:00", "Z")
+                        event_type = action_map.get(evt.get("event_type", ""), evt.get("event_type", "unknown"))
+                        lines.append(
+                            f"{i}. [{evt['event_id']}] {event_type}: "
+                            f"{evt['before_path']} -> {evt['after_path']} "
+                            f"(SHA {evt['before_sha256'][:8]} -> {evt['after_sha256'][:8]} | {created_at})"
+                        )
+                    history_answer = "\n".join(lines)
+
+                print_answer(history_answer, start_qa)
+                append_memory(memory_buffer, question, history_answer)
+                conversation_state = update_state_after_local_answer(
+                    conversation_state,
+                    question=question,
+                    answer=history_answer,
+                    route="file_action",
+                    local_topic="change_history",
+                    is_content_answer=False,
                 )
                 continue
 

@@ -13,7 +13,14 @@ from retrieval.chunking import chunk_text
 from retrieval.query_utils import SUPPORTED_EXT
 from retrieval.repo_index_types import FileReadResult, IndexBuildContext, RepoState, ScanEntry, ScannedRepo
 
-_EXCLUDED_PARTS = {".venv", ".idea", ".git", ".SynologyWorkingDirectory", "__pycache__"}
+_EXCLUDED_PARTS = {
+    ".venv",
+    ".idea",
+    ".git",
+    ".SynologyWorkingDirectory",
+    "__pycache__",
+    ".docmind_trash",
+}
 _MAX_FILE_BYTES = 500 * 1024
 _MAX_SHADOW_TAGS = 8
 _BAD_SHADOW_PREFIXES = ["无法确定", "无法识别", "请提供", "以下是", "根据文本", "关键词如下", "核心关键词如下"]

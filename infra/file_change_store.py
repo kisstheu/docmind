@@ -335,3 +335,41 @@ class FileChangeStore:
             }
             for row in rows
         ]
+
+    def list_recent_events(self, *, notes_dir: Path, limit: int = 20) -> list[dict]:
+        notes_dir_key = str(notes_dir.resolve())
+        safe_limit = max(1, min(int(limit), 500))
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    event_id,
+                    event_type,
+                    before_path,
+                    after_path,
+                    before_sha256,
+                    after_sha256,
+                    reason,
+                    created_at
+                FROM file_events
+                WHERE notes_dir = ?
+                ORDER BY event_id DESC
+                LIMIT ?
+                """,
+                (notes_dir_key, safe_limit),
+            ).fetchall()
+
+        return [
+            {
+                "event_id": int(row[0]),
+                "event_type": row[1],
+                "before_path": row[2],
+                "after_path": row[3],
+                "before_sha256": row[4],
+                "after_sha256": row[5],
+                "reason": row[6] or "",
+                "created_at": row[7],
+            }
+            for row in rows
+        ]
