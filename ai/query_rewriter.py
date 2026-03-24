@@ -4,7 +4,55 @@ import re
 import requests
 
 
+def _quick_rule_rewrite(question: str) -> str | None:
+    q = (question or "").strip()
+    q_norm = q.replace(" ", "")
+
+    mismatch_patterns = ["不符", "不一致", "不匹配", "对不上", "冲突", "矛盾", "是否一致", "有没有一致"]
+    if any(k in q_norm for k in mismatch_patterns):
+        if "文件名" in q_norm or "标题" in q_norm:
+            return "文件名 内容 不一致"
+        if "正文" in q_norm:
+            return "文件名 正文 不一致"
+        if "名称" in q_norm:
+            return "名称 内容 不一致"
+        return "内容 文件名 不一致"
+
+    return None
+
+
+def _sanitize_search_query(search_query: str) -> str:
+    q = (search_query or "").strip()
+
+    q = re.sub(r'\.(txt|md|pdf|docx)$', '', q, flags=re.IGNORECASE).strip()
+    q = re.sub(r'[^\w\s\u4e00-\u9fa5]', ' ', q)
+    q = re.sub(r'\s+', ' ', q).strip()
+
+    return q
+
+
+def _is_too_generic(search_query: str) -> bool:
+    q = (search_query or "").strip()
+    if not q:
+        return True
+
+    tokens = [x for x in q.split() if x.strip()]
+    if len(tokens) < 2:
+        return True
+
+    generic_tokens = {"内容", "文件名", "标题", "正文", "文档", "资料", "信息", "情况", "问题"}
+    if all(t in generic_tokens for t in tokens):
+        return True
+
+    return False
+
+
 def rewrite_search_query(question: str, memory_buffer, ollama_api_url: str, ollama_model: str, logger):
+    quick = _quick_rule_rewrite(question)
+    if quick:
+        logger.debug(f"🔍 [本地规则重写]：{quick}")
+        return quick
+
     history_str = "\n".join(memory_buffer[-4:])
     if not memory_buffer:
         task_desc = f"当前没有历史对话。请直接提取用户问题‘{question}’中的核心词作为搜索短语。绝对禁止脑补任何不存在的人名（如李四、张三）或项目名（如项目A）！"
@@ -36,11 +84,21 @@ def rewrite_search_query(question: str, memory_buffer, ollama_api_url: str, olla
         response = requests.post(ollama_api_url, json=payload, timeout=10)
         response.raise_for_status()
         search_query = response.json().get("response", "").strip()
-        search_query = re.sub(r'\.(txt|md|pdf|docx)$', '', search_query, flags=re.IGNORECASE).strip()
-        search_query = re.sub(r'[^\w\s\u4e00-\u9fa5]', ' ', search_query)
-        search_query = re.sub(r'\s+', ' ', search_query).strip()
+        search_query = _sanitize_search_query(search_query)
+
+        if _is_too_generic(search_query):
+            fallback = _quick_rule_rewrite(question)
+            if fallback:
+                logger.debug(f"🔁 [泛化结果回退到规则模板]：{fallback}")
+                return fallback
+
         logger.debug(f"🔍 [本地引擎意图重写]：{search_query}")
         return search_query
     except Exception as e:
+        fallback = _quick_rule_rewrite(question)
+        if fallback:
+            logger.warning(f"⚠️ 本地意图提取失败，启用规则兜底：{e}")
+            return fallback
+
         logger.warning(f"⚠️ 本地意图提取失败，退回原问题：{e}")
         return question

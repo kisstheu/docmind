@@ -43,6 +43,12 @@ def _resolve_cache_file(notes_dir: Path, logger) -> Path:
     return cache_file
 
 
+def _resolve_change_log_file(cache_file: Path, logger) -> Path:
+    change_log_file = cache_file.parent / "file_change_log.db"
+    logger.info(f"🧾 文件变更日志库: {change_log_file}")
+    return change_log_file
+
+
 def main():
     apply_environment_defaults()
     logger = build_logger()
@@ -81,6 +87,7 @@ def main():
 
     notes_dir = Path("E:/test/kisstheu")
     cache_file = _resolve_cache_file(notes_dir, logger)
+    change_log_file = _resolve_change_log_file(cache_file, logger)
 
     model_id = "gemini-2.5-flash"
     ollama_api_url = "http://localhost:11434/api/generate"
@@ -102,7 +109,17 @@ def main():
     )
 
     logger.info(f"✅ 系统就绪！启动总耗时: {time.time() - start_init:.2f}s")
-    run_chat_loop(repo_state, model_emb, client, model_id, ollama_api_url, ollama_model, logger)
+    run_chat_loop(
+        repo_state,
+        model_emb,
+        client,
+        model_id,
+        ollama_api_url,
+        ollama_model,
+        logger,
+        notes_dir=notes_dir,
+        change_log_file=change_log_file,
+    )
 
 
 if __name__ == "__main__":

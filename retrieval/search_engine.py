@@ -19,6 +19,12 @@ def is_capability_like_query(question: str) -> bool:
     return any(p in q for p in patterns)
 
 
+def is_relation_mismatch_query(question: str) -> bool:
+    q = (question or "").replace(" ", "")
+    patterns = ["不符", "不一致", "不匹配", "对不上", "冲突", "矛盾", "是否一致", "有没有一致", "文件名", "标题", "正文"]
+    return any(p in q for p in patterns)
+
+
 def is_weak_query(question: str, search_terms: list[str]) -> bool:
     q = question.strip().lower()
 
@@ -179,6 +185,15 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
         if t not in search_terms:
             search_terms.append(t)
 
+    # 关系/不一致类问题：强制补充关系词，避免只剩“内容 文件名”
+    if is_relation_mismatch_query(question):
+        relation_terms = ["不一致", "不匹配", "不符", "对不上", "冲突", "矛盾"]
+        anchor_terms = ["文件名", "标题", "正文", "内容", "名称"]
+        for term in relation_terms + anchor_terms:
+            if term not in search_terms:
+                search_terms.append(term)
+        logger.debug(f"   🧭 [关系型问题补词] {search_terms}")
+
     logger.debug(f"提取到的核心搜索词: {search_terms}")
 
     now = datetime.datetime.now()
@@ -291,8 +306,14 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
 def build_context_text(relevant_indices: List[int], repo_state, logger) -> str:
     if not relevant_indices:
         return ""
-    expanded_indices = expand_neighbor_chunks(top_chunk_indices=relevant_indices, chunk_paths=repo_state.chunk_paths,
-        chunk_meta=repo_state.chunk_meta, neighbor=1, )
+
+    expanded_indices = expand_neighbor_chunks(
+        top_chunk_indices=relevant_indices,
+        chunk_paths=repo_state.chunk_paths,
+        chunk_meta=repo_state.chunk_meta,
+        neighbor=1,
+    )
+
     file_chunk_count = {}
     filtered_indices = []
     for idx in expanded_indices:
@@ -307,15 +328,19 @@ def build_context_text(relevant_indices: List[int], repo_state, logger) -> str:
     for idx in filtered_indices:
         meta = repo_state.chunk_meta[idx]
         context_blocks.append(
-            f"文件【{repo_state.chunk_paths[idx]}】（chunk #{meta['chunk_id']}，位置 {meta['start']}-{meta['end']}）：\n{repo_state.chunk_texts[idx]}")
+            f"文件【{repo_state.chunk_paths[idx]}】（chunk #{meta['chunk_id']}，位置 {meta['start']}-{meta['end']}）：\n{repo_state.chunk_texts[idx]}"
+        )
+
     logger.debug(
-        f"本次最终送入大模型的chunk文件列表: {list(dict.fromkeys([repo_state.chunk_paths[idx] for idx in filtered_indices]))}")
+        f"本次最终送入大模型的chunk文件列表: {list(dict.fromkeys([repo_state.chunk_paths[idx] for idx in filtered_indices]))}"
+    )
     return "【参考片段】:\n" + "\n---\n".join(context_blocks) + "\n\n"
 
 
 def build_inventory_candidates_text(question: str, repo_state, inventory_target_type: str | None) -> str:
     if inventory_target_type != "company":
         return ""
+
     candidate_pool = []
     for doc_text in repo_state.docs:
         candidate_pool.extend(extract_company_candidates(doc_text))
@@ -364,4 +389,5 @@ def build_inventory_candidates_text(question: str, repo_state, inventory_target_
         if generic_names:
             lines.append("【泛称/指代】")
             lines.extend([f"- {x}" for x in generic_names[:20]])
+
     return "\n".join(lines) + "\n\n" if lines else ""

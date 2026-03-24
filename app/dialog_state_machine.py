@@ -44,6 +44,12 @@ class ConversationState:
     last_result_set_items: list[str] | None = None
     last_result_set_entity_type: str | None = None
 
+    pending_action_type: str | None = None
+    pending_action_source_path: str | None = None
+    pending_action_target_path: str | None = None
+    pending_action_requested_text: str | None = None
+    pending_action_preview: str | None = None
+
 
 # =========================
 # 事件定义
@@ -486,6 +492,12 @@ def apply_event_to_state(state: ConversationState, event: DialogEvent) -> Conver
 
         last_result_set_items=state.last_result_set_items,
         last_result_set_entity_type=state.last_result_set_entity_type,
+
+        pending_action_type=state.pending_action_type,
+        pending_action_source_path=state.pending_action_source_path,
+        pending_action_target_path=state.pending_action_target_path,
+        pending_action_requested_text=state.pending_action_requested_text,
+        pending_action_preview=state.pending_action_preview,
     )
 
     if event.route_hint == "repo_meta":

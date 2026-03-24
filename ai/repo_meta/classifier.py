@@ -60,6 +60,7 @@ TIME_KEYWORDS = (
 LIST_FOLLOWUP_KEYWORDS = ("列一下", "列一下吧", "列出来", "展开一下", "展开列一下")
 CATEGORY_FOLLOWUP_KEYWORDS = ("方面", "分类", "类别", "哪类", "怎么分", "如何分")
 EMPTY_TOPIC_WORDS = {"文件", "文档", "资料", "内容"}
+LIST_INTENT_KEYWORDS = ("列出", "列一下", "列下", "列出来", "清单", "罗列", "展开")
 
 RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("count", COUNT_KEYWORDS),
@@ -107,12 +108,31 @@ def extract_topic_from_list_request(question: str) -> str:
     return ""
 
 
+def is_name_content_mismatch_request(question: str) -> bool:
+    q = normalize_meta_question(clean_text(question))
+    has_name_word = any(x in q for x in ("文件名", "标题", "题目", "名称", "名字"))
+    has_content_word = any(x in q for x in ("内容", "正文"))
+    has_mismatch_word = any(x in q for x in ("不符", "不一致", "不匹配", "对不上", "冲突", "矛盾"))
+    return has_name_word and has_content_word and has_mismatch_word
+
+
+def is_list_files_request(question: str) -> bool:
+    q = normalize_meta_question(clean_text(question))
+    has_doc_word = any(x in q for x in ("文件", "文档", "资料"))
+    has_list_intent = any(x in q for x in LIST_INTENT_KEYWORDS)
+    return has_doc_word and has_list_intent
+
+
 def classify_repo_meta_question(
     question: str,
     last_user_question: str | None = None,
     last_local_topic: str | None = None,
 ) -> str | None:
     q = normalize_meta_question(clean_text(question))
+
+    if is_name_content_mismatch_request(q):
+        print(f"[repo_meta分类] q={q} -> name_content_mismatch")
+        return "name_content_mismatch"
 
     # 对上一轮 list_files 的时间格式修饰
     if last_local_topic == "list_files" and any(x in q for x in LIST_FORMAT_MODIFIERS):
@@ -146,6 +166,10 @@ def classify_repo_meta_question(
     if has_time_word and len(q) <= 15 and any(x in q for x in ("份", "个", "两", "三", "几")):
         print(f"[repo_meta分类] q={q} -> time")
         return "time"
+
+    if is_list_files_request(q):
+        print(f"[repo_meta分类] q={q} -> list_files")
+        return "list_files"
 
     for topic, keywords in RULES:
         if contains_any(q, keywords):

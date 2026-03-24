@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import requests
 
 from ai.prompt_builder import build_final_prompt
@@ -133,6 +134,51 @@ def should_keep_followup_anchor(question: str) -> bool:
     # 短句且语义不完整，保留上一轮锚点
     return len(q) <= 12
 
+
+def _extract_explicit_file_anchors(text: str) -> list[str]:
+    q = (text or "").strip()
+    if not q:
+        return []
+
+    pattern = re.compile(
+        r"([A-Za-z0-9_\-\u4e00-\u9fa5\s]+?\.(?:txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx))",
+        flags=re.IGNORECASE,
+    )
+    anchors: list[str] = []
+    for match in pattern.findall(q):
+        raw = re.sub(r"\s+", "", match.strip())
+        raw = re.sub(r"^(给我|帮我|请|麻烦你|看下|看看|看一下|查看下|查看|打开|读下|读一下|展示下)+", "", raw)
+        raw = raw.strip("，。！？；：,!?;:")
+        if not raw:
+            continue
+
+        stem = re.sub(r"\.(txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx)$", "", raw, flags=re.IGNORECASE)
+        for token in (raw, stem):
+            t = token.strip()
+            if t and t not in anchors:
+                anchors.append(t)
+
+    return anchors
+
+
+def _force_append_anchor_terms(query: str, anchors: list[str], logger=None) -> str:
+    q = (query or "").strip()
+    if not anchors:
+        return q
+
+    merged_terms = [x for x in q.split() if x.strip()]
+    appended = []
+    for anchor in anchors:
+        if anchor not in merged_terms:
+            merged_terms.append(anchor)
+            appended.append(anchor)
+
+    if appended and logger:
+        logger.info(f"🧷 [文件锚词回补] {appended}")
+
+    return " ".join(merged_terms).strip()
+
+
 def build_search_query(
     *,
     question: str,
@@ -159,6 +205,7 @@ def build_search_query(
 
     normalized_question = normalize_question_for_retrieval(question)
     context_anchor = ""
+    explicit_file_anchors: list[str] = []
 
     event_name = getattr(event, "name", "")
     if event_name == "result_set_followup":
@@ -184,9 +231,11 @@ def build_search_query(
         else:
             base_query = normalized_question or question
 
+    explicit_file_anchors = _extract_explicit_file_anchors(base_query)
+
     # 结果集追问：直接使用受控拼接后的查询，不再经过普通 rewrite/过滤链路
     if event_name == "result_set_followup":
-        search_query = base_query.strip()
+        search_query = _force_append_anchor_terms(base_query.strip(), explicit_file_anchors, logger=logger)
         logger.info("🛡️ [结果集追问] 跳过 query rewrite 与新增词过滤，直接使用候选集合查询")
         logger.info(f"🛡️ [强词保底后]：{search_query}")
         return search_query, context_anchor
@@ -201,6 +250,7 @@ def build_search_query(
     # 结构化请求：不要把补全出来的主题词再过滤掉
     if event_name == "structured_request" and any(k in question for k in ["时间线", "按时间", "顺序"]):
         search_query = raw_search_query.strip() or base_query.strip()
+        search_query = _force_append_anchor_terms(search_query, explicit_file_anchors, logger=logger)
         logger.debug(f"🧩 [结构化请求原始检索词] {raw_search_query}")
         logger.info("🛡️ [结构化请求保锚] 跳过新增词过滤，保留主题补全词")
         logger.info(f"🛡️ [强词保底后]：{search_query}")
@@ -210,6 +260,7 @@ def build_search_query(
     if event_name in {"judgment_request", "content_followup", "action_request"} and should_keep_followup_anchor(
             question):
         search_query = raw_search_query.strip() or base_query.strip()
+        search_query = _force_append_anchor_terms(search_query, explicit_file_anchors, logger=logger)
         logger.info("🛡️ [弱追问保锚] 跳过新增词过滤，保留主题补全词")
         logger.info(f"🛡️ [强词保底后]：{search_query}")
         return search_query, context_anchor
@@ -237,6 +288,7 @@ def build_search_query(
     if not search_query.strip():
         search_query = allowed_question
 
+    search_query = _force_append_anchor_terms(search_query, explicit_file_anchors, logger=logger)
     logger.info(f"🛡️ [强词保底后]：{search_query}")
     return search_query, context_anchor
 

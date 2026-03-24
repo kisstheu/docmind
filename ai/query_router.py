@@ -27,13 +27,28 @@ def _is_smalltalk(q: str) -> bool:
 
 
 def _is_repo_meta(q: str) -> bool:
+    has_name_content_mismatch = _is_name_content_mismatch(q)
+    has_list_doc_query = _is_list_doc_query(q)
     has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
     has_meta_word = any(x in q for x in [
         "多少", "数量", "格式", "分类", "清单",
         "最新", "最早", "最晚", "最近更新", "最近修改",
         "修改时间", "创建时间", "占多大", "总大小", "空间",
     ])
-    return has_doc_word and has_meta_word
+    return has_name_content_mismatch or has_list_doc_query or (has_doc_word and has_meta_word)
+
+
+def _is_name_content_mismatch(q: str) -> bool:
+    has_name_word = any(x in q for x in ["文件名", "标题", "题目", "名称", "名字"])
+    has_content_word = any(x in q for x in ["内容", "正文"])
+    has_mismatch_word = any(x in q for x in ["不符", "不一致", "不匹配", "对不上", "冲突", "矛盾"])
+    return has_name_word and has_content_word and has_mismatch_word
+
+
+def _is_list_doc_query(q: str) -> bool:
+    has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
+    has_list_word = any(x in q for x in ["列出", "列一下", "列下", "列出来", "清单", "罗列", "展开"])
+    return has_doc_word and has_list_word
 
 
 def route_question(question: str, ollama_api_url: str, ollama_model: str, logger) -> dict:
