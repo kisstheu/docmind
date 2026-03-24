@@ -156,6 +156,20 @@ RESULT_SET_CONTINUATION_PATTERNS = [
     r"^另外还有",
 ]
 
+
+RESULT_SET_COMPARISON_TERMS = [
+    "不同", "区别", "差异", "异同",
+    "相同", "一样", "一致",
+    "对比", "比较",
+]
+
+
+RESULT_SET_GROUP_REF_TERMS = [
+    "这几个", "这几份", "这两个", "这三", "这两",
+    "这些", "它们", "上述", "前面", "上面", "其中",
+]
+
+
 def looks_like_result_set_followup(question: str) -> bool:
     q = (question or "").strip()
     if not q:
@@ -165,6 +179,20 @@ def looks_like_result_set_followup(question: str) -> bool:
         any(re.search(p, q) for p in RESULT_SET_FOLLOWUP_PATTERNS)
         or any(re.search(p, q) for p in RESULT_SET_CONTINUATION_PATTERNS)
     )
+
+
+def looks_like_result_set_comparison_followup(question: str) -> bool:
+    q = re.sub(r"\s+", "", (question or "").lower())
+    if not q:
+        return False
+
+    if not any(term in q for term in RESULT_SET_COMPARISON_TERMS):
+        return False
+
+    if any(term in q for term in RESULT_SET_GROUP_REF_TERMS):
+        return True
+
+    return bool(re.search(r"(?:[一二两三四五六七八九十\d]+)(?:个|份|项|条)", q))
 
 
 def last_turn_looks_like_enumeration(last_answer: str | None) -> bool:
@@ -222,6 +250,86 @@ def infer_result_set_anchor(
     return None
 
 
+FILE_FOLLOWUP_STOP_TERMS = {
+    "什么", "为何", "为什么", "怎么", "如何", "是否", "是不是",
+    "哪个", "哪些", "哪几个", "几个", "三", "三个", "两", "两个", "几",
+    "有啥", "有什么", "内容", "文件", "文档", "资料",
+    "不同", "区别", "差异", "异同", "相同", "一样", "一致", "比较", "对比",
+}
+
+
+def _normalize_for_name_match(text: str) -> str:
+    return re.sub(r"[^a-z0-9\u4e00-\u9fa5]+", "", (text or "").lower())
+
+
+def _extract_question_focus_terms_for_files(question: str) -> list[str]:
+    q = (question or "").lower()
+    q = re.sub(r"[^\w\u4e00-\u9fa5]+", " ", q)
+    raw_terms = re.findall(r"[a-z0-9_]{2,}|[\u4e00-\u9fa5]{2,}", q)
+
+    terms: list[str] = []
+    for term in raw_terms:
+        t = term.strip()
+        if not t or t in FILE_FOLLOWUP_STOP_TERMS:
+            continue
+        if re.fullmatch(r"\d+", t):
+            continue
+        if t not in terms:
+            terms.append(t)
+    return terms
+
+
+def _narrow_result_set_files_by_question(items: list[str], question: str) -> list[str]:
+    if not items:
+        return items
+
+    question_norm = _normalize_for_name_match(question)
+    focus_terms = _extract_question_focus_terms_for_files(question)
+    matched: list[str] = []
+    for item in items:
+        normalized_name = _normalize_for_name_match(item)
+        # 1) 问题词直接命中文件名
+        if focus_terms and any(term in normalized_name for term in focus_terms):
+            matched.append(item)
+            continue
+
+        # 2) 反向匹配：文件名里的有效片段是否出现在问题中
+        stem = re.sub(r"\.(txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx)$", "", item, flags=re.I)
+        raw_parts = re.findall(r"[a-z0-9_]{2,}|[\u4e00-\u9fa5]{2,}", stem.lower())
+        parts: list[str] = []
+        for p in raw_parts:
+            if p in FILE_FOLLOWUP_STOP_TERMS or re.fullmatch(r"\d+", p):
+                continue
+            if p not in parts:
+                parts.append(p)
+
+        matched_by_part = False
+        for part in parts:
+            if part in question_norm:
+                matched_by_part = True
+                break
+
+            if re.fullmatch(r"[\u4e00-\u9fa5]{4,}", part):
+                for width in (2, 3):
+                    for i in range(0, len(part) - width + 1):
+                        sub = part[i:i + width]
+                        if sub in FILE_FOLLOWUP_STOP_TERMS:
+                            continue
+                        if sub in question_norm:
+                            matched_by_part = True
+                            break
+                    if matched_by_part:
+                        break
+            if matched_by_part:
+                break
+
+        if matched_by_part:
+            matched.append(item)
+
+    # 至少保留 2 个候选，避免过度收窄
+    return matched if len(matched) >= 2 else items
+
+
 def build_result_set_followup_query(
     question: str,
     last_user_question: str | None,
@@ -233,7 +341,10 @@ def build_result_set_followup_query(
 
     if last_result_set_items:
         entity_type = (last_result_set_entity_type or "项").strip()
-        item_text = "；".join(last_result_set_items[:20])
+        candidate_items = list(last_result_set_items)
+        if entity_type == "文件":
+            candidate_items = _narrow_result_set_files_by_question(candidate_items, q)
+        item_text = "；".join(candidate_items[:20])
 
         if q.startswith(("还有", "另外", "除此之外", "还有没有", "还有别的")):
             return (
@@ -453,6 +564,8 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
 
     if state.last_result_set_items and any(term in question.lower() for term in ["内容", "一样", "相同", "一致"]) and "文件" in question.lower():
         rs_match = True  # 强制设置匹配
+    elif state.last_result_set_items and looks_like_result_set_comparison_followup(question):
+        rs_match = True
 
     if prev_route in {"normal_retrieval", "repo_meta"} and rs_match and is_result_set_answer:
         return DialogEvent(name="result_set_followup", route_hint="normal_retrieval")

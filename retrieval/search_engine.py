@@ -123,6 +123,21 @@ def is_sentence_like_term(term: str) -> bool:
     return False
 
 
+def is_result_set_boilerplate_term(term: str) -> bool:
+    t = (term or "").strip()
+    if not t:
+        return False
+    patterns = [
+        "已知文件如下",
+        "已知文档如下",
+        "候选文件如下",
+        "候选文档如下",
+        "请基于这些文件的内容回答",
+        "请基于这些文档的内容回答",
+    ]
+    return any(p in t for p in patterns)
+
+
 def should_score_filename_term(term: str) -> bool:
     t = (term or "").strip().lower()
     if not t:
@@ -179,6 +194,10 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
         # 先去掉明显整句型垃圾
         if is_sentence_like_term(t):
             logger.debug(f"   🚫 [过滤整句词] '{t}'")
+            continue
+
+        if is_result_set_boilerplate_term(t):
+            logger.debug(f"   🚫 [过滤模板词] '{t}'")
             continue
 
         # 去重保序
@@ -250,7 +269,8 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
         if ignored_file:
             logger.info(f"   🔄 [焦点释放] 检测到话题转移，临时屏蔽: {ignored_file}")
 
-    temp_query = (question + " " + search_query).lower()
+    is_result_set_followup_query = ("已知文件如下" in search_query) or ("候选文件如下" in search_query)
+    temp_query = question.lower() if is_result_set_followup_query else (question + " " + search_query).lower()
     sorted_indices = sorted(range(len(repo_state.paths)), key=lambda k: len(repo_state.paths[k]), reverse=True)
     for i in sorted_indices:
         full_name = repo_state.paths[i].lower()
@@ -277,12 +297,16 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
 
     is_macro_request = any(kw in question for kw in
                            ["时间线", "经过", "梳理", "复盘", "总结", "详细", "过程", "所有", "表现", "评价", "对吗",
-                               "境遇", "怎么看", "经历", "待过"])
+                                "境遇", "怎么看", "经历", "待过"])
+    is_compare_request = any(kw in question for kw in ["不同", "区别", "差异", "异同", "比较", "对比", "相同", "一样", "一致"])
     is_person_eval_query = (("评价" in question or "怎么看" in question or "这个人怎么样" in question) and any(
         len(term) >= 2 for term in search_terms))
 
     if is_person_eval_query:
         top_k, threshold = 6, 0.50
+    elif is_compare_request:
+        top_k, threshold = 24, 0.30
+        logger.info(f"   📚 [比较题增强] 上限扩至 {top_k} 份，及格线降至 {threshold}")
     elif is_macro_request:
         top_k, threshold = 50, 0.28
         logger.info(f"   📂 [深度核查模式] 上限扩至 {top_k} 份，及格线降至 {threshold}")
