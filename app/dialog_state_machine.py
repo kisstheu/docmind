@@ -427,6 +427,44 @@ def is_repo_meta_request(question: str) -> bool:
     return any(p in q for p in patterns)
 
 
+def _has_explicit_file_ref(text: str) -> bool:
+    q = (text or "").strip()
+    if not q:
+        return False
+    return bool(
+        re.search(
+            r"[A-Za-z0-9_\-\u4e00-\u9fa5\s]+?\.(?:txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx)",
+            q,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _has_file_context_signal(text: str) -> bool:
+    if _has_explicit_file_ref(text):
+        return True
+    q = normalize_meta_question(text)
+    return any(x in q for x in ["文件", "文档", "资料", "简历", "合同", "报告", "清单"])
+
+
+def looks_like_repo_size_consistency_followup(question: str, prev_question: str | None = None) -> bool:
+    q = normalize_meta_question(question)
+    has_size_word = any(x in q for x in ["大小", "体积", "容量", "占用", "字节", "kb", "mb", "gb"])
+    has_consistency_word = any(x in q for x in ["一致", "一样", "相同", "同吗"])
+
+    if not (has_size_word and has_consistency_word):
+        return False
+
+    if _has_file_context_signal(question):
+        return True
+
+    # 短追问：依赖上一轮文件上下文
+    if len(q) <= 12 and _has_file_context_signal(prev_question):
+        return True
+
+    return False
+
+
 def looks_like_repo_time_question(question: str, state: ConversationState | None = None) -> bool:
     q = normalize_meta_question(question)
 
@@ -489,6 +527,9 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
         return DialogEvent(name="repo_meta_request", route_hint="repo_meta")
 
     if looks_like_repo_time_question(question, state):
+        return DialogEvent(name="repo_meta_request", route_hint="repo_meta")
+
+    if looks_like_repo_size_consistency_followup(question, prev_q):
         return DialogEvent(name="repo_meta_request", route_hint="repo_meta")
 
     if is_system_capability_request(question):

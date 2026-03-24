@@ -57,6 +57,12 @@ TIME_KEYWORDS = (
     "文档最新", "文档最早", "文档最晚", "文档最旧",
 )
 
+SIZE_CONSISTENCY_KEYWORDS = (
+    "大小一致", "大小一样", "大小相同",
+    "体积一致", "体积一样", "体积相同",
+    "容量一致", "容量一样", "容量相同",
+)
+
 LIST_FOLLOWUP_KEYWORDS = ("列一下", "列一下吧", "列出来", "展开一下", "展开列一下")
 CATEGORY_FOLLOWUP_KEYWORDS = ("方面", "分类", "类别", "哪类", "怎么分", "如何分")
 EMPTY_TOPIC_WORDS = {"文件", "文档", "资料", "内容"}
@@ -123,6 +129,40 @@ def is_list_files_request(question: str) -> bool:
     return has_doc_word and has_list_intent
 
 
+def _has_explicit_file_ref(text: str) -> bool:
+    q = (text or "").strip()
+    if not q:
+        return False
+    return bool(
+        re.search(
+            r"[A-Za-z0-9_\-\u4e00-\u9fa5\s]+?\.(?:txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx)",
+            q,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def is_size_consistency_request(question: str, last_user_question: str | None = None) -> bool:
+    q = normalize_meta_question(clean_text(question))
+    has_size_word = any(x in q for x in ("大小", "体积", "容量", "占用", "字节", "kb", "mb", "gb"))
+    has_consistency_word = any(x in q for x in ("一致", "一样", "相同", "同吗"))
+
+    if not (has_size_word and has_consistency_word):
+        return False
+
+    if contains_any(q, ("文件", "文档", "资料")) or _has_explicit_file_ref(question):
+        return True
+
+    # 短追问：依赖上一轮文件上下文
+    if len(q) <= 12 and (
+        contains_any(last_user_question, ("文件", "文档", "资料", "简历"))
+        or _has_explicit_file_ref(last_user_question)
+    ):
+        return True
+
+    return any(x in q for x in SIZE_CONSISTENCY_KEYWORDS)
+
+
 def classify_repo_meta_question(
     question: str,
     last_user_question: str | None = None,
@@ -144,6 +184,10 @@ def classify_repo_meta_question(
         topic = "list_files_by_topic"
         print(f"[repo_meta分类] q={q} -> {topic}")
         return topic
+
+    if is_size_consistency_request(question, last_user_question=last_user_question):
+        print(f"[repo_meta分类] q={q} -> size_consistency")
+        return "size_consistency"
 
     has_doc_word = any(x in q for x in ("文件", "文档", "资料"))
     has_format_word = ("格式" in q) or any(x in q for x in (
