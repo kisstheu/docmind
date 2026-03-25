@@ -8,11 +8,18 @@ from pathlib import Path
 
 
 def collect_file_snapshot(abs_path: Path, notes_dir: Path) -> dict:
-    stat = abs_path.stat()
-    rel_path = abs_path.relative_to(notes_dir).as_posix()
+    abs_path_resolved = abs_path.resolve()
+    notes_dir_resolved = notes_dir.resolve()
+    stat = abs_path_resolved.stat()
+    try:
+        rel_path = abs_path_resolved.relative_to(notes_dir_resolved).as_posix()
+    except ValueError as exc:
+        raise ValueError(
+            f"{abs_path_resolved} is outside notes_dir {notes_dir_resolved}"
+        ) from exc
 
     sha256 = hashlib.sha256()
-    with abs_path.open("rb") as f:
+    with abs_path_resolved.open("rb") as f:
         while True:
             chunk = f.read(1024 * 1024)
             if not chunk:

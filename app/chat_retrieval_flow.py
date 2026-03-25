@@ -15,6 +15,7 @@ from app.chat_text_utils import (
     build_timeline_evidence_text,
     extract_strong_terms_from_question,
     extract_timeline_evidence_from_chunks,
+    is_related_record_listing_request,
     is_result_expansion_followup,
     keep_only_allowed_terms,
     merge_rewritten_query_with_strong_terms,
@@ -179,6 +180,34 @@ def _force_append_anchor_terms(query: str, anchors: list[str], logger=None) -> s
     return " ".join(merged_terms).strip()
 
 
+def _is_global_timeline_request(question: str) -> bool:
+    q = (question or "").strip()
+    if not q:
+        return False
+
+    has_timeline_intent = any(x in q for x in ["时间线", "按时间", "按日期", "按时间顺序"])
+    has_global_scope = any(x in q for x in ["所有", "全部", "最近所有", "整体", "全局", "总体"])
+    return has_timeline_intent and has_global_scope
+
+
+def _build_global_timeline_query() -> str:
+    # 固定主题词，避免 structured_request 依赖模型改写导致召回抖动。
+    terms = [
+        "最近",
+        "时间线",
+        "记录",
+        "会议纪要",
+        "学习笔记",
+        "周报",
+        "复盘",
+        "项目计划",
+        "任务看板",
+        "访谈",
+        "生活",
+    ]
+    return " ".join(terms)
+
+
 def build_search_query(
     *,
     question: str,
@@ -247,6 +276,21 @@ def build_search_query(
         ollama_model,
         logger,
     )
+
+    if event_name == "structured_request" and _is_global_timeline_request(question):
+        search_query = _build_global_timeline_query()
+        search_query = _force_append_anchor_terms(search_query, explicit_file_anchors, logger=logger)
+        logger.info("🛡️ [全局时间线稳态检索] 使用固定主题词，避免改写抖动")
+        logger.info(f"🛡️ [强词保底后]：{search_query}")
+        return search_query, context_anchor
+
+    if is_related_record_listing_request(question):
+        search_query = raw_search_query.strip() or base_query.strip()
+        search_query = _force_append_anchor_terms(search_query, explicit_file_anchors, logger=logger)
+        logger.info("🛡️ [相关记录保词] 跳过新增词过滤，保留规则扩展词")
+        logger.info(f"🛡️ [强词保底后]：{search_query}")
+        return search_query, context_anchor
+
     # 结构化请求：不要把补全出来的主题词再过滤掉
     if event_name == "structured_request" and any(k in question for k in ["时间线", "按时间", "顺序"]):
         search_query = raw_search_query.strip() or base_query.strip()

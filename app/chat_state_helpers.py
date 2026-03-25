@@ -38,7 +38,7 @@ def infer_answer_type(user_question: str, answer_text: str) -> str | None:
         if a.count("有限公司") >= 2:
             return "enumeration_company"
 
-    if "文件" in q or "文档" in q:
+    if "文件" in q or "文档" in q or "记录" in q:
         if len(numbered_lines) >= 2:
             return "enumeration_file"
         if "以下文件" in a or "以下文档" in a:
@@ -208,8 +208,24 @@ def update_state_after_retrieval_answer(state, question: str, answer_text: str, 
         logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
         logger.debug(f"🧪 [候选集合提取] raw_items={raw_items}")
         logger.debug(f"🧪 [候选集合提取] company_items={company_items}")
+    elif answer_type == "enumeration_file":
+        file_items = extract_file_items(answer_text)
+        state.last_result_set_items = file_items
+        state.last_result_set_entity_type = "文件"
+
+        logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
+        logger.debug(f"🧪 [候选集合提取] file_items={file_items}")
+    elif answer_type == "enumeration_person":
+        person_items = extract_numbered_items(answer_text)
+        state.last_result_set_items = person_items
+        state.last_result_set_entity_type = "人物"
+
+        logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
+        logger.debug(f"🧪 [候选集合提取] person_items={person_items}")
 
     else:
+        state.last_result_set_items = None
+        state.last_result_set_entity_type = None
         logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
 
     logger.debug(

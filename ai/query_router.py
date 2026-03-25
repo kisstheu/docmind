@@ -111,6 +111,10 @@ def route_question(question: str, ollama_api_url: str, ollama_model: str, logger
         }:
             route = "normal_retrieval"
 
+        # 模型偶发会把正常问题误判为 smalltalk，做一次保守收敛。
+        if route == "smalltalk" and not _is_smalltalk(q):
+            route = "normal_retrieval"
+
         return {"route": route}
 
     except Exception as e:

@@ -396,6 +396,7 @@ def is_system_capability_request(question: str) -> bool:
 
 def is_repo_meta_request(question: str) -> bool:
     q = normalize_meta_question(question)
+    has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
 
     patterns = [
         "多少文件", "多少个文件", "文件数量",
@@ -406,7 +407,6 @@ def is_repo_meta_request(question: str) -> bool:
 
         "有哪些文件", "都有哪些文件", "文件清单",
         "有哪些文档", "都有哪些文档", "文档清单",
-        "列一下", "列出来",
 
         "哪些类文档", "哪些类文件", "文档有哪些类", "文件有哪些类",
         "怎么分类", "如何分类", "分成哪些",
@@ -424,7 +424,14 @@ def is_repo_meta_request(question: str) -> bool:
         "文档有多少类", "文件有多少类",
         "文档分几类", "文件分几类",
     ]
-    return any(p in q for p in patterns)
+    if any(p in q for p in patterns):
+        return True
+
+    # 兜底：允许“列一下/列出来”触发 repo_meta，但必须显式提到文件/文档。
+    if has_doc_word and any(x in q for x in ["列出", "列下", "列一下", "列出来", "罗列", "展开一下", "展开列一下"]):
+        return True
+
+    return False
 
 
 def _has_explicit_file_ref(text: str) -> bool:

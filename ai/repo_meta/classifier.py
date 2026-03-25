@@ -63,6 +63,17 @@ SIZE_CONSISTENCY_KEYWORDS = (
     "容量一致", "容量一样", "容量相同",
 )
 
+TIMELINE_REQUEST_KEYWORDS = (
+    "时间线",
+    "按时间顺序",
+    "时间顺序",
+    "梳理一下",
+    "整理一下",
+    "过程",
+    "经过",
+    "脉络",
+)
+
 LIST_FOLLOWUP_KEYWORDS = ("列一下", "列一下吧", "列出来", "展开一下", "展开列一下")
 CATEGORY_FOLLOWUP_KEYWORDS = ("方面", "分类", "类别", "哪类", "怎么分", "如何分")
 EMPTY_TOPIC_WORDS = {"文件", "文档", "资料", "内容"}
@@ -169,6 +180,11 @@ def classify_repo_meta_question(
     last_local_topic: str | None = None,
 ) -> str | None:
     q = normalize_meta_question(clean_text(question))
+
+    # “时间线/过程梳理”属于内容组织类请求，不应落到文件元信息列表。
+    if contains_any(q, TIMELINE_REQUEST_KEYWORDS):
+        print(f"[repo_meta分类] q={q} -> None(timeline_structured)")
+        return None
 
     if is_name_content_mismatch_request(q):
         print(f"[repo_meta分类] q={q} -> name_content_mismatch")

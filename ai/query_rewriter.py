@@ -18,6 +18,29 @@ def _quick_rule_rewrite(question: str) -> str | None:
             return "名称 内容 不一致"
         return "内容 文件名 不一致"
 
+    # 稳定规则：最近有哪些和X有关的记录？
+    related_record_patterns = [
+        r"(?:最近)?有哪些?和(.+?)(?:有关|相关)(?:的)?(?:记录|文档|文件)",
+        r"(.+?)(?:有关|相关)(?:的)?(?:记录|文档|文件)有哪些?",
+    ]
+    noise_words = {"最近", "最近的", "这些", "那些", "这个", "那个", "内容", "东西", "情况"}
+    for pattern in related_record_patterns:
+        m = re.search(pattern, q_norm)
+        if not m:
+            continue
+
+        topic = (m.group(1) or "").strip("，。！？；：,.!?;:")
+        topic = re.sub(r"^(和|与|跟|关于)", "", topic)
+        if not topic:
+            continue
+        if topic in noise_words:
+            continue
+        if len(topic) > 18:
+            topic = topic[:18]
+
+        # 固定补上“记录/纪要/笔记”，减少改写随机性导致的漏召回。
+        return f"{topic} 记录 纪要 笔记"
+
     return None
 
 

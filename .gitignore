@@ -25,3 +25,7 @@ test_notes/*.ocr.txt
 
 # --- 敏感数据 ---
  test_notes/
+/.idea/inspectionProfiles/Project_Default.xml
+/.idea/misc.xml
+/cache/demo_notes_public/file_change_log.db
+/cache/kisstheu/file_change_log.db

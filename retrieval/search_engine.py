@@ -172,6 +172,13 @@ def should_score_body_term(term: str) -> bool:
     return True
 
 
+def is_related_record_listing_query(question: str) -> bool:
+    q = (question or "").replace(" ", "").lower()
+    has_related = any(x in q for x in ["有关的记录", "相关记录", "有关记录", "相关的记录", "有关文档", "相关文档"])
+    has_listing = any(x in q for x in ["哪些", "哪几", "有哪", "最近"])
+    return has_related and has_listing
+
+
 def perform_retrieval(question: str, search_query: str, repo_state, model_emb, logger, current_focus_file: str | None,
         context_anchor: str = "", ):
     q_emb = model_emb.encode(["为这个句子生成表示以用于检索相关文章：" + search_query])[0]
@@ -310,6 +317,9 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
     elif is_macro_request:
         top_k, threshold = 50, 0.28
         logger.info(f"   📂 [深度核查模式] 上限扩至 {top_k} 份，及格线降至 {threshold}")
+    elif is_related_record_listing_query(question):
+        top_k, threshold = 20, 0.33
+        logger.info(f"   📚 [相关记录增强] 上限扩至 {top_k} 份，及格线降至 {threshold}")
     else:
         top_k, threshold = 12, 0.40
 

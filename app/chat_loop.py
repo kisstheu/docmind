@@ -31,6 +31,7 @@ from app.chat_state_helpers import (
     update_state_after_retrieval_answer,
 )
 from app.chat_text_utils import normalize_colloquial_question
+from app.chat_text_utils import maybe_build_related_records_answer
 from app.file_change_history_flow import extract_history_limit, is_change_history_query
 from app.file_delete_flow import (
     build_delete_preview,
@@ -767,6 +768,24 @@ def run_chat_loop(
             )
             current_focus_file = materials["current_focus_file"]
             last_relevant_indices = materials["relevant_indices"]
+
+            related_records_answer = maybe_build_related_records_answer(
+                question=question,
+                relevant_indices=last_relevant_indices,
+                repo_state=repo_state,
+            )
+            if related_records_answer:
+                logger.info("🧩 [相关记录稳态回答] 使用本地列举，避免生成阶段漏列")
+                print_answer(related_records_answer, start_qa)
+                append_memory(memory_buffer, question, related_records_answer)
+                conversation_state = update_state_after_retrieval_answer(
+                    conversation_state,
+                    question,
+                    related_records_answer,
+                    logger,
+                )
+                continue
+
             if (
                 route == "normal_retrieval"
                 and not materials["context_text"].strip()

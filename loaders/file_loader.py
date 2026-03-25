@@ -259,7 +259,7 @@ def read_file(file: Path, logger=None) -> tuple[Optional[str], bool]:
     try:
         suffix = file.suffix.lower()
 
-        if suffix in {".txt", ".md"}:
+        if suffix in {".txt", ".md", ".csv"}:
             content = robust_read_text(file, logger=logger)
 
         elif suffix == ".docx":

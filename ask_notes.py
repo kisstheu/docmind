@@ -85,7 +85,7 @@ def main():
 
     from google import genai
 
-    notes_dir = Path("E:/test/kisstheu")
+    notes_dir = Path("examples/demo_notes_public")
     cache_file = _resolve_cache_file(notes_dir, logger)
     change_log_file = _resolve_change_log_file(cache_file, logger)
 
