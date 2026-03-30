@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import hashlib
 import os
 import re
 import time
@@ -16,7 +18,51 @@ def _slugify_path_name(path: Path) -> str:
     将目录名转成适合做缓存目录/文件名的安全字符串。
     """
     name = path.name.strip() or "default"
-    return re.sub(r"[^a-zA-Z0-9._-]+", "_", name)
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", name)
+    path_hash = hashlib.sha1(str(path.resolve()).lower().encode("utf-8")).hexdigest()[:8]
+    return f"{safe_name}_{path_hash}"
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="DocMind local notes chat.")
+    parser.add_argument(
+        "-n",
+        "--notes-dir",
+        default=None,
+        help="Path to notes directory. Overrides DOCMIND_NOTES_DIR.",
+    )
+    return parser.parse_args()
+
+
+def _resolve_notes_dir(args: argparse.Namespace, logger) -> Path:
+    cli_value = (args.notes_dir or "").strip()
+    env_value = (os.getenv("DOCMIND_NOTES_DIR") or "").strip()
+
+    if cli_value:
+        source = "--notes-dir"
+        raw_path = cli_value
+    elif env_value:
+        source = "DOCMIND_NOTES_DIR"
+        raw_path = env_value
+    else:
+        source = "default"
+        raw_path = "examples/demo_notes_public"
+
+    notes_dir = Path(raw_path).expanduser()
+    if not notes_dir.is_absolute():
+        notes_dir = (Path.cwd() / notes_dir).resolve()
+    else:
+        notes_dir = notes_dir.resolve()
+
+    if not notes_dir.exists():
+        logger.error(f"❌ 笔记目录不存在（来源: {source}）: {notes_dir}")
+        raise SystemExit(2)
+    if not notes_dir.is_dir():
+        logger.error(f"❌ 笔记目录不是目录（来源: {source}）: {notes_dir}")
+        raise SystemExit(2)
+
+    logger.info(f"📁 笔记目录来源: {source}")
+    return notes_dir
 
 
 def _resolve_cache_file(notes_dir: Path, logger) -> Path:
@@ -50,6 +96,7 @@ def _resolve_change_log_file(cache_file: Path, logger) -> Path:
 
 
 def main():
+    args = _parse_args()
     apply_environment_defaults()
     logger = build_logger()
     start_init = time.time()
@@ -85,7 +132,7 @@ def main():
 
     from google import genai
 
-    notes_dir = Path("examples/demo_notes_public")
+    notes_dir = _resolve_notes_dir(args, logger)
     cache_file = _resolve_cache_file(notes_dir, logger)
     change_log_file = _resolve_change_log_file(cache_file, logger)
 
