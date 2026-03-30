@@ -320,6 +320,13 @@ def is_compare_intent_query(question: str) -> bool:
     company_compare_patterns = [
         "是不是一家",
         "是否一家",
+        "是一个吗",
+        "是不是一个",
+        "是否一个",
+        "是不是同一个",
+        "是否同一个",
+        "是同一个吗",
+        "同一个吗",
         "同一家公司",
         "是不是同一家公司",
         "是否同一家公司",
@@ -328,6 +335,33 @@ def is_compare_intent_query(question: str) -> bool:
         "是否同一个公司",
     ]
     return any(p in q for p in company_compare_patterns)
+
+
+def is_file_location_lookup_query(question: str, search_query: str) -> bool:
+    q = re.sub(r"\s+", "", (question or "").lower())
+    sq = re.sub(r"\s+", "", (search_query or "").lower())
+    merged = q + sq
+    if not merged:
+        return False
+
+    direct_patterns = [
+        "在哪个文件", "在那个文件", "是哪个文件", "是那个文件",
+        "哪个文件", "哪些文件", "哪份文件", "文件里", "文件中",
+        "在哪个文档", "在那个文档", "是哪个文档", "是那个文档",
+        "哪个文档", "哪些文档",
+        "在哪个记录", "是哪个记录", "哪个记录", "哪些记录",
+    ]
+    if any(p in merged for p in direct_patterns):
+        return True
+
+    confirmation_patterns = [
+        "只有这个吗", "就这个吗", "只有这一个吗", "就这一个吗",
+        "只有这些吗", "就这些吗", "只有这几个吗", "就这几个吗",
+    ]
+    if any(p in q for p in confirmation_patterns) and any(x in sq for x in ["文件", "文档", "记录"]):
+        return True
+
+    return False
 
 
 def perform_retrieval(question: str, search_query: str, repo_state, model_emb, logger, current_focus_file: str | None,
@@ -423,6 +457,7 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
     max_match_log_lines = max(0, min(max_match_log_lines, 500))
     match_log_count = 0
     suppressed_match_logs = 0
+    body_term_hits: dict[str, set[int]] = {}
 
     def log_match_detail(msg: str):
         nonlocal match_log_count, suppressed_match_logs
@@ -478,6 +513,8 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
                 else:
                     scores[i] += 0.12
                     log_match_detail(f"   [chunk正文命中] '{term}' -> {chunk_paths[i]}")
+                if term_lower not in EXTENSION_TERMS:
+                    body_term_hits.setdefault(term_lower, set()).add(i)
 
         if is_company_lookup:
             bonus = company_hint_bonus(
@@ -569,6 +606,67 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
     if not relevant_indices and is_entity_lookup:
         relevant_indices = rescue_entity_lookup_indices(scores, top_k=top_k)
         logger.info(f"   🛟 [实体检索保底] 触发低阈值候选兜底，补入 {len(relevant_indices)} 个片段")
+
+    is_file_lookup = is_file_location_lookup_query(question, search_query)
+    if (is_file_lookup or is_compare_request) and body_term_hits:
+        eligible_terms = []
+        for term, hit_idx_set in body_term_hits.items():
+            hit_count = len(hit_idx_set)
+            if hit_count <= 0:
+                continue
+            # 过滤覆盖面过大的词，避免把“宽词”命中整体灌入上下文。
+            if hit_count > 8:
+                continue
+            eligible_terms.append((term, hit_count))
+
+        if eligible_terms:
+            min_hit_count = min(hit_count for _, hit_count in eligible_terms)
+            anchor_terms = [term for term, hit_count in eligible_terms if hit_count == min_hit_count]
+            anchor_indices = []
+            seen_anchor_idx = set()
+            for term in anchor_terms:
+                for idx in body_term_hits.get(term, set()):
+                    if idx in seen_anchor_idx:
+                        continue
+                    seen_anchor_idx.add(idx)
+                    anchor_indices.append(idx)
+
+            anchor_indices.sort(key=lambda idx: float(scores[idx]), reverse=True)
+            appended = 0
+            for idx in anchor_indices:
+                if idx in relevant_indices:
+                    continue
+                relevant_indices.append(idx)
+                appended += 1
+
+            if appended > 0 and is_file_lookup:
+                logger.info(
+                    f"   📍 [文件定位补召回] 基于命中词 {anchor_terms} 追加 {appended} 个片段"
+                )
+
+        if is_compare_request and len(relevant_indices) < 2:
+            # 比较题至少补入一个“非当前首条”的正文命中片段，避免证据单源化。
+            compare_candidates = []
+            seen_compare_idx = set()
+            for term, _ in eligible_terms:
+                for idx in body_term_hits.get(term, set()):
+                    if idx in seen_compare_idx or idx in relevant_indices:
+                        continue
+                    seen_compare_idx.add(idx)
+                    compare_candidates.append(idx)
+
+            compare_candidates.sort(key=lambda idx: float(scores[idx]), reverse=True)
+            appended_compare = 0
+            for idx in compare_candidates:
+                relevant_indices.append(idx)
+                appended_compare += 1
+                if len(relevant_indices) >= 2 or appended_compare >= 2:
+                    break
+
+            if appended_compare > 0:
+                logger.info(
+                    f"   ⚖️ [比较题补证据] 追加 {appended_compare} 个正文命中片段用于对照"
+                )
 
     relevant_indices = relevant_indices[:top_k]
     logger.info(f"   🔍 [溯源完毕] 最终喂给大模型的片段数量: {len(relevant_indices)}")

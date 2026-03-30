@@ -67,6 +67,8 @@ def infer_answer_type(user_question: str, answer_text: str) -> str | None:
             return "enumeration_file"
         if "以下文件" in a or "以下文档" in a:
             return "enumeration_file"
+        if re.search(r"(?:文件|文档|记录)[【\[][^】\]\n]+[】\]]", a):
+            return "enumeration_file"
 
     if "谁" in q or "哪些人" in q or "人物" in q:
         if len(numbered_lines) >= 2:
@@ -102,13 +104,23 @@ def extract_numbered_items(answer_text: str) -> list[str]:
 def extract_file_items(answer_text: str) -> list[str]:
     items: list[str] = []
 
-    for item in extract_numbered_items(answer_text):
-        t = item.strip()
+    def _add_file_item(raw_item: str) -> None:
+        t = (raw_item or "").strip()
+        if not t:
+            return
 
         t = re.sub(r"（\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}）$", "", t).strip()
-
-        if t:
+        t = re.sub(r"[。；;，,]+$", "", t).strip()
+        if not t:
+            return
+        if t not in items:
             items.append(t)
+
+    for item in extract_numbered_items(answer_text):
+        _add_file_item(item)
+
+    for m in re.findall(r"(?:文件|文档|记录)[【\[]([^】\]\n]+)[】\]]", answer_text or ""):
+        _add_file_item(m)
 
     return items
 
