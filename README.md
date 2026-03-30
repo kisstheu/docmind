@@ -86,6 +86,16 @@ DocMind 尝试在这些场景下提供一个更自然的使用方式。
 
 ---
 
+## ▶️ 运行方式
+
+```bash
+pip install -r requirements.txt
+python ask_notes.py
+```
+👉 示例数据见：examples/demo_notes/
+
+---
+
 ## 🎯 示例能力
 
 一个典型的使用过程如下：
