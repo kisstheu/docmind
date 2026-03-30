@@ -22,8 +22,41 @@ def _is_capability(q: str) -> bool:
 
 
 def _is_smalltalk(q: str) -> bool:
-    patterns = ["你好", "谢谢", "哈哈", "好的", "行", "在吗"]
-    return any(p in q for p in patterns) and len(q) <= 8
+    if not q:
+        return False
+
+    smalltalk_markers = (
+        "你好", "嗨", "hello", "hi", "在吗", "在不在",
+        "谢谢", "感谢", "多谢", "辛苦了",
+        "哈哈", "呵呵", "hhh", "hh", "好的", "好的呀", "行", "ok",
+        "厉害", "真强", "挺强", "牛", "不错", "可以啊", "这么强", "赞", "棒",
+    )
+    strong_smalltalk_markers = (
+        "谢谢", "感谢", "多谢", "辛苦了",
+        "你好", "在吗", "厉害", "真强", "挺强", "这么强",
+    )
+    retrieval_block_markers = (
+        "找", "查", "搜", "检索",
+        "文件", "文档", "资料", "记录",
+        "公司", "人物", "人名", "项目",
+        "时间", "日期", "最近", "最早", "最晚",
+        "多少", "哪些", "哪几个", "哪几家",
+        "列出", "清单", "提到", "提及", "在哪", "位置",
+        "帮我", "麻烦", "请你",
+    )
+    emoji_markers = "😀😁😂🤣😃😄😅😊🙂😉😍😘😎👍👏🙏❤❤️"
+
+    has_smalltalk_marker = any(p in q for p in smalltalk_markers)
+    has_emoji_marker = any(ch in q for ch in emoji_markers)
+    if not has_smalltalk_marker and not has_emoji_marker:
+        return False
+
+    if any(p in q for p in retrieval_block_markers):
+        return False
+
+    if len(q) <= 24:
+        return True
+    return any(p in q for p in strong_smalltalk_markers)
 
 
 def _is_repo_meta(q: str) -> bool:

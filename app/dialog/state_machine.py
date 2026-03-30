@@ -23,6 +23,7 @@ from app.dialog.result_set import (
 )
 from app.dialog_utils import (
     is_action_request,
+    is_smalltalk_message,
     is_followup_question,
     is_judgment_request,
     is_query_correction,
@@ -98,6 +99,9 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
 
     if is_repo_meta_request(question):
         return DialogEvent(name="repo_meta_request", route_hint="repo_meta")
+
+    if is_smalltalk_message(question):
+        return DialogEvent(name="smalltalk", route_hint="smalltalk")
 
     # === 1. 纠偏
     if is_query_correction(question) and prev_q:

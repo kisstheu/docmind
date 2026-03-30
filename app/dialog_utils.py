@@ -22,6 +22,32 @@ ACK_PATTERNS = [
     "不少", "挺多", "很多", "可以", "不错", "厉害", "牛", "行", "好", "好的",
 ]
 
+SMALLTALK_PATTERNS = [
+    "你好", "嗨", "hello", "hi", "在吗", "在不在",
+    "谢谢", "感谢", "多谢", "辛苦了",
+    "哈哈", "呵呵", "hhh", "hh",
+    "好的", "行", "ok",
+    "厉害", "真强", "挺强", "牛", "不错", "可以啊", "这么强", "赞", "棒",
+]
+
+SMALLTALK_STRONG_PATTERNS = [
+    "谢谢", "感谢", "多谢", "辛苦了",
+    "你好", "在吗",
+    "厉害", "真强", "挺强", "这么强",
+]
+
+SMALLTALK_BLOCK_PATTERNS = [
+    "找", "查", "搜", "检索",
+    "文件", "文档", "资料", "记录",
+    "公司", "人物", "人名", "项目",
+    "时间", "日期", "最近", "最早", "最晚",
+    "多少", "哪些", "哪几个", "哪几家",
+    "列出", "清单", "提到", "提及", "在哪", "位置",
+    "帮我", "麻烦", "请你",
+]
+
+EMOJI_MARKERS = "😀😁😂🤣😃😄😅😊🙂😉😍😘😎👍👏🙏❤❤️"
+
 
 def normalize_text(text: str) -> str:
     text = text.strip().lower()
@@ -98,6 +124,25 @@ def is_acknowledgement(question: str) -> bool:
     if len(q) > 10:
         return False
     return any(p in q for p in ACK_PATTERNS)
+
+
+def is_smalltalk_message(question: str) -> bool:
+    q = normalize_text(question)
+    if not q:
+        return False
+
+    has_smalltalk_pattern = any(p in q for p in SMALLTALK_PATTERNS)
+    has_emoji_marker = any(ch in q for ch in EMOJI_MARKERS)
+    if not has_smalltalk_pattern and not has_emoji_marker:
+        return False
+
+    if any(p in q for p in SMALLTALK_BLOCK_PATTERNS):
+        return False
+
+    if len(q) <= 24:
+        return True
+
+    return any(p in q for p in SMALLTALK_STRONG_PATTERNS)
 
 def is_action_request(question: str) -> bool:
     q = (question or "").strip()
