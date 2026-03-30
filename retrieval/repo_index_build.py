@@ -265,7 +265,14 @@ def _make_enhanced_chunk_texts(chunk_text_list: List[str], path: str, meta_list:
 def _encode_chunk_embeddings(context: IndexBuildContext, file_chunk_texts: list[str], file_chunk_meta: list[dict], path: str):
     enhanced_chunk_texts = _make_enhanced_chunk_texts(file_chunk_texts, path, file_chunk_meta)
     if not enhanced_chunk_texts:
-        return np.empty((0,))
+        embedding_dim = 0
+        dim_getter = getattr(context.model_emb, "get_sentence_embedding_dimension", None)
+        if callable(dim_getter):
+            try:
+                embedding_dim = int(dim_getter() or 0)
+            except Exception:
+                embedding_dim = 0
+        return np.empty((0, embedding_dim), dtype=np.float32)
     context.logger.info(f"   🧠 正在编码 chunk 向量：{path}（{len(enhanced_chunk_texts)} 段）")
     return context.model_emb.encode(enhanced_chunk_texts)
 
@@ -321,8 +328,16 @@ def assemble_repo_state(scanned: ScannedRepo, current_paths: list[str], new_doc_
         if len(file_chunk_texts) > 0:
             chunk_embeddings_parts.append(file_chunk_embeddings)
 
-    embeddings = np.vstack(embeddings_list) if embeddings_list else np.empty((0,))
-    chunk_embeddings = np.vstack(chunk_embeddings_parts) if chunk_embeddings_parts else np.empty((0,))
+    if embeddings_list:
+        embeddings = np.vstack(embeddings_list)
+    else:
+        embeddings = np.empty((0, 0), dtype=np.float32)
+
+    if chunk_embeddings_parts:
+        chunk_embeddings = np.vstack(chunk_embeddings_parts)
+    else:
+        inferred_dim = int(embeddings.shape[1]) if embeddings.ndim == 2 else 0
+        chunk_embeddings = np.empty((0, inferred_dim), dtype=np.float32)
 
     return RepoState(
         docs=docs,

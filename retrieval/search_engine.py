@@ -181,12 +181,45 @@ def is_related_record_listing_query(question: str) -> bool:
 
 def perform_retrieval(question: str, search_query: str, repo_state, model_emb, logger, current_focus_file: str | None,
         context_anchor: str = "", ):
+    chunk_texts = list(getattr(repo_state, "chunk_texts", []) or [])
+    chunk_paths = list(getattr(repo_state, "chunk_paths", []) or [])
+    chunk_file_times = list(getattr(repo_state, "chunk_file_times", []) or [])
+    chunk_embeddings = np.asarray(getattr(repo_state, "chunk_embeddings", np.empty((0,))))
+
+    if not chunk_texts or chunk_embeddings.size == 0:
+        logger.info("   [retrieval skipped] no indexed chunks available")
+        return {"relevant_indices": [], "scores": np.empty((0,)), "current_focus_file": current_focus_file, }
+
+    if chunk_embeddings.ndim == 1:
+        chunk_embeddings = chunk_embeddings.reshape(1, -1)
+
+    if chunk_embeddings.ndim != 2:
+        logger.warning(f"   [retrieval skipped] invalid chunk embedding shape: {chunk_embeddings.shape}")
+        return {"relevant_indices": [], "scores": np.empty((0,)), "current_focus_file": current_focus_file, }
+
+    max_count = min(len(chunk_texts), len(chunk_paths), len(chunk_file_times), int(chunk_embeddings.shape[0]))
+    if max_count <= 0:
+        logger.info("   [retrieval skipped] inconsistent empty retrieval state")
+        return {"relevant_indices": [], "scores": np.empty((0,)), "current_focus_file": current_focus_file, }
+
+    if max_count < len(chunk_texts) or max_count < int(chunk_embeddings.shape[0]):
+        logger.warning(
+            f"   [retrieval alignment] chunk_texts={len(chunk_texts)}, "
+            f"chunk_paths={len(chunk_paths)}, chunk_file_times={len(chunk_file_times)}, "
+            f"chunk_embeddings_rows={int(chunk_embeddings.shape[0])}; using first {max_count}"
+        )
+
+    chunk_texts = chunk_texts[:max_count]
+    chunk_paths = chunk_paths[:max_count]
+    chunk_file_times = chunk_file_times[:max_count]
+    chunk_embeddings = chunk_embeddings[:max_count]
+
     q_emb = model_emb.encode(["为这个句子生成表示以用于检索相关文章：" + search_query])[0]
-    scores = np.dot(repo_state.chunk_embeddings, q_emb)
+    scores = np.dot(chunk_embeddings, q_emb)
 
     if context_anchor.strip():
         anchor_emb = model_emb.encode(["为这个句子生成表示以用于检索相关文章：" + context_anchor])[0]
-        anchor_scores = np.dot(repo_state.chunk_embeddings, anchor_emb)
+        anchor_scores = np.dot(chunk_embeddings, anchor_emb)
         scores = scores + 0.12 * anchor_scores
         logger.info(f"   🪝 [锚点辅助检索] {context_anchor}")
 
@@ -224,7 +257,7 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
 
     now = datetime.datetime.now()
     for i in range(len(scores)):
-        delta_days = (now - repo_state.chunk_file_times[i]).days
+        delta_days = (now - chunk_file_times[i]).days
         if delta_days < 30:
             time_weight = 1.0
         elif delta_days < 180:
@@ -235,8 +268,8 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
             time_weight = 0.75
         scores[i] *= time_weight
 
-    for i, chunk_text_item in enumerate(repo_state.chunk_texts):
-        path_no_ext = Path(repo_state.chunk_paths[i]).stem.lower()
+    for i, chunk_text_item in enumerate(chunk_texts):
+        path_no_ext = Path(chunk_paths[i]).stem.lower()
         chunk_text_lower = chunk_text_item.lower()
 
         for term in search_terms:
@@ -248,10 +281,10 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
                     scores[i] += 0.02
                 elif len(term_lower) <= 2:
                     scores[i] += 0.05
-                    logger.debug(f"   [chunk文件名短词命中降权] '{term}' -> {repo_state.chunk_paths[i]}")
+                    logger.debug(f"   [chunk文件名短词命中降权] '{term}' -> {chunk_paths[i]}")
                 else:
                     scores[i] += 0.25
-                    logger.debug(f"   [chunk文件名命中] '{term}' -> {repo_state.chunk_paths[i]}")
+                    logger.debug(f"   [chunk文件名命中] '{term}' -> {chunk_paths[i]}")
                 continue
 
             # ---------- 正文命中 ----------
@@ -264,10 +297,10 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
                 elif term_lower.isascii() and term_lower.replace('_', '').isalnum():
                     # 英文标识符保留较高权重，但不要太离谱
                     scores[i] += 0.18
-                    logger.debug(f"   [chunk英文命中] '{term}' -> {repo_state.chunk_paths[i]}")
+                    logger.debug(f"   [chunk英文命中] '{term}' -> {chunk_paths[i]}")
                 else:
                     scores[i] += 0.12
-                    logger.debug(f"   [chunk正文命中] '{term}' -> {repo_state.chunk_paths[i]}")
+                    logger.debug(f"   [chunk正文命中] '{term}' -> {chunk_paths[i]}")
     shift_keywords = ["其他", "别的", "所有", "全局", "抛开", "除了", "另外", "换个", "不说", "那"]
     ignored_file = None
     if any(k in question for k in shift_keywords) or len(question) < 4:
@@ -299,7 +332,7 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
     if current_focus_file and not any(k in question for k in shift_keywords):
         logger.info(f"   🔒 [全局焦点锁定] AI注意力集中于 -> {current_focus_file}")
         for i in range(len(scores)):
-            if repo_state.chunk_paths[i] == current_focus_file:
+            if chunk_paths[i] == current_focus_file:
                 scores[i] += 0.18
 
     is_macro_request = any(kw in question for kw in

@@ -791,7 +791,12 @@ def run_chat_loop(
                 and not materials["context_text"].strip()
                 and not materials["inventory_candidates_text"].strip()
             ):
-                fallback_answer = "这次没有检索到足够可靠的参考片段，所以我先不乱回答。你可以再具体一点。"
+                if not list(getattr(repo_state, "paths", []) or []):
+                    fallback_answer = "当前知识库还没有可检索文档。请先在笔记目录中放入支持的文件（如 .md/.txt/.pdf 等），再来提问。"
+                elif not list(getattr(repo_state, "chunk_texts", []) or []):
+                    fallback_answer = "当前文档还没有形成可检索片段，请先检查文件读取/索引是否成功。"
+                else:
+                    fallback_answer = "这次没有检索到足够可靠的参考片段，所以我先不乱回答。你可以再具体一点。"
                 print_answer(fallback_answer, start_qa)
                 append_memory(memory_buffer, question, fallback_answer)
                 conversation_state = update_state_after_retrieval_answer(
