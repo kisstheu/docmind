@@ -20,19 +20,65 @@ SUPPORTED_EXT = {
 }
 
 
+ORG_NOISE_FRAGMENTS = {
+    "关于", "根据", "要求", "通过", "提供", "未能", "人员", "身份", "权限",
+    "劳动", "关系", "沟通", "确认", "通知", "因为", "由于",
+    "本人", "我司", "我们", "该公司", "贵公司", "本公司", "对方公司",
+}
+
+
+def _looks_like_org_noise(name: str) -> bool:
+    n = (name or "").strip()
+    if not n:
+        return True
+
+    if any(frag in n for frag in ORG_NOISE_FRAGMENTS):
+        return True
+
+    if re.search(r"(并且|以及|或者|如果|是否|已经|仍然)", n):
+        return True
+
+    if len(n) > 40:
+        return True
+
+    return False
+
+
 def extract_company_candidates(text: str):
+    if not text:
+        return []
+
     candidates = []
     patterns = [
         r'[\u4e00-\u9fa5A-Za-z0-9·（）()\-]{2,}股份有限公司',
         r'[\u4e00-\u9fa5A-Za-z0-9·（）()\-]{2,}有限公司',
         r'[\u4e00-\u9fa5A-Za-z0-9·（）()\-]{2,}集团',
-        r'[\u4e00-\u9fa5A-Za-z0-9·（）()\-]{2,}公司',
     ]
     for pattern in patterns:
-        for match in re.findall(pattern, text):
+        for m in re.finditer(pattern, text):
+            match = m.group(0)
             name = match.strip("，。；：、（）() \n\t")
             if len(name) >= 2:
+                if _looks_like_org_noise(name):
+                    continue
                 candidates.append(name)
+
+    title_patterns = [
+        (
+            r'([\u4e00-\u9fa5A-Za-z0-9·（）()\-]{2,30})\s*[·•]\s*'
+            r'(?:高级|资深|首席|招聘|HR|人事|经理|总监|负责人|创始人|CEO|CTO|COO|CFO|VP)'
+        ),
+    ]
+    for pattern in title_patterns:
+        for m in re.finditer(pattern, text, flags=re.IGNORECASE):
+            raw = (m.group(1) or "").strip("，。；：、（）() \n\t")
+            if len(raw) < 2:
+                continue
+            if re.search(r"(先生|女士|老师|同学)$", raw):
+                continue
+            if _looks_like_org_noise(raw):
+                continue
+            candidates.append(raw)
 
     result = []
     seen = set()
@@ -45,6 +91,9 @@ def extract_company_candidates(text: str):
 
 def classify_org_candidate(name: str):
     name = name.strip()
+    if _looks_like_org_noise(name):
+        return "generic"
+
     if name.endswith("股份有限公司"):
         return "explicit"
     if name.endswith("有限公司"):
@@ -59,6 +108,8 @@ def classify_org_candidate(name: str):
     if name in generic_names:
         return "generic"
     if name.endswith("公司") and len(name) <= 6:
+        return "generic"
+    if len(name) <= 2:
         return "generic"
     return "ambiguous"
 
@@ -121,8 +172,25 @@ def extract_query_terms(search_query: str, question: str):
             cleaned.append(normalized)
             continue
 
+        if "公司名称" in term or "公司名" in term:
+            cleaned.append("公司")
+            cleaned.append("名称")
+            continue
+
+        if "企业名称" in term or "单位名称" in term or "组织名称" in term:
+            cleaned.append("名称")
+            continue
+
+        # 追问阶段模型可能把“公司名/公司名称”改写成“公司信息”，这里回补名称锚词。
+        if "公司信息" in term or "企业信息" in term or "单位信息" in term or "组织信息" in term:
+            cleaned.append("公司")
+            cleaned.append("名称")
+            continue
+
         if "公司" in term and term != "公司":
             cleaned.append("公司")
+            if any(x in term for x in ("名称", "名字", "名")):
+                cleaned.append("名称")
             continue
         if "人名" in term and term != "人名":
             cleaned.append("人名")

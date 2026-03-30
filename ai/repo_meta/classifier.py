@@ -175,6 +175,19 @@ def is_semantic_topic_candidate(topic: str) -> bool:
     return len(core) >= 2
 
 
+def _has_explicit_date_reference(text: str) -> bool:
+    q = normalize_meta_question(clean_text(text))
+    if not q:
+        return False
+
+    patterns = (
+        r"(?<!\d)(?:19|20)\d{2}[年./\-]\d{1,2}[月./\-]\d{1,2}(?:日|号)?",
+        r"(?<!\d)\d{1,2}[月./\-]\d{1,2}(?:日|号)?",
+        r"(?<!\d)\d{1,2}(?:日|号)(?!\d)",
+    )
+    return any(re.search(p, q) for p in patterns)
+
+
 def looks_like_time_request(q: str, topic_candidate_valid: bool = False) -> bool:
     has_doc_word = any(x in q for x in ("文件", "文档", "资料"))
     has_format_word = ("格式" in q) or any(x in q for x in (
@@ -182,6 +195,13 @@ def looks_like_time_request(q: str, topic_candidate_valid: bool = False) -> bool
         "xls", "xlsx", "csv",
         "ppt", "pptx",
     ))
+    has_explicit_date = _has_explicit_date_reference(q)
+    has_list_intent = any(x in q for x in TIME_LIST_INTENT_KEYWORDS + ("还有", "其他", "别的"))
+
+    # 显式日期 + 文件列表意图，按时间类处理。
+    if has_explicit_date and has_doc_word and has_list_intent:
+        return True
+
     has_time_word = any(x in q for x in (
         "最近", "最新", "最早", "最晚", "最旧",
         "最近更新", "最近修改", "更新时间",
@@ -190,7 +210,6 @@ def looks_like_time_request(q: str, topic_candidate_valid: bool = False) -> bool
     if not has_time_word:
         return False
 
-    has_list_intent = any(x in q for x in TIME_LIST_INTENT_KEYWORDS)
     has_explicit_time_axis = any(x in q for x in ("时间", "日期", "更新", "修改", "创建"))
 
     if has_explicit_time_axis:

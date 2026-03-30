@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import datetime
+import os
 import re
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -25,11 +26,60 @@ def is_relation_mismatch_query(question: str) -> bool:
     return any(p in q for p in patterns)
 
 
+def is_entity_lookup_query(question: str) -> bool:
+    q = (question or "").replace(" ", "").lower()
+    patterns = [
+        "公司名", "公司名称", "企业名称", "单位名称", "组织名称",
+        "人名", "姓名", "名字",
+        "项目名", "项目名称",
+    ]
+    return any(p in q for p in patterns)
+
+
+def is_expansion_followup_question(question: str) -> bool:
+    q = (question or "").replace(" ", "").lower()
+    if not q:
+        return False
+    patterns = ["更多", "还有", "另外", "其他", "别的", "继续", "再来", "补充", "还包括"]
+    return any(p in q for p in patterns)
+
+
+def is_entity_name_lookup_context(question: str, search_terms: list[str]) -> bool:
+    if is_entity_lookup_query(question):
+        return True
+
+    term_set = {t.strip().lower() for t in (search_terms or []) if t and t.strip()}
+    if "名称" in term_set:
+        if term_set.intersection({"公司", "人名", "姓名", "项目"}):
+            return True
+    if term_set.intersection({"公司名", "公司名称", "企业名称", "单位名称", "组织名称", "项目名称"}):
+        return True
+
+    return False
+
+
+def is_company_name_lookup_context(question: str, search_terms: list[str]) -> bool:
+    q = (question or "").replace(" ", "").lower()
+    if any(x in q for x in ["公司名", "公司名称", "企业名称", "单位名称", "组织名称"]):
+        return True
+
+    term_set = {t.strip().lower() for t in (search_terms or []) if t and t.strip()}
+    if term_set.intersection({"公司", "公司名", "公司名称", "企业", "企业名称", "单位", "单位名称", "组织", "组织名称"}):
+        return True
+    if "名称" in term_set and term_set.intersection({"公司", "企业", "单位", "组织"}):
+        return True
+    return False
+
+
 def is_weak_query(question: str, search_terms: list[str]) -> bool:
     q = question.strip().lower()
 
     if is_capability_like_query(q):
         return True
+
+    # “查实体名称”类是明确检索需求，不按弱问题处理。
+    if is_entity_lookup_query(q):
+        return False
 
     if not search_terms:
         return True
@@ -43,6 +93,24 @@ def is_weak_query(question: str, search_terms: list[str]) -> bool:
         return True
 
     return False
+
+
+def should_enable_fallback(search_terms: list[str], weak_query: bool) -> bool:
+    if weak_query:
+        return False
+    return bool(search_terms)
+
+
+def rescue_entity_lookup_indices(scores: np.ndarray, top_k: int) -> list[int]:
+    if scores.size == 0 or top_k <= 0:
+        return []
+
+    sorted_idx = [int(i) for i in np.argsort(scores)[::-1]]
+    strong_hits = [i for i in sorted_idx if float(scores[i]) > 0.18][:top_k]
+    if strong_hits:
+        return strong_hits
+
+    return sorted_idx[: min(top_k, 8)]
 
 
 def determine_query_flags(question: str):
@@ -142,11 +210,74 @@ def should_score_filename_term(term: str) -> bool:
     t = (term or "").strip().lower()
     if not t:
         return False
+    if t in {"屏幕", "截图", "屏幕截图", "图片", "图像"}:
+        return False
     if is_date_like_term(t):
         return False
     if is_sentence_like_term(t):
         return False
     return True
+
+
+def build_company_candidate_df(docs: list[str]) -> Tuple[Dict[str, int], int]:
+    candidate_df: Dict[str, int] = {}
+    total_docs = 0
+
+    for doc_text in docs or []:
+        total_docs += 1
+        seen_in_doc = set()
+        for name in extract_company_candidates(doc_text or ""):
+            if classify_org_candidate(name) == "generic":
+                continue
+            seen_in_doc.add(name)
+
+        for name in seen_in_doc:
+            candidate_df[name] = candidate_df.get(name, 0) + 1
+
+    return candidate_df, max(1, total_docs)
+
+
+def company_hint_bonus(
+    chunk_text: str,
+    candidate_df: dict[str, int] | None = None,
+    total_docs: int = 1,
+) -> float:
+    text = chunk_text or ""
+    if not text:
+        return 0.0
+
+    org_hits = extract_company_candidates(text)
+    if not org_hits:
+        return 0.0
+
+    quality_sum = 0.0
+    total_docs = max(1, int(total_docs or 1))
+    denom = float(np.log(total_docs + 1.0))
+    if denom <= 0:
+        denom = 1.0
+
+    title_role_re = r"(?:高级|资深|首席|招聘|HR|人事|经理|总监|负责人|创始人|CEO|CTO|COO|CFO|VP)"
+    for name in org_hits:
+        kind = classify_org_candidate(name)
+        if kind == "generic":
+            continue
+
+        quality = 1.0 if kind == "explicit" else 0.75
+        if re.search(rf"{re.escape(name)}\s*[·•]\s*{title_role_re}", text, flags=re.IGNORECASE):
+            quality += 0.20
+
+        df = 1
+        if candidate_df is not None:
+            df = max(1, int(candidate_df.get(name, 1)))
+
+        idf = float(np.log((total_docs + 1.0) / (df + 1.0)) / denom)
+        idf = max(0.15, min(1.0, idf))
+        quality_sum += quality * idf
+
+    if quality_sum <= 0:
+        return 0.0
+
+    return min(0.32, 0.20 * quality_sum)
 
 
 def should_score_body_term(term: str) -> bool:
@@ -255,6 +386,32 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
 
     logger.debug(f"提取到的核心搜索词: {search_terms}")
 
+    is_entity_lookup = is_entity_name_lookup_context(question, search_terms)
+    is_company_lookup = is_company_name_lookup_context(question, search_terms)
+    is_expansion_followup = is_expansion_followup_question(question)
+    company_candidate_df: dict[str, int] | None = None
+    company_docs_total = 1
+    if is_company_lookup:
+        company_candidate_df, company_docs_total = build_company_candidate_df(
+            list(getattr(repo_state, "docs", []) or [])
+        )
+
+    try:
+        max_match_log_lines = int(os.getenv("DOCMIND_MATCH_LOG_LIMIT", "60"))
+    except Exception:
+        max_match_log_lines = 60
+    max_match_log_lines = max(0, min(max_match_log_lines, 500))
+    match_log_count = 0
+    suppressed_match_logs = 0
+
+    def log_match_detail(msg: str):
+        nonlocal match_log_count, suppressed_match_logs
+        if match_log_count < max_match_log_lines:
+            logger.debug(msg)
+            match_log_count += 1
+        else:
+            suppressed_match_logs += 1
+
     now = datetime.datetime.now()
     for i in range(len(scores)):
         delta_days = (now - chunk_file_times[i]).days
@@ -281,10 +438,10 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
                     scores[i] += 0.02
                 elif len(term_lower) <= 2:
                     scores[i] += 0.05
-                    logger.debug(f"   [chunk文件名短词命中降权] '{term}' -> {chunk_paths[i]}")
+                    log_match_detail(f"   [chunk文件名短词命中降权] '{term}' -> {chunk_paths[i]}")
                 else:
                     scores[i] += 0.25
-                    logger.debug(f"   [chunk文件名命中] '{term}' -> {chunk_paths[i]}")
+                    log_match_detail(f"   [chunk文件名命中] '{term}' -> {chunk_paths[i]}")
                 continue
 
             # ---------- 正文命中 ----------
@@ -297,10 +454,23 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
                 elif term_lower.isascii() and term_lower.replace('_', '').isalnum():
                     # 英文标识符保留较高权重，但不要太离谱
                     scores[i] += 0.18
-                    logger.debug(f"   [chunk英文命中] '{term}' -> {chunk_paths[i]}")
+                    log_match_detail(f"   [chunk英文命中] '{term}' -> {chunk_paths[i]}")
                 else:
                     scores[i] += 0.12
-                    logger.debug(f"   [chunk正文命中] '{term}' -> {chunk_paths[i]}")
+                    log_match_detail(f"   [chunk正文命中] '{term}' -> {chunk_paths[i]}")
+
+        if is_company_lookup:
+            bonus = company_hint_bonus(
+                chunk_text_item,
+                candidate_df=company_candidate_df,
+                total_docs=company_docs_total,
+            )
+            if bonus > 0:
+                scores[i] += bonus
+                log_match_detail(f"   [chunk公司线索加权] +{bonus:.2f} -> {chunk_paths[i]}")
+
+    if suppressed_match_logs > 0:
+        logger.debug(f"   [命中日志限流] 已省略 {suppressed_match_logs} 条命中明细")
     shift_keywords = ["其他", "别的", "所有", "全局", "抛开", "除了", "另外", "换个", "不说", "那"]
     ignored_file = None
     if any(k in question for k in shift_keywords) or len(question) < 4:
@@ -344,6 +514,16 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
 
     if is_person_eval_query:
         top_k, threshold = 6, 0.50
+    elif is_entity_lookup and is_expansion_followup:
+        top_k, threshold = 30, 0.28
+        logger.info(f"   📚 [实体扩展增强] 上限扩至 {top_k} 份，及格线降至 {threshold}")
+    elif is_entity_lookup:
+        if is_company_lookup:
+            top_k, threshold = 30, 0.30
+            logger.info(f"   📚 [公司检索增强] 上限扩至 {top_k} 份，及格线降至 {threshold}")
+        else:
+            top_k, threshold = 20, 0.32
+            logger.info(f"   📚 [实体检索增强] 上限扩至 {top_k} 份，及格线降至 {threshold}")
     elif is_compare_request:
         top_k, threshold = 24, 0.30
         logger.info(f"   📚 [比较题增强] 上限扩至 {top_k} 份，及格线降至 {threshold}")
@@ -358,12 +538,18 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
 
     relevant_indices = [i for i in np.argsort(scores)[::-1] if scores[i] > threshold]
     weak_query = is_weak_query(question, search_terms)
+    fallback_threshold = 0.24 if is_entity_lookup else 0.30
 
-    if not relevant_indices and len(search_query) >= 4 and not weak_query:
-        relevant_indices = [i for i in np.argsort(scores)[::-1] if scores[i] > 0.30]
+    if not relevant_indices and should_enable_fallback(search_terms, weak_query):
+        relevant_indices = [i for i in np.argsort(scores)[::-1] if scores[i] > fallback_threshold]
         logger.info("   🛡️ [兜底打捞] 未达到阈值，启动底线捞取...")
     elif not relevant_indices and weak_query:
         logger.info("   🚫 [禁用兜底] 当前问题过弱或属于能力类问题，避免误捞上下文")
+
+    if not relevant_indices and is_entity_lookup:
+        relevant_indices = rescue_entity_lookup_indices(scores, top_k=top_k)
+        logger.info(f"   🛟 [实体检索保底] 触发低阈值候选兜底，补入 {len(relevant_indices)} 个片段")
+
     relevant_indices = relevant_indices[:top_k]
     logger.info(f"   🔍 [溯源完毕] 最终喂给大模型的片段数量: {len(relevant_indices)}")
 

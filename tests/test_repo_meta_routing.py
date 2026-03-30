@@ -53,6 +53,39 @@ def test_recent_time_answer_should_default_to_latest_section():
     assert answer.splitlines()[1].startswith("1. b.md")
 
 
+def test_explicit_date_file_question_should_map_to_time():
+    topic = classify_repo_meta_question("3月25号还有其他文件吗？")
+    assert topic == "time"
+
+
+def test_answer_time_should_filter_by_explicit_date():
+    answer, topic = _answer_time(
+        "3月25号还有其他文件吗？",
+        paths=["a.md", "b.md", "c.md"],
+        file_times=[
+            datetime(2026, 3, 25, 9, 0, 0),
+            datetime(2026, 3, 25, 17, 51, 44),
+            datetime(2026, 3, 26, 8, 0, 0),
+        ],
+    )
+    assert topic == "time"
+    assert "3月25日" in answer
+    assert "a.md" in answer
+    assert "b.md" in answer
+    assert "c.md" not in answer
+
+
+def test_dialog_event_explicit_date_file_followup_should_route_repo_meta():
+    state = ConversationState(
+        last_route="normal_retrieval",
+        last_content_route="normal_retrieval",
+        last_content_user_question="找下公司名",
+    )
+    event = detect_dialog_event("3月25号还有其他文件吗？", state, _DummyLogger())
+    assert event.name == "repo_meta_request"
+    assert event.route_hint == "repo_meta"
+
+
 def test_short_find_company_name_should_route_to_normal_retrieval_action():
     state = ConversationState(
         last_route="repo_meta",

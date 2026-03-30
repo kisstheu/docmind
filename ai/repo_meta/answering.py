@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import datetime
 import re
 from pathlib import Path
-from typing import Union
+from typing import Callable, Union
 
 from ai.capability_common import (
     CATEGORY_CONFIRM_KEYWORDS,
@@ -585,6 +586,51 @@ def _extract_suffix_filter(question: str) -> tuple[Union[str, tuple[str, ...], N
     return None, None
 
 
+def _extract_explicit_date_filter(question: str) -> tuple[str | None, Callable[[datetime.datetime], bool] | None]:
+    q = normalize_meta_question(clean_text(question))
+    if not q:
+        return None, None
+
+    # yyyy-mm-dd / yyyy年m月d日 / yyyy/m/d
+    full_date = re.search(
+        r"(?<!\d)(?P<year>(?:19|20)\d{2})[年./\-](?P<month>\d{1,2})[月./\-](?P<day>\d{1,2})(?:日|号)?",
+        q,
+    )
+    if full_date:
+        year = int(full_date.group("year"))
+        month = int(full_date.group("month"))
+        day = int(full_date.group("day"))
+        try:
+            datetime.date(year, month, day)
+        except ValueError:
+            pass
+        else:
+            label = f"{year:04d}-{month:02d}-{day:02d}"
+            return label, lambda dt: dt.year == year and dt.month == month and dt.day == day
+
+    # m-d / m月d日
+    month_day = re.search(
+        r"(?<!\d)(?P<month>\d{1,2})[月./\-](?P<day>\d{1,2})(?:日|号)?",
+        q,
+    )
+    if month_day:
+        month = int(month_day.group("month"))
+        day = int(month_day.group("day"))
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            label = f"{month}月{day}日"
+            return label, lambda dt: dt.month == month and dt.day == day
+
+    # d号 / d日
+    day_only = re.search(r"(?<!\d)(?P<day>\d{1,2})(?:日|号)(?!\d)", q)
+    if day_only:
+        day = int(day_only.group("day"))
+        if 1 <= day <= 31:
+            label = f"每月{day}日"
+            return label, lambda dt: dt.day == day
+
+    return None, None
+
+
 def _answer_time(question: str, paths, file_times) -> tuple[str, str]:
     pairs = list(zip(paths, file_times))
 
@@ -596,14 +642,32 @@ def _answer_time(question: str, paths, file_times) -> tuple[str, str]:
         else:
             pairs = [(p, t) for p, t in pairs if p.lower().endswith(suffix_filter)]
 
+    q = (question or "").strip()
+    date_label, date_matcher = _extract_explicit_date_filter(q)
+    if date_matcher:
+        pairs = [(p, t) for p, t in pairs if date_matcher(t)]
+
     if not pairs:
+        if date_label and label:
+            return f"当前没有找到日期为 {date_label} 的 {label} 文档。", "time"
+        if date_label:
+            return f"当前没有找到日期为 {date_label} 的文件。", "time"
         if label:
             return f"当前没有找到 {label} 文档。", "time"
         if suffix_filter:
             return "当前没有找到符合条件的文档。", "time"
         return "当前知识库里还没有可用文档。", "time"
 
-    q = (question or "").strip()
+    if date_label:
+        sorted_by_time = sorted(pairs, key=lambda x: x[1])
+        show_n = min(50, len(sorted_by_time))
+        lines = [f"日期为 {date_label} 的文件共有 {len(sorted_by_time)} 个（按时间顺序）："]
+        for i, (path, dt) in enumerate(sorted_by_time[:show_n], 1):
+            lines.append(f"{i}. {path}（{dt.strftime('%Y-%m-%d %H:%M:%S')}）")
+        if len(sorted_by_time) > show_n:
+            lines.append(f"...其余 {len(sorted_by_time) - show_n} 个未展开")
+        return "\n".join(lines), "time"
+
     top_k = _extract_top_k(q, default=1)
 
     sorted_latest = sorted(pairs, key=lambda x: x[1], reverse=True)

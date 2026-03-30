@@ -397,6 +397,7 @@ def is_system_capability_request(question: str) -> bool:
 def is_repo_meta_request(question: str) -> bool:
     q = normalize_meta_question(question)
     has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
+    has_list_intent = any(x in q for x in ["列出", "列下", "列一下", "列出来", "罗列", "展开一下", "展开列一下"])
 
     patterns = [
         "多少文件", "多少个文件", "文件数量",
@@ -432,10 +433,29 @@ def is_repo_meta_request(question: str) -> bool:
         return True
 
     # 兜底：允许“列一下/列出来”触发 repo_meta，但必须显式提到文件/文档。
-    if has_doc_word and any(x in q for x in ["列出", "列下", "列一下", "列出来", "罗列", "展开一下", "展开列一下"]):
+    if has_doc_word and has_list_intent:
+        return True
+
+    # 日期 + 文件列表意图，优先按仓库元信息处理。
+    if has_doc_word and _has_explicit_date_reference(question) and any(
+        x in q for x in ["有哪些", "有哪", "哪些", "哪几个", "哪几份", "还有", "其他", "别的"]
+    ):
         return True
 
     return False
+
+
+def _has_explicit_date_reference(text: str) -> bool:
+    q = normalize_meta_question(text)
+    if not q:
+        return False
+
+    date_patterns = (
+        r"(?<!\d)(?:19|20)\d{2}[年./\-]\d{1,2}[月./\-]\d{1,2}(?:日|号)?",
+        r"(?<!\d)\d{1,2}[月./\-]\d{1,2}(?:日|号)?",
+        r"(?<!\d)\d{1,2}(?:日|号)(?!\d)",
+    )
+    return any(re.search(p, q) for p in date_patterns)
 
 
 def _has_explicit_file_ref(text: str) -> bool:
@@ -481,6 +501,7 @@ def looks_like_repo_time_question(question: str, state: ConversationState | None
 
     # 显式提到文件/文档 + 时间信号
     mentions_doc = any(x in q for x in ["文件", "文档", "资料", "pdf", "txt", "docx"])
+    has_explicit_date = _has_explicit_date_reference(question)
     time_signals = [
         "最近", "最新", "最早", "最晚", "最旧",
         "最近更新", "最近修改", "更新时间",
@@ -488,13 +509,19 @@ def looks_like_repo_time_question(question: str, state: ConversationState | None
         "时间最新", "时间最早",
     ]
     has_time_signal = any(x in q for x in time_signals)
-    has_list_intent = any(x in q for x in ["有哪些", "有哪", "哪些", "哪几个", "列出", "列一下", "列出来"])
+    has_list_intent = any(
+        x in q for x in ["有哪些", "有哪", "哪些", "哪几个", "哪几份", "列出", "列一下", "列出来", "还有", "其他", "别的"]
+    )
     has_explicit_time_axis = any(x in q for x in ["时间", "日期", "更新", "修改", "创建"])
 
     if has_time_signal and mentions_doc:
         return True
 
     if has_explicit_time_axis and has_time_signal:
+        return True
+
+    # 显式日期 + 文件范围 + 列表意图：按时间检索路由，避免误走内容追问。
+    if has_explicit_date and mentions_doc and has_list_intent:
         return True
 
     # 上一轮在 repo_meta 上下文里，短问“最近的有哪些/最近时间有哪些”也按时间类处理
@@ -512,6 +539,16 @@ def looks_like_repo_time_question(question: str, state: ConversationState | None
         has_quantity = any(x in q for x in ["份", "个", "两", "三", "几"])
         if has_time_signal and has_quantity:
             return True
+
+    # repo_meta 追问里，显式日期 + 列表意图也视为时间查询。
+    if (
+        state is not None
+        and state.last_route == "repo_meta"
+        and has_explicit_date
+        and has_list_intent
+        and len(q) <= 24
+    ):
+        return True
 
     return False
 
