@@ -1,7 +1,7 @@
 # 🧠 DocMind
 
 一个基于本地文档的智能问答系统，  
-支持多格式解析（TXT/DOCX/PDF+OCR）、向量检索（RAG）与多轮对话。
+支持多格式解析（TXT/MD/DOC/DOCX/PDF/图片 OCR）、向量检索（RAG）与多轮对话。
 
 👉 面向“分散笔记难以统一检索与理解”的问题，提供对话式整理与查询能力。
 
@@ -9,7 +9,7 @@
 
 ## ✨ 项目背景
 
-日常使用中，笔记通常以 txt / md / doc / docx / pdf 等形式分散存储：
+日常使用中，笔记通常以 txt / md / doc / docx / pdf / png / jpg 等形式分散存储：
 
 - 可以查到内容，但不方便统一查找
 - 可以找到信息，但不容易整理与理解
@@ -92,7 +92,14 @@ DocMind 尝试在这些场景下提供一个更自然的使用方式。
 pip install -r requirements.txt
 python ask_notes.py
 ```
-👉 示例数据见：examples/demo_notes/
+
+可选参数与环境变量：
+
+- `--notes-dir <path>`：指定笔记目录（优先级高于环境变量）
+- `DOCMIND_NOTES_DIR=<path>`：指定默认笔记目录
+- `DOCMIND_MATCH_LOG_LIMIT=<int>`：控制命中明细日志最大行数（默认 60）
+
+👉 示例数据见：examples/demo_notes_public/
 
 ---
 
@@ -113,13 +120,15 @@ python ask_notes.py
 
 ---
 
-## 🆕 近期新增能力（2026-03-24）
+## 🆕 近期新增能力（2026-03-30）
 
-- 新增文件重命名流程（含确认、冲突检测、状态同步）
-- 新增文件删除流程（软删除到回收目录）
-- 新增统一文件变更历史查询（支持 rename/delete）
-- 索引构建时自动排除 `.docmind_trash`，避免回收内容干扰检索
-- 日志支持环境变量配置与滚动参数控制
+- 支持 `--notes-dir` 与 `DOCMIND_NOTES_DIR` 指定笔记目录，并增加目录合法性校验
+- 不同笔记目录自动使用独立缓存与变更日志库，降低多项目切换串扰
+- 新增图片 OCR 入库与检索（`.png/.jpg/.jpeg/.bmp/.webp`），支持 sidecar 复用
+- 增量建库优化：避免重复读取变更文件；图片索引大小上限放宽到 5MB
+- 空知识库/空索引场景增加兜底提示，避免向量维度不对齐导致崩溃
+- 公司同一性比较、实体文件定位等场景的召回与路由稳定性增强
+- 命中明细日志支持 `DOCMIND_MATCH_LOG_LIMIT` 限流（默认 60）
 
 ---
 
@@ -170,14 +179,14 @@ python ask_notes.py
 DocMind/
 ├── app/                    # 对话流程与状态管理
 ├── retrieval/              # 检索流程（query构建、召回等）
-├── loaders/                # 多格式文档加载（txt/md/doc/docx/pdf）
+├── loaders/                # 多格式文档加载（txt/md/doc/docx/pdf/图片OCR）
 ├── ai/                     # 模型调用与封装
 ├── infra/                  # 日志与文件变更记录基础设施
 ├── bootstrap/              # 初始化逻辑
 │
 ├── examples/               # 示例数据与Demo说明
 │   ├── README.md
-│   └── demo_notes/
+│   └── demo_notes_public/
 │
 ├── docs/                   # 演进记录与设计说明
 ├── cache/                  # 向量缓存
@@ -194,7 +203,7 @@ DocMind/
 - Python
 - BGE 向量模型（本地部署）
 - 基于 embedding 的语义检索
-- 多格式文档加载（txt / md / doc / docx / pdf）
+- 多格式文档加载（txt / md / doc / docx / pdf / png / jpg / jpeg / bmp / webp）
 - 自实现对话状态管理（多轮问答 / 追问）
 - 增量索引与缓存机制
 - 文件变更记录（SQLite）与可追溯查询
@@ -210,11 +219,12 @@ DocMind/
 * 简单的结构化输出
 * 文件重命名与软删除闭环
 * 文件变更历史查询
+* 图片 OCR 入库与检索
 
 未重点覆盖：
 
 * 大规模文档处理
-* OCR 场景优化
+* 复杂扫描件 OCR 精度优化
 * 回收站还原/批量回滚等高级文件运维
 
 ---
