@@ -38,6 +38,31 @@ def _is_repo_meta(q: str) -> bool:
     return has_name_content_mismatch or has_list_doc_query or (has_doc_word and has_meta_word)
 
 
+def _is_entity_lookup(q: str) -> bool:
+    has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
+    if has_doc_word:
+        return False
+
+    has_entity_word = any(x in q for x in [
+        "公司名", "公司名称", "公司", "企业",
+        "人名", "姓名", "人物",
+        "项目名", "项目名称", "项目",
+    ])
+    has_lookup_intent = any(x in q for x in [
+        "找", "查", "搜",
+        "提到", "提及",
+        "名字", "名称",
+        "哪些", "哪几个", "哪几家", "列出",
+    ])
+    has_repo_meta_intent = any(x in q for x in [
+        "多少", "数量", "格式", "分类", "清单",
+        "最新", "最早", "最晚", "最近更新", "最近修改",
+        "修改时间", "创建时间", "占多大", "总大小", "空间",
+    ])
+
+    return has_entity_word and has_lookup_intent and not has_repo_meta_intent
+
+
 def _is_name_content_mismatch(q: str) -> bool:
     has_name_word = any(x in q for x in ["文件名", "标题", "题目", "名称", "名字"])
     has_content_word = any(x in q for x in ["内容", "正文"])
@@ -62,6 +87,10 @@ def route_question(question: str, ollama_api_url: str, ollama_model: str, logger
     if _is_smalltalk(q):
         logger.info(f"🧭 [规则命中] smalltalk -> {question}")
         return {"route": "smalltalk"}
+
+    if _is_entity_lookup(q):
+        logger.info(f"🧭 [规则命中] entity_lookup -> {question}")
+        return {"route": "normal_retrieval"}
 
     if _is_repo_meta(q):
         logger.info(f"🧭 [规则命中] repo_meta -> {question}")

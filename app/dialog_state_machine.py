@@ -414,6 +414,10 @@ def is_repo_meta_request(question: str) -> bool:
 
         "最近更新", "最新文件", "最早文件",
         "最新文档", "最早文档",
+        "最近有哪些文件", "最近有哪些文档",
+        "最近的有哪些文件", "最近的有哪些文档",
+        "最近时间有哪些", "最近时间有哪些文件", "最近时间有哪些文档",
+        "最新有哪些文件", "最早有哪些文件", "最晚有哪些文件",
 
         "占多大空间", "总共多大", "总大小", "总体积", "占用空间", "总容量",
 
@@ -477,16 +481,34 @@ def looks_like_repo_time_question(question: str, state: ConversationState | None
 
     # 显式提到文件/文档 + 时间信号
     mentions_doc = any(x in q for x in ["文件", "文档", "资料", "pdf", "txt", "docx"])
-    time_signals = ["最新", "最早", "最晚", "最旧", "最近更新", "最近修改",
-                    "修改时间", "创建时间", "时间最新", "时间最早"]
-    
-    if mentions_doc and any(x in q for x in time_signals):
+    time_signals = [
+        "最近", "最新", "最早", "最晚", "最旧",
+        "最近更新", "最近修改", "更新时间",
+        "修改时间", "创建时间", "时间", "日期",
+        "时间最新", "时间最早",
+    ]
+    has_time_signal = any(x in q for x in time_signals)
+    has_list_intent = any(x in q for x in ["有哪些", "有哪", "哪些", "哪几个", "列出", "列一下", "列出来"])
+    has_explicit_time_axis = any(x in q for x in ["时间", "日期", "更新", "修改", "创建"])
+
+    if has_time_signal and mentions_doc:
+        return True
+
+    if has_explicit_time_axis and has_time_signal:
+        return True
+
+    # 上一轮在 repo_meta 上下文里，短问“最近的有哪些/最近时间有哪些”也按时间类处理
+    if (
+        state is not None
+        and state.last_route == "repo_meta"
+        and has_time_signal
+        and has_list_intent
+        and len(q) <= 18
+    ):
         return True
 
     # 短句 + 时间信号 + 量词模式 = 独立的文件时间查询
-
     if len(q) <= 15:
-        has_time_signal = any(x in q for x in time_signals)
         has_quantity = any(x in q for x in ["份", "个", "两", "三", "几"])
         if has_time_signal and has_quantity:
             return True

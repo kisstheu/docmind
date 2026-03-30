@@ -609,7 +609,7 @@ def _answer_time(question: str, paths, file_times) -> tuple[str, str]:
     sorted_latest = sorted(pairs, key=lambda x: x[1], reverse=True)
     sorted_earliest = sorted(pairs, key=lambda x: x[1])
 
-    ask_latest = any(x in q for x in ["最新", "最近更新", "最近修改", "最晚"])
+    ask_latest = any(x in q for x in ["最近", "最新", "最近更新", "最近修改", "最晚"])
     ask_earliest = any(x in q for x in ["最早", "最旧"])
     ask_both = not ask_latest and not ask_earliest
 
