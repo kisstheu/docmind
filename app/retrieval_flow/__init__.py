@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from app.retrieval_flow.materials import (
     build_retrieval_materials,
     build_safe_final_prompt,
