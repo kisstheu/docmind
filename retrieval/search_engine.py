@@ -310,6 +310,26 @@ def is_related_record_listing_query(question: str) -> bool:
     return has_related and has_listing
 
 
+def is_compare_intent_query(question: str) -> bool:
+    q = (question or "").replace(" ", "")
+    generic_compare_keywords = ["不同", "区别", "差异", "异同", "比较", "对比", "相同", "一样", "一致"]
+    if any(kw in q for kw in generic_compare_keywords):
+        return True
+
+    # 公司实体比对常见口语问法，避免漏判导致召回过窄。
+    company_compare_patterns = [
+        "是不是一家",
+        "是否一家",
+        "同一家公司",
+        "是不是同一家公司",
+        "是否同一家公司",
+        "是同一家公司吗",
+        "是不是同一个公司",
+        "是否同一个公司",
+    ]
+    return any(p in q for p in company_compare_patterns)
+
+
 def perform_retrieval(question: str, search_query: str, repo_state, model_emb, logger, current_focus_file: str | None,
         context_anchor: str = "", ):
     chunk_texts = list(getattr(repo_state, "chunk_texts", []) or [])
@@ -508,7 +528,7 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
     is_macro_request = any(kw in question for kw in
                            ["时间线", "经过", "梳理", "复盘", "总结", "详细", "过程", "所有", "表现", "评价", "对吗",
                                 "境遇", "怎么看", "经历", "待过"])
-    is_compare_request = any(kw in question for kw in ["不同", "区别", "差异", "异同", "比较", "对比", "相同", "一样", "一致"])
+    is_compare_request = is_compare_intent_query(question)
     is_person_eval_query = (("评价" in question or "怎么看" in question or "这个人怎么样" in question) and any(
         len(term) >= 2 for term in search_terms))
 

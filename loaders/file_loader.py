@@ -15,6 +15,10 @@ from rapidocr_onnxruntime import RapidOCR
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 _SHARED_OCR_ENGINE: RapidOCR | None = None
+_OCR_COMMON_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    # OCR 常把“集团”误识别成“集国”，影响组织地址与实体判断。
+    ("集国产业园", "集团产业园"),
+)
 
 
 def robust_read_text(filepath: Path, logger=None) -> str:
@@ -34,6 +38,13 @@ def _normalize_content(content: str) -> str:
     content = re.sub(r"\n{3,}", "\n\n", content)
     content = content.replace("\u200b", "").replace("\ufeff", "").strip()
     return content
+
+
+def _normalize_ocr_text(content: str) -> str:
+    text = content or ""
+    for wrong, right in _OCR_COMMON_REPLACEMENTS:
+        text = text.replace(wrong, right)
+    return text
 
 
 def _create_ocr_engine() -> RapidOCR:
@@ -67,6 +78,7 @@ def _ocr_image_bytes(
                 lines.append(str(item[1]).strip())
 
         text = "\n".join(x for x in lines if x).strip()
+        text = _normalize_ocr_text(text)
         if text and logger and source_name:
             logger.info(f"      🔎 图片OCR提取成功 -> {source_name}")
         return text
@@ -227,9 +239,19 @@ def _read_pdf_with_sidecar(file: Path, logger=None) -> tuple[Optional[str], bool
 
     # 若 sidecar 存在且不早于原文件，直接复用
     if ocr_sidecar_path.exists() and ocr_sidecar_path.stat().st_mtime >= file.stat().st_mtime:
+        cached = robust_read_text(ocr_sidecar_path, logger=logger)
+        normalized_cached = _normalize_ocr_text(cached)
+        if normalized_cached != cached:
+            try:
+                ocr_sidecar_path.write_text(normalized_cached, encoding="utf-8")
+                if logger:
+                    logger.info(f"      🛠️ 已纠正 PDF OCR sidecar 常见识别错误 -> {ocr_sidecar_path.name}")
+            except Exception as e:
+                if logger:
+                    logger.warning(f"⚠️ 写回 PDF OCR sidecar 纠错文本失败 {ocr_sidecar_path.name}: {e}")
         if logger:
             logger.info(f"      ♻️ 复用 PDF OCR sidecar -> {ocr_sidecar_path.name}")
-        return robust_read_text(ocr_sidecar_path, logger=logger), True
+        return normalized_cached, True
 
     content = ""
     ocr_engine: RapidOCR | None = None
@@ -249,6 +271,7 @@ def _read_pdf_with_sidecar(file: Path, logger=None) -> tuple[Optional[str], bool
                 result, _ = ocr_engine(pix.tobytes("png"))
                 if result:
                     page_text = "\n".join([line[1] for line in result if len(line) >= 2 and line[1]])
+                    page_text = _normalize_ocr_text(page_text)
 
             content += page_text + "\n"
 
@@ -266,9 +289,19 @@ def _read_image_with_sidecar(file: Path, logger=None) -> tuple[Optional[str], bo
     ocr_sidecar_path = file.with_name(file.name + ".ocr.txt")
 
     if ocr_sidecar_path.exists() and ocr_sidecar_path.stat().st_mtime >= file.stat().st_mtime:
+        cached = robust_read_text(ocr_sidecar_path, logger=logger)
+        normalized_cached = _normalize_ocr_text(cached)
+        if normalized_cached != cached:
+            try:
+                ocr_sidecar_path.write_text(normalized_cached, encoding="utf-8")
+                if logger:
+                    logger.info(f"      🛠️ 已纠正图片 OCR sidecar 常见识别错误 -> {ocr_sidecar_path.name}")
+            except Exception as e:
+                if logger:
+                    logger.warning(f"⚠️ 写回图片 OCR sidecar 纠错文本失败 {ocr_sidecar_path.name}: {e}")
         if logger:
             logger.info(f"      ♻️ 复用图片 OCR sidecar -> {ocr_sidecar_path.name}")
-        return robust_read_text(ocr_sidecar_path, logger=logger), True
+        return normalized_cached, True
 
     try:
         image_bytes = file.read_bytes()
