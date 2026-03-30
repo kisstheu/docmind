@@ -22,6 +22,8 @@ _EXCLUDED_PARTS = {
     ".docmind_trash",
 }
 _MAX_FILE_BYTES = 500 * 1024
+_MAX_IMAGE_FILE_BYTES = 5 * 1024 * 1024
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 _MAX_SHADOW_TAGS = 8
 _BAD_SHADOW_PREFIXES = ["无法确定", "无法识别", "请提供", "以下是", "根据文本", "关键词如下", "核心关键词如下"]
 _SHADOW_TAG_STOPWORDS = {"关键词", "核心关键词", "文本", "内容", "生活类", "技术类", "游戏类"}
@@ -50,7 +52,8 @@ def _is_supported_file(file: Path) -> bool:
     stat = file.stat()
     if stat.st_size == 0:
         return False
-    if stat.st_size > _MAX_FILE_BYTES:
+    size_limit = _MAX_IMAGE_FILE_BYTES if file.suffix.lower() in _IMAGE_EXTENSIONS else _MAX_FILE_BYTES
+    if stat.st_size > size_limit:
         return False
     return True
 
@@ -161,8 +164,14 @@ def read_changed_file(notes_dir: Path, relative_path: str, logger) -> FileReadRe
 
 
 
-def build_changed_file_cache_entry(context: IndexBuildContext, path: str, fingerprint: str) -> tuple[dict, dict] | None:
-    file_record = read_changed_file(context.notes_dir, path, context.logger)
+def build_changed_file_cache_entry(
+    context: IndexBuildContext,
+    path: str,
+    fingerprint: str,
+    file_record: FileReadResult | None = None,
+) -> tuple[dict, dict] | None:
+    if file_record is None:
+        file_record = read_changed_file(context.notes_dir, path, context.logger)
     if not file_record:
         context.logger.warning(f"      ⚠️ 跳过空文件或读取失败文件：{path}")
         return None

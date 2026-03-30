@@ -96,7 +96,12 @@ def load_or_build_embeddings(scanned, cache_file: Path, model_emb, logger, ollam
             if len(sidecar_examples) < 5:
                 sidecar_examples.append(path + ".ocr.txt")
 
-        cache_pair = build_changed_file_cache_entry(context, path, path_to_fp[path])
+        cache_pair = build_changed_file_cache_entry(
+            context,
+            path,
+            path_to_fp[path],
+            file_record=file_record,
+        )
         if cache_pair is None:
             continue
         doc_entry, chunk_entry = cache_pair
