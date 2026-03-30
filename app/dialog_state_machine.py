@@ -294,7 +294,7 @@ def _narrow_result_set_files_by_question(items: list[str], question: str) -> lis
             continue
 
         # 2) 反向匹配：文件名里的有效片段是否出现在问题中
-        stem = re.sub(r"\.(txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx)$", "", item, flags=re.I)
+        stem = re.sub(r"\.(txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx|png|jpg|jpeg|bmp|webp)$", "", item, flags=re.I)
         raw_parts = re.findall(r"[a-z0-9_]{2,}|[\u4e00-\u9fa5]{2,}", stem.lower())
         parts: list[str] = []
         for p in raw_parts:
@@ -440,7 +440,7 @@ def _has_explicit_file_ref(text: str) -> bool:
         return False
     return bool(
         re.search(
-            r"[A-Za-z0-9_\-\u4e00-\u9fa5\s]+?\.(?:txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx)",
+            r"[A-Za-z0-9_\-\u4e00-\u9fa5\s]+?\.(?:txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx|png|jpg|jpeg|bmp|webp)",
             q,
             flags=re.IGNORECASE,
         )

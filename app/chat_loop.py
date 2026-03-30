@@ -792,7 +792,7 @@ def run_chat_loop(
                 and not materials["inventory_candidates_text"].strip()
             ):
                 if not list(getattr(repo_state, "paths", []) or []):
-                    fallback_answer = "当前知识库还没有可检索文档。请先在笔记目录中放入支持的文件（如 .md/.txt/.pdf 等），再来提问。"
+                    fallback_answer = "当前知识库还没有可检索文档。请先在笔记目录中放入支持的文件（如 .md/.txt/.pdf/.png 等），再来提问。"
                 elif not list(getattr(repo_state, "chunk_texts", []) or []):
                     fallback_answer = "当前文档还没有形成可检索片段，请先检查文件读取/索引是否成功。"
                 else:

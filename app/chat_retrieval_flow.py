@@ -142,7 +142,7 @@ def _extract_explicit_file_anchors(text: str) -> list[str]:
         return []
 
     pattern = re.compile(
-        r"([A-Za-z0-9_\-\u4e00-\u9fa5\s]+?\.(?:txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx))",
+        r"([A-Za-z0-9_\-\u4e00-\u9fa5\s]+?\.(?:txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx|png|jpg|jpeg|bmp|webp))",
         flags=re.IGNORECASE,
     )
     anchors: list[str] = []
@@ -153,7 +153,7 @@ def _extract_explicit_file_anchors(text: str) -> list[str]:
         if not raw:
             continue
 
-        stem = re.sub(r"\.(txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx)$", "", raw, flags=re.IGNORECASE)
+        stem = re.sub(r"\.(txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx|png|jpg|jpeg|bmp|webp)$", "", raw, flags=re.IGNORECASE)
         for token in (raw, stem):
             t = token.strip()
             if t and t not in anchors:

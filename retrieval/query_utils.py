@@ -7,13 +7,16 @@ EXTENSION_TERMS = {
     "pdf", "doc", "docx", "txt", "md",
     "xls", "xlsx", "csv",
     "ppt", "pptx",
+    "png", "jpg", "jpeg", "bmp", "webp",
     "word", "excel", "ppt",
+    "image",
 }
 
 SUPPORTED_EXT = {
     ".txt", ".md", ".doc", ".docx", ".pdf",
     ".xls", ".xlsx", ".csv",
     ".ppt", ".pptx",
+    ".png", ".jpg", ".jpeg", ".bmp", ".webp",
 }
 
 
@@ -78,6 +81,14 @@ def normalize_extension_term(term: str) -> str:
         "csv": "csv",
         "ppt": "ppt",
         "pptx": "pptx",
+        "png": "png",
+        "jpg": "jpg",
+        "jpeg": "jpeg",
+        "bmp": "bmp",
+        "webp": "webp",
+        "图片": "image",
+        "图像": "image",
+        "image": "image",
     }
     return alias_map.get(t, t)
 
@@ -132,7 +143,29 @@ def detect_inventory_target(question: str) -> Tuple[Optional[str], Optional[str]
     q = re.sub(r"[^\w\s\u4e00-\u9fa5]", "", question)
 
     # 先判断更具体的文档格式类目标
-    doc_aliases = ["word", "word文档", "doc", "docx", "pdf", "txt", "md", "excel", "xls", "xlsx", "csv", "ppt", "pptx"]
+    doc_aliases = [
+        "word",
+        "word文档",
+        "doc",
+        "docx",
+        "pdf",
+        "txt",
+        "md",
+        "excel",
+        "xls",
+        "xlsx",
+        "csv",
+        "ppt",
+        "pptx",
+        "png",
+        "jpg",
+        "jpeg",
+        "bmp",
+        "webp",
+        "image",
+        "图片",
+        "图像",
+    ]
     for alias in doc_aliases:
         if alias in q.lower():
             return "document", alias

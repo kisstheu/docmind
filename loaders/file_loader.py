@@ -13,6 +13,9 @@ import pymupdf
 from PIL import Image
 from rapidocr_onnxruntime import RapidOCR
 
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+_SHARED_OCR_ENGINE: RapidOCR | None = None
+
 
 def robust_read_text(filepath: Path, logger=None) -> str:
     try:
@@ -37,6 +40,13 @@ def _create_ocr_engine() -> RapidOCR:
     return RapidOCR(det_use_cuda=True, cls_use_cuda=True, rec_use_cuda=True)
 
 
+def _get_shared_ocr_engine() -> RapidOCR:
+    global _SHARED_OCR_ENGINE
+    if _SHARED_OCR_ENGINE is None:
+        _SHARED_OCR_ENGINE = _create_ocr_engine()
+    return _SHARED_OCR_ENGINE
+
+
 def _ocr_image_bytes(
     image_bytes: bytes,
     ocr_engine: RapidOCR | None = None,
@@ -45,7 +55,7 @@ def _ocr_image_bytes(
 ) -> str:
     try:
         if ocr_engine is None:
-            ocr_engine = _create_ocr_engine()
+            ocr_engine = _get_shared_ocr_engine()
 
         result, _ = ocr_engine(image_bytes)
         if not result:
@@ -252,6 +262,40 @@ def _read_pdf_with_sidecar(file: Path, logger=None) -> tuple[Optional[str], bool
     return None, False
 
 
+def _read_image_with_sidecar(file: Path, logger=None) -> tuple[Optional[str], bool]:
+    ocr_sidecar_path = file.with_name(file.name + ".ocr.txt")
+
+    if ocr_sidecar_path.exists() and ocr_sidecar_path.stat().st_mtime >= file.stat().st_mtime:
+        if logger:
+            logger.info(f"      ♻️ 复用图片 OCR sidecar -> {ocr_sidecar_path.name}")
+        return robust_read_text(ocr_sidecar_path, logger=logger), True
+
+    try:
+        image_bytes = file.read_bytes()
+        # 提前做一次图片校验，避免把损坏文件喂给 OCR。
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            img.verify()
+    except Exception as e:
+        if logger:
+            logger.warning(f"⚠️ 图片文件校验失败 {file.name}: {e}")
+        return None, False
+
+    text = _ocr_image_bytes(
+        image_bytes,
+        ocr_engine=_get_shared_ocr_engine(),
+        logger=logger,
+        source_name=file.name,
+    )
+    text = _normalize_content(text)
+    if text:
+        ocr_sidecar_path.write_text(text, encoding="utf-8")
+        if logger:
+            logger.info(f"      💾 已写入图片 OCR sidecar -> {ocr_sidecar_path.name}")
+        return text, False
+
+    return None, False
+
+
 def read_file(file: Path, logger=None) -> tuple[Optional[str], bool]:
     content = ""
     used_sidecar = False
@@ -276,6 +320,10 @@ def read_file(file: Path, logger=None) -> tuple[Optional[str], bool]:
 
         elif suffix == ".pdf":
             content, used_sidecar = _read_pdf_with_sidecar(file, logger=logger)
+            return (content if content else None), used_sidecar
+
+        elif suffix in _IMAGE_EXTENSIONS:
+            content, used_sidecar = _read_image_with_sidecar(file, logger=logger)
             return (content if content else None), used_sidecar
 
     except Exception as e:

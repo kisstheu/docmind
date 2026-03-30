@@ -7,7 +7,10 @@ from uuid import uuid4
 
 from infra.file_change_store import collect_file_snapshot
 
-SUPPORTED_EXT = {".txt", ".md", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx"}
+SUPPORTED_EXT = {
+    ".txt", ".md", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx",
+    ".png", ".jpg", ".jpeg", ".bmp", ".webp",
+}
 DEFAULT_TRASH_DIR = ".docmind_trash"
 
 KW_DELETE = (
@@ -65,7 +68,7 @@ def extract_explicit_filename(text: str) -> str | None:
         return None
 
     m = re.search(
-        r"([A-Za-z0-9_\-\u4e00-\u9fa5\s]+?\.(?:txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx))",
+        r"([A-Za-z0-9_\-\u4e00-\u9fa5\s]+?\.(?:txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx|png|jpg|jpeg|bmp|webp))",
         q,
         flags=re.IGNORECASE,
     )
