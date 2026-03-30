@@ -28,12 +28,14 @@ SMALLTALK_PATTERNS = [
     "哈哈", "呵呵", "hhh", "hh",
     "好的", "行", "ok",
     "厉害", "真强", "挺强", "牛", "不错", "可以啊", "这么强", "赞", "棒",
+    "太强", "你太强", "你可太强", "太厉害",
+    "高冷", "好高冷", "太高冷", "冷淡", "太冷淡",
 ]
 
 SMALLTALK_STRONG_PATTERNS = [
     "谢谢", "感谢", "多谢", "辛苦了",
     "你好", "在吗",
-    "厉害", "真强", "挺强", "这么强",
+    "厉害", "真强", "挺强", "这么强", "太强", "太厉害",
 ]
 
 SMALLTALK_BLOCK_PATTERNS = [
@@ -130,6 +132,27 @@ def is_smalltalk_message(question: str) -> bool:
     q = normalize_text(question)
     if not q:
         return False
+
+    assistant_persona_markers = (
+        "你多大",
+        "你几岁",
+        "你多少岁",
+        "你今年多大",
+        "你的年龄",
+        "你的年纪",
+        "你叫什么",
+        "你叫啥",
+        "你叫啥名",
+        "你叫啥名字",
+        "你的名字",
+        "你的姓名",
+        "whatisyourname",
+        "yourname",
+        "howoldareyou",
+        "yourage",
+    )
+    if any(p in q for p in assistant_persona_markers):
+        return True
 
     has_smalltalk_pattern = any(p in q for p in SMALLTALK_PATTERNS)
     has_emoji_marker = any(ch in q for ch in EMOJI_MARKERS)

@@ -25,15 +25,39 @@ def _is_smalltalk(q: str) -> bool:
     if not q:
         return False
 
+    # 人格类闲聊：直接问助手自身信息，不应进入笔记检索。
+    assistant_persona_markers = (
+        "你多大",
+        "你几岁",
+        "你多少岁",
+        "你今年多大",
+        "你的年龄",
+        "你的年纪",
+        "你叫什么",
+        "你叫啥",
+        "你叫啥名",
+        "你叫啥名字",
+        "你的名字",
+        "你的姓名",
+        "whatisyourname",
+        "yourname",
+        "howoldareyou",
+        "yourage",
+    )
+    if any(p in q for p in assistant_persona_markers):
+        return True
+
     smalltalk_markers = (
         "你好", "嗨", "hello", "hi", "在吗", "在不在",
         "谢谢", "感谢", "多谢", "辛苦了",
         "哈哈", "呵呵", "hhh", "hh", "好的", "好的呀", "行", "ok",
         "厉害", "真强", "挺强", "牛", "不错", "可以啊", "这么强", "赞", "棒",
+        "太强", "你太强", "你可太强", "太厉害",
+        "高冷", "好高冷", "太高冷", "冷淡", "太冷淡",
     )
     strong_smalltalk_markers = (
         "谢谢", "感谢", "多谢", "辛苦了",
-        "你好", "在吗", "厉害", "真强", "挺强", "这么强",
+        "你好", "在吗", "厉害", "真强", "挺强", "这么强", "太强", "太厉害",
     )
     retrieval_block_markers = (
         "找", "查", "搜", "检索",

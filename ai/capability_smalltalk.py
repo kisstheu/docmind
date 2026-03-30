@@ -46,6 +46,15 @@ def answer_smalltalk(question: str, dialog_state=None) -> str | None:
     if contains_any(q, JUDGMENT_LIKE_KEYWORDS):
         return None
 
+    if contains_any(q, ("你叫什么", "你叫啥", "你叫啥名", "你叫啥名字", "你的名字", "你的姓名", "what is your name")):
+        return "你可以叫我 DocMind。"
+
+    if contains_any(q, ("你多大", "你几岁", "你多少岁", "你今年多大", "你的年龄", "你的年纪", "how old are you")):
+        return "我是 AI 助手，没有真实年龄。"
+
+    if contains_any(q, ("高冷", "好高冷", "太高冷", "冷淡", "太冷淡")):
+        return _with_emojis("收到，我换成更随和一点的语气。", "🙂")
+
     if contains_any(q, ("你好", "嗨", "hello", "hi")):
         return _with_emojis("你好呀。", "😊")
 
@@ -72,7 +81,7 @@ def answer_smalltalk(question: str, dialog_state=None) -> str | None:
             return _with_emojis("先别急着夸，真问起来我再表现。", "😄")
         return _with_emojis("哈哈。", "😄")
 
-    if contains_any(q, ("挺强", "真强", "厉害", "牛", "不错", "可以啊", "真行", "这么强", "看着挺强")):
+    if contains_any(q, ("挺强", "真强", "厉害", "牛", "不错", "可以啊", "真行", "这么强", "看着挺强", "太强", "你太强了", "你可太强了", "太厉害")):
         if dialog_state and getattr(dialog_state, "last_route", None) == "system_capability":
             return _with_emojis("功能先说在前面，真干活还得看你怎么使唤我。", "😄")
         return _with_emojis("你这么一说，我都有点不好意思了。", "😄", "🙌")
