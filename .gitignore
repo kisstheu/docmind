@@ -17,15 +17,27 @@ desktop.ini
 $RECYCLE.BIN/
 Thumbs.db
 
-# --- 缓存文件 ---
-brain_cache*.npz
+# --- 运行时生成目录 ---
+.docmind_trash/
+
+# --- 项目运行缓存与日志 ---
+cache/
+*.log
+*.npz
+logs/
 
 # --- 自动生成的伴生文件 ---
 test_notes/*.ocr.txt
 
 # --- 敏感数据 ---
- test_notes/
+test_notes/
 /.idea/inspectionProfiles/Project_Default.xml
 /.idea/misc.xml
 /cache/demo_notes_public/file_change_log.db
 /cache/kisstheu/file_change_log.db
+
+# --- 运行期数据库 ---
+file_change_log.db
+*.db
+
+pack_docmind.py
