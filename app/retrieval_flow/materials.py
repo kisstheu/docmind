@@ -103,16 +103,27 @@ def build_safe_final_prompt(
     constrained_context_text = safe_context_text
     constrained_question = safe_question
 
-    if event_name == "result_set_followup" and safe_result_set_items:
-        result_set_block = (
-            "【上一轮候选集合】\n"
-            + "\n".join(f"- {item}" for item in safe_result_set_items[:20])
-            + "\n\n"
-            "【结果集追问约束】\n"
-            "当前问题是在上一轮候选集合基础上的进一步筛选。\n"
-            "你只能在上述候选项中进行判断，不得新增集合外实体。\n"
-            "若证据不足，可回答“无法确定”，不要扩展候选集合。\n\n"
-        )
+    if safe_result_set_items and event_name in {"result_set_followup", "result_set_expansion_followup"}:
+        if event_name == "result_set_followup":
+            result_set_block = (
+                "【上一轮候选集合】\n"
+                + "\n".join(f"- {item}" for item in safe_result_set_items[:20])
+                + "\n\n"
+                "【结果集追问约束】\n"
+                "当前问题是在上一轮候选集合基础上的进一步筛选。\n"
+                "你只能在上述候选项中进行判断，不得新增集合外实体。\n"
+                "若证据不足，可回答“无法确定”，不要扩展候选集合。\n\n"
+            )
+        else:
+            result_set_block = (
+                "【已知候选集合】\n"
+                + "\n".join(f"- {item}" for item in safe_result_set_items[:20])
+                + "\n\n"
+                "【结果集扩展约束】\n"
+                "这是在已知候选基础上的补充追问，可以新增集合外实体。\n"
+                "新增项必须有参考片段证据，并避免重复已知候选。\n"
+                "若没有新增，请明确说明“没有识别出新的实体”。\n\n"
+            )
         constrained_context_text = result_set_block + constrained_context_text
 
     return build_final_prompt(

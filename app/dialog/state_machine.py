@@ -5,6 +5,7 @@ from typing import Optional
 
 from app.context_anchor import is_context_dependent_question
 from app.dialog.repo_meta_rules import (
+    is_entity_lookup_request,
     is_list_format_modifier,
     is_repo_meta_request,
     is_structured_output_request,
@@ -16,6 +17,7 @@ from app.dialog.result_set import (
     build_result_set_followup_query,
     extract_result_set_from_answer,
     last_turn_looks_like_enumeration,
+    looks_like_result_set_continuation_followup,
     looks_like_result_set_comparison_followup,
     looks_like_result_set_followup,
 )
@@ -141,6 +143,9 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
 
     # === 6. repo_meta 继承
     if prev_route == "repo_meta":
+        if is_entity_lookup_request(question):
+            return DialogEvent(name="entity_lookup_followup", route_hint="normal_retrieval")
+
         if is_followup_question(question):
             return DialogEvent(name="repo_followup", route_hint="repo_meta")
 
@@ -167,6 +172,8 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
         rs_match = True
 
     if prev_route in {"normal_retrieval", "repo_meta"} and rs_match and is_result_set_answer:
+        if looks_like_result_set_continuation_followup(question):
+            return DialogEvent(name="result_set_expansion_followup", route_hint="normal_retrieval")
         return DialogEvent(name="result_set_followup", route_hint="normal_retrieval")
 
     # === 8. 内容追问继承

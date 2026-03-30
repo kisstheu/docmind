@@ -12,6 +12,18 @@ def extract_result_set_from_answer(answer: str, entity_type: str = "文件") -> 
 RESULT_SET_FOLLOWUP_PATTERNS = [
     r"^哪些是",
     r"^哪个是",
+    r"^是哪个文件",
+    r"^是哪个文档",
+    r"^是哪个记录",
+    r"^是在哪个文件",
+    r"^是在哪个文档",
+    r"^是在哪个记录",
+    r"^在哪个文件",
+    r"^在哪个文档",
+    r"^在哪个记录",
+    r"^在哪份文件",
+    r"^在哪份文档",
+    r"^在哪份记录",
     r"^哪几个是",
     r"^哪些属于",
     r"^哪些不是",
@@ -71,6 +83,10 @@ RESULT_SET_FOLLOWUP_PATTERNS = [
     r"^也就是说.*一样",
 ]
 RESULT_SET_CONTINUATION_PATTERNS = [
+    r"^更多$",
+    r"^继续$",
+    r"^再来$",
+    r"^补充$",
     r"^还有吗",
     r"^还有没有",
     r"^还有别的",
@@ -106,6 +122,13 @@ def looks_like_result_set_followup(question: str) -> bool:
         any(re.search(p, q) for p in RESULT_SET_FOLLOWUP_PATTERNS)
         or any(re.search(p, q) for p in RESULT_SET_CONTINUATION_PATTERNS)
     )
+
+
+def looks_like_result_set_continuation_followup(question: str) -> bool:
+    q = (question or "").strip()
+    if not q:
+        return False
+    return any(re.search(p, q) for p in RESULT_SET_CONTINUATION_PATTERNS)
 
 
 def looks_like_result_set_comparison_followup(question: str) -> bool:
@@ -275,11 +298,11 @@ def build_result_set_followup_query(
             candidate_items = _narrow_result_set_files_by_question(candidate_items, q)
         item_text = "；".join(candidate_items[:20])
 
-        if q.startswith(("还有", "另外", "除此之外", "还有没有", "还有别的")):
+        if looks_like_result_set_continuation_followup(q):
             return (
                 f"已知{entity_type}集合如下：{item_text}。"
-                f"请基于原问题继续判断，是否还有其他符合条件的{entity_type}。"
-                f"原问题：{q}"
+                f"请继续在知识库中检索，判断是否还有其他符合条件的{entity_type}，并避免重复已知项。"
+                f"当前追问：{q}"
             )
 
         if entity_type == "文件":

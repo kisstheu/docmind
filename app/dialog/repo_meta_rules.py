@@ -83,6 +83,38 @@ def is_repo_meta_request(question: str) -> bool:
     return False
 
 
+def is_entity_lookup_request(question: str) -> bool:
+    """
+    识别“实体查找”类问题（人物/公司/项目），用于避免被 repo_meta 追问继承误吸收。
+    """
+    q = normalize_meta_question(question)
+    if not q:
+        return False
+
+    has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
+    if has_doc_word:
+        return False
+
+    has_entity_word = any(x in q for x in [
+        "公司名", "公司名称", "公司", "企业",
+        "人名", "姓名", "人物", "人员", "谁",
+        "项目名", "项目名称", "项目",
+    ])
+    has_lookup_intent = any(x in q for x in [
+        "找", "查", "搜", "检索",
+        "提到", "提及", "出现",
+        "名字", "名称",
+        "有哪些", "有哪", "哪些", "哪几个", "哪几家", "列出",
+    ])
+    has_repo_meta_intent = any(x in q for x in [
+        "多少", "数量", "格式", "分类", "清单",
+        "最新", "最早", "最晚", "最近更新", "最近修改",
+        "修改时间", "创建时间", "占多大", "总大小", "空间",
+    ])
+
+    return has_entity_word and has_lookup_intent and not has_repo_meta_intent
+
+
 def _has_explicit_date_reference(text: str) -> bool:
     q = normalize_meta_question(text)
     if not q:

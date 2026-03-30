@@ -23,16 +23,27 @@ def build_final_prompt(
     focus_injection = build_focus_injection(current_focus_file)
 
     result_set_injection = ""
-    if event_name == "result_set_followup" and result_set_items:
-        result_set_injection = (
-            "【上一轮候选集合】\n"
-            + "\n".join(f"- {x}" for x in result_set_items[:20])
-            + "\n\n"
-            + "【结果集追问约束】\n"
-            + "当前问题是在上一轮候选集合基础上的进一步筛选或展开。"
-            + "只能在上述候选项中做判断，不得新增集合外实体。"
-            + "若证据不足，可明确写“无法确定”，不要跳出候选集合。\n\n"
-        )
+    if result_set_items and event_name in {"result_set_followup", "result_set_expansion_followup"}:
+        if event_name == "result_set_followup":
+            result_set_injection = (
+                "【上一轮候选集合】\n"
+                + "\n".join(f"- {x}" for x in result_set_items[:20])
+                + "\n\n"
+                + "【结果集追问约束】\n"
+                + "当前问题是在上一轮候选集合基础上的进一步筛选。"
+                + "只能在上述候选项中做判断，不得新增集合外实体。"
+                + "若证据不足，可明确写“无法确定”，不要跳出候选集合。\n\n"
+            )
+        else:
+            result_set_injection = (
+                "【已知候选集合】\n"
+                + "\n".join(f"- {x}" for x in result_set_items[:20])
+                + "\n\n"
+                + "【结果集扩展约束】\n"
+                + "当前问题是在已知候选基础上的补充查找，可以补充新的实体。"
+                + "新增实体必须有参考片段证据，且不要重复已知候选。"
+                + "若无新增，请直接说明“没有识别出新的实体”。\n\n"
+            )
 
     entity_name_constraint = (
         "【实体名称约束】\n"

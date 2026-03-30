@@ -2,6 +2,29 @@ from __future__ import annotations
 
 import re
 
+EXPANSION_MARKERS = ["更多", "还有", "继续", "再来", "补充"]
+NO_NEW_PATTERNS = [
+    "没有发现其他",
+    "没有发现新的",
+    "没有其他新的",
+    "暂未发现新的",
+    "未发现其他",
+    "没有找到其他",
+    "没有找到新的",
+    "未找到新的",
+    "没有更多",
+    "暂无更多",
+    "没有识别出新的",
+    "未识别出新的",
+]
+
+
+def _contains_no_new_signal(answer_text: str) -> bool:
+    a = (answer_text or "").strip()
+    if not a:
+        return False
+    return any(p in a for p in NO_NEW_PATTERNS)
+
 
 def append_memory(memory_buffer: list[str], question: str, answer: str, limit: int = 6) -> None:
     memory_buffer.append(f"用户问：{question}")
@@ -43,24 +66,22 @@ def infer_answer_type(user_question: str, answer_text: str) -> str | None:
         if a.count("有限公司") >= 2:
             return "enumeration_company"
 
-    expansion_markers = ["更多", "还有", "继续", "再来", "补充"]
-    if any(x in q_norm for x in expansion_markers):
+    if any(x in q_norm for x in EXPANSION_MARKERS):
         if len(numbered_lines) >= 1 and ("公司" in a or "名称" in a):
             return "enumeration_company"
 
-        no_new_patterns = [
-            "没有发现其他",
-            "没有发现新的",
-            "没有其他新的",
-            "暂未发现新的",
-            "未发现其他",
-            "没有找到其他",
-            "没有找到新的",
-            "未找到新的",
-            "没有更多",
-        ]
-        if ("公司" in a or "名称" in a) and any(p in a for p in no_new_patterns):
+        if len(numbered_lines) >= 1 and any(x in a for x in ["人物", "人员", "人名", "姓名"]):
+            return "enumeration_person"
+
+        if len(numbered_lines) >= 1 and any(x in a for x in ["文件", "文档", "记录"]):
+            return "enumeration_file"
+
+        if ("公司" in a or "名称" in a) and _contains_no_new_signal(a):
             return "enumeration_company"
+        if any(x in a for x in ["人物", "人员", "人名", "姓名"]) and _contains_no_new_signal(a):
+            return "enumeration_person"
+        if any(x in a for x in ["文件", "文档", "记录"]) and _contains_no_new_signal(a):
+            return "enumeration_file"
 
     if "文件" in q or "文档" in q or "记录" in q:
         if len(numbered_lines) >= 2:
@@ -103,18 +124,30 @@ def extract_numbered_items(answer_text: str) -> list[str]:
 
 def extract_file_items(answer_text: str) -> list[str]:
     items: list[str] = []
+    file_pattern = re.compile(
+        r"([A-Za-z0-9_\-\u4e00-\u9fa5\\/:.\s]+?\.(?:txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx|png|jpg|jpeg|bmp|webp))\b",
+        flags=re.IGNORECASE,
+    )
+
+    def _extract_file_candidate(text: str) -> str:
+        raw = (text or "").strip()
+        if not raw:
+            return ""
+        m = file_pattern.search(raw)
+        if not m:
+            return ""
+        candidate = m.group(1).strip()
+        candidate = re.sub(r"\s+", " ", candidate).strip()
+        candidate = candidate.strip("“”\"'[]【】（）()，,。；;：:")
+        return candidate
 
     def _add_file_item(raw_item: str) -> None:
-        t = (raw_item or "").strip()
-        if not t:
+        candidate = _extract_file_candidate(raw_item)
+        if not candidate:
             return
 
-        t = re.sub(r"（\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}）$", "", t).strip()
-        t = re.sub(r"[。；;，,]+$", "", t).strip()
-        if not t:
-            return
-        if t not in items:
-            items.append(t)
+        if candidate not in items:
+            items.append(candidate)
 
     for item in extract_numbered_items(answer_text):
         _add_file_item(item)
@@ -353,6 +386,9 @@ def update_state_after_retrieval_answer(state, question: str, answer_text: str, 
         logger.debug(f"🧪 [候选集合提取] company_items={company_items}")
     elif answer_type == "enumeration_file":
         file_items = extract_file_items(answer_text)
+        if not file_items and prev_result_set_entity_type == "文件" and prev_result_set_items and _contains_no_new_signal(answer_text):
+            file_items = prev_result_set_items
+            logger.debug("🧷 [候选集合提取] 本轮无新增文件，沿用上一轮文件候选集合")
         state.last_result_set_items = file_items
         state.last_result_set_entity_type = "文件"
 
@@ -360,6 +396,9 @@ def update_state_after_retrieval_answer(state, question: str, answer_text: str, 
         logger.debug(f"🧪 [候选集合提取] file_items={file_items}")
     elif answer_type == "enumeration_person":
         person_items = extract_numbered_items(answer_text)
+        if not person_items and prev_result_set_entity_type == "人物" and prev_result_set_items and _contains_no_new_signal(answer_text):
+            person_items = prev_result_set_items
+            logger.debug("🧷 [候选集合提取] 本轮无新增人物，沿用上一轮人物候选集合")
         state.last_result_set_items = person_items
         state.last_result_set_entity_type = "人物"
 
@@ -368,18 +407,25 @@ def update_state_after_retrieval_answer(state, question: str, answer_text: str, 
 
     else:
         q_norm = re.sub(r"[？?！!，,。.\s]+", "", (question or ""))
-        keep_company_context = (
-            prev_result_set_entity_type == "公司"
+        entity_to_answer_type = {
+            "公司": "enumeration_company",
+            "文件": "enumeration_file",
+            "人物": "enumeration_person",
+        }
+        keep_result_set_context = (
+            prev_result_set_entity_type in entity_to_answer_type
             and bool(prev_result_set_items)
-            and any(x in q_norm for x in ["更多", "还有", "继续", "再来", "补充"])
-            and any(p in (answer_text or "") for p in ["没有发现", "未发现", "没有找到", "未找到", "没有更多"])
+            and any(x in q_norm for x in EXPANSION_MARKERS)
+            and _contains_no_new_signal(answer_text or "")
         )
 
-        if keep_company_context:
+        if keep_result_set_context:
             state.last_result_set_items = prev_result_set_items
-            state.last_result_set_entity_type = "公司"
-            state.last_answer_type = prev_answer_type or "enumeration_company"
-            logger.debug("🧷 [状态保留] 扩展追问未新增公司，保留上一轮公司候选集合")
+            state.last_result_set_entity_type = prev_result_set_entity_type
+            state.last_answer_type = prev_answer_type or entity_to_answer_type.get(prev_result_set_entity_type)
+            logger.debug(
+                f"🧷 [状态保留] 扩展追问未新增{prev_result_set_entity_type}，保留上一轮{prev_result_set_entity_type}候选集合"
+            )
             logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={state.last_answer_type}")
         else:
             state.last_result_set_items = None

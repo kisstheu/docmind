@@ -41,3 +41,4 @@ file_change_log.db
 *.db
 
 pack_docmind.py
+/tests/

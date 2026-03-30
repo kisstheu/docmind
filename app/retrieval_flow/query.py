@@ -309,7 +309,7 @@ def build_search_query(
     explicit_file_anchors: list[str] = []
 
     event_name = getattr(event, "name", "")
-    if event_name == "result_set_followup":
+    if event_name in {"result_set_followup", "result_set_expansion_followup"}:
         from app.dialog.state_machine import build_result_set_followup_query
 
         base_query = build_result_set_followup_query(
@@ -340,7 +340,7 @@ def build_search_query(
     explicit_file_anchors = _extract_explicit_file_anchors(base_query)
 
     # 结果集追问：直接使用受控拼接后的查询，不再经过普通 rewrite/过滤链路
-    if event_name == "result_set_followup":
+    if event_name in {"result_set_followup", "result_set_expansion_followup"}:
         search_query = _force_append_anchor_terms(base_query.strip(), explicit_file_anchors, logger=logger)
         logger.info("🛡️ [结果集追问] 跳过 query rewrite 与新增词过滤，直接使用候选集合查询")
         logger.info(f"🛡️ [强词保底后]：{search_query}")
