@@ -10,6 +10,16 @@ from retrieval.query_utils import (
     extract_company_candidates,
 )
 
+IMPORTANT_SHORT_CJK_BODY_TERMS = {
+    "姓名",
+    "人名",
+    "名字",
+    "昵称",
+    "网名",
+    "本名",
+    "称呼",
+}
+
 
 def is_over_generic_term(term: str) -> bool:
     t = (term or "").strip().lower()
@@ -162,7 +172,7 @@ def should_score_body_term(term: str) -> bool:
 
     # 中文词太短，默认不参与正文打分
     if re.fullmatch(r"[\u4e00-\u9fa5]+", t) and len(t) <= 2:
-        return False
+        return t in IMPORTANT_SHORT_CJK_BODY_TERMS
 
     # 纯英文/数字太短，也不参与正文打分
     if re.fullmatch(r"[a-z0-9_]+", t) and len(t) <= 2:

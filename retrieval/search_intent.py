@@ -34,7 +34,23 @@ def is_expansion_followup_question(question: str) -> bool:
     q = (question or "").replace(" ", "").lower()
     if not q:
         return False
-    patterns = ["更多", "还有", "另外", "其他", "别的", "继续", "再来", "补充", "还包括"]
+    patterns = [
+        "更多",
+        "还有",
+        "另外",
+        "其他",
+        "别的",
+        "继续",
+        "再来",
+        "补充",
+        "还包括",
+        "扩大范围",
+        "范围大点",
+        "范围放宽",
+        "放宽范围",
+        "放宽一点",
+        "扩大检索",
+    ]
     return any(p in q for p in patterns)
 
 
@@ -43,6 +59,8 @@ def is_entity_name_lookup_context(question: str, search_terms: list[str]) -> boo
         return True
 
     term_set = {t.strip().lower() for t in (search_terms or []) if t and t.strip()}
+    if term_set.intersection({"姓名", "人名", "名字", "昵称", "网名"}):
+        return True
     if "名称" in term_set:
         if term_set.intersection({"公司", "人名", "姓名", "项目"}):
             return True

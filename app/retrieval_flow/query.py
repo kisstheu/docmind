@@ -13,7 +13,30 @@ from app.chat_text_utils import (
 )
 
 
+_FORCE_WIDER_SCOPE_MARKERS = (
+    "扩大范围",
+    "范围大点",
+    "范围放宽",
+    "放宽范围",
+    "放宽一点",
+    "扩大检索",
+    "全库",
+    "全局",
+    "别只看",
+)
+
+
+def _wants_force_wider_scope(question: str) -> bool:
+    q = normalize_question_for_retrieval(question)
+    if not q:
+        return False
+    return any(marker in q for marker in _FORCE_WIDER_SCOPE_MARKERS)
+
+
 def should_reuse_previous_results(question: str, event, last_relevant_indices) -> bool:
+    if _wants_force_wider_scope(question):
+        # 明确要求“扩大范围”时，走重新检索而不是复用旧结果。
+        return False
     return (
         getattr(event, "name", "") == "content_followup"
         and bool(last_relevant_indices)
