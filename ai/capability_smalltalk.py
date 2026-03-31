@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 
-from ai.capability_common import EMOJI_RESPONSES, JUDGMENT_LIKE_KEYWORDS, clean_text, contains_any
+from ai.capability_common import JUDGMENT_LIKE_KEYWORDS, clean_text, contains_any
 
 
 def _emoji_enabled() -> bool:
@@ -52,41 +53,8 @@ def answer_smalltalk(question: str, dialog_state=None) -> str | None:
     if contains_any(q, ("你多大", "你几岁", "你多少岁", "你今年多大", "你的年龄", "你的年纪", "how old are you")):
         return "我是 AI 助手，没有真实年龄。"
 
-    if contains_any(q, ("高冷", "好高冷", "太高冷", "冷淡", "太冷淡")):
-        return _with_emojis("收到，我换成更随和一点的语气。", "🙂")
-
-    if contains_any(q, ("你好", "嗨", "hello", "hi")):
-        return _with_emojis("你好呀。", "😊")
-
-    if contains_any(q, ("在吗", "在不在", "在嘛")):
-        return _with_emojis("在。", "👋")
-
-    if contains_any(q, ("谢谢", "多谢", "感谢", "辛苦了")):
-        return _with_emojis("不客气。", "🙏", "😊")
-
-    if contains_any(q, ("不少", "挺多", "很多")):
-        if dialog_state and getattr(dialog_state, "last_route", None) == "repo_meta":
-            if getattr(dialog_state, "last_local_topic", None) == "list_files":
-                return _with_emojis("是的，现在已经积累得挺多了。", "🙂")
-        return _with_emojis("嗯，确实不少。", "🙂")
-
-    if contains_any(q, ("太细了", "太碎了", "别那么细", "不要太细")):
-        if dialog_state and getattr(dialog_state, "last_route", None) == "repo_meta":
-            if getattr(dialog_state, "last_local_topic", None) in {"category", "category_summary"}:
-                return _with_emojis("嗯，我按更大的方面再给你归并一下。", "👌")
-        return _with_emojis("嗯，我换个更粗的角度说。", "👌")
-
-    if q in EMOJI_RESPONSES:
-        if dialog_state and getattr(dialog_state, "last_route", None) == "system_capability":
-            return _with_emojis("先别急着夸，真问起来我再表现。", "😄")
-        return _with_emojis("哈哈。", "😄")
-
-    if contains_any(q, ("挺强", "真强", "厉害", "牛", "不错", "可以啊", "真行", "这么强", "看着挺强", "太强", "你太强了", "你可太强了", "太厉害")):
-        if dialog_state and getattr(dialog_state, "last_route", None) == "system_capability":
-            return _with_emojis("功能先说在前面，真干活还得看你怎么使唤我。", "😄")
-        return _with_emojis("你这么一说，我都有点不好意思了。", "😄", "🙌")
-
-    if contains_any(q, ("不谦虚", "挺自信", "还真敢讲", "你还挺会说")):
-        return _with_emojis("先把活干明白再谦虚，也不迟。", "😄")
+    if contains_any(question, ("几点了", "现在几点", "现在几点了")):
+        now = datetime.now()
+        return _with_emojis(f"现在时间是 {now.strftime('%H:%M')}。", "⏰")
 
     return None

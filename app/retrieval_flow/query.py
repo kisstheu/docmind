@@ -345,7 +345,7 @@ def build_search_query(
 
         logger.info(f"🔗 [结果集追问拼接] {base_query}")
     else:
-        if event_name in {"content_followup", "action_request", "judgment_request"}:
+        if event_name in {"content_followup", "action_request", "judgment_request", "query_correction"}:
             if getattr(event, "merged_query", None) and should_keep_followup_anchor(question):
                 base_query = _stabilize_followup_merged_query(
                     merged_query=event.merged_query,

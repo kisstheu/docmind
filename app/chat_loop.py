@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from google.genai import types
+import requests
 
 from ai.capabilities import (
     answer_repo_meta_question,
@@ -81,12 +83,227 @@ def try_handle_repo_meta(
     return local_answer, local_topic
 
 
-def try_handle_smalltalk(route: str, question: str) -> str | None:
+def _call_local_ollama_answer(
+    prompt: str,
+    ollama_api_url: str,
+    ollama_model: str,
+    logger,
+    *,
+    timeout_sec: float,
+    log_prefix: str,
+) -> str | None:
+    payload = {
+        "model": ollama_model,
+        "prompt": prompt,
+        "stream": False,
+    }
+    try:
+        resp = requests.post(ollama_api_url, json=payload, timeout=timeout_sec)
+        resp.raise_for_status()
+        text = (resp.json().get("response") or "").strip()
+        if not text:
+            return None
+        compact = " ".join(text.split())
+        return compact[:180]
+    except Exception as e:
+        logger.warning(f"⚠️ {log_prefix} 本地模型回答失败，回退固定文案：{e}")
+        return None
+
+
+def _is_smalltalk_local_llm_enabled() -> bool:
+    raw = (os.getenv("DOCMIND_SMALLTALK_LOCAL_LLM") or "1").strip().lower()
+    return raw not in {"0", "false", "off", "no"}
+
+
+def _build_smalltalk_prompt(
+    question: str,
+    *,
+    prev_user_question: str | None = None,
+    prev_answer_preview: str | None = None,
+    last_route: str | None = None,
+) -> str:
+    prev_q = (prev_user_question or "").strip() or "unknown"
+    prev_a = (prev_answer_preview or "").strip() or "unknown"
+    prev_route = (last_route or "").strip() or "unknown"
+    return f"""
+你是 DocMind 助手。请对用户的闲聊做自然简短回复。
+要求：
+1) 直接回答用户，不要说“超出范围”。
+2) 回答控制在 1-2 句中文。
+3) 不要虚构你看过用户本地文档。
+4) 涉及你自身生理状态时，以 AI 助手身份回答。
+5) 如果当前问句是残句/接话，先结合上一轮语境补全语义，再直接回答。
+
+上一轮路由：{prev_route}
+上一轮用户问题：{prev_q}
+上一轮回答摘要：{prev_a}
+用户问题：{question}
+回答：
+""".strip()
+
+
+def _answer_smalltalk_with_local_llm(
+    question: str,
+    ollama_api_url: str,
+    ollama_model: str,
+    logger,
+    *,
+    prev_user_question: str | None = None,
+    prev_answer_preview: str | None = None,
+    last_route: str | None = None,
+) -> str | None:
+    if not _is_smalltalk_local_llm_enabled():
+        return None
+    prompt = _build_smalltalk_prompt(
+        question,
+        prev_user_question=prev_user_question,
+        prev_answer_preview=prev_answer_preview,
+        last_route=last_route,
+    )
+    return _call_local_ollama_answer(
+        prompt=prompt,
+        ollama_api_url=ollama_api_url,
+        ollama_model=ollama_model,
+        logger=logger,
+        timeout_sec=20,
+        log_prefix="smalltalk",
+    )
+
+
+def try_handle_smalltalk(
+    route: str,
+    question: str,
+    ollama_api_url: str,
+    ollama_model: str,
+    logger,
+    prefetched_smalltalk_answer: str | None = None,
+) -> str | None:
     global conversation_state
 
     if route != "smalltalk":
         return None
-    return answer_smalltalk(question, dialog_state=conversation_state)
+    local = answer_smalltalk(question, dialog_state=conversation_state)
+    if local is not None:
+        return local
+
+    prefetched = (prefetched_smalltalk_answer or "").strip()
+    if prefetched:
+        return prefetched
+
+    local_llm_answer = _answer_smalltalk_with_local_llm(
+        question=question,
+        ollama_api_url=ollama_api_url,
+        ollama_model=ollama_model,
+        logger=logger,
+        prev_user_question=getattr(conversation_state, "last_user_question", None),
+        prev_answer_preview=getattr(conversation_state, "last_answer_preview", None),
+        last_route=getattr(conversation_state, "last_route", None),
+    )
+    if local_llm_answer:
+        return local_llm_answer
+
+    return "这个我先按闲聊处理，不走文档检索。你也可以继续问文档相关内容。"
+
+
+def _is_out_of_scope_local_llm_enabled() -> bool:
+    raw = (os.getenv("DOCMIND_OUT_OF_SCOPE_LOCAL_LLM") or "1").strip().lower()
+    return raw not in {"0", "false", "off", "no"}
+
+
+def _build_out_of_scope_prompt(
+    question: str,
+    *,
+    prev_user_question: str | None = None,
+    prev_answer_preview: str | None = None,
+    last_route: str | None = None,
+) -> str:
+    prev_q = (prev_user_question or "").strip() or "unknown"
+    prev_a = (prev_answer_preview or "").strip() or "unknown"
+    prev_route = (last_route or "").strip() or "unknown"
+    return f"""
+你是 DocMind 助手。用户这次问题超出“文档整理与检索”主线，但你可以做简短对话回答。
+要求：
+1) 直接回答用户，不要提“超出范围/越界”。
+2) 回答控制在 1-2 句中文。
+3) 不要声称你看过用户的本地文档或检索结果。
+4) 涉及实时外部信息（天气/新闻/股价等）时，如无法确认请明确说明无法获取实时数据。
+5) 涉及你自身生理状态时，以 AI 助手身份自然回答。
+6) 如果当前问句是纠偏或残句，先结合上一轮语境补全后再回答。
+
+上一轮路由：{prev_route}
+上一轮用户问题：{prev_q}
+上一轮回答摘要：{prev_a}
+用户问题：{question}
+回答：
+""".strip()
+
+
+def _answer_out_of_scope_with_local_llm(
+    question: str,
+    ollama_api_url: str,
+    ollama_model: str,
+    logger,
+    *,
+    prev_user_question: str | None = None,
+    prev_answer_preview: str | None = None,
+    last_route: str | None = None,
+) -> str | None:
+    if not _is_out_of_scope_local_llm_enabled():
+        return None
+
+    prompt = _build_out_of_scope_prompt(
+        question,
+        prev_user_question=prev_user_question,
+        prev_answer_preview=prev_answer_preview,
+        last_route=last_route,
+    )
+    return _call_local_ollama_answer(
+        prompt=prompt,
+        ollama_api_url=ollama_api_url,
+        ollama_model=ollama_model,
+        logger=logger,
+        timeout_sec=20,
+        log_prefix="out_of_scope",
+    )
+
+
+def try_handle_out_of_scope(
+    route: str,
+    question: str,
+    ollama_api_url: str,
+    ollama_model: str,
+    logger,
+    effective_question: str | None = None,
+) -> str | None:
+    global conversation_state
+
+    if route != "out_of_scope":
+        return None
+
+    merged_question = (effective_question or "").strip()
+    question_for_answer = merged_question or question
+
+    local = answer_smalltalk(question, dialog_state=conversation_state)
+    if local is not None:
+        return local
+    if question_for_answer != question:
+        local = answer_smalltalk(question_for_answer, dialog_state=conversation_state)
+        if local is not None:
+            return local
+
+    local_llm_answer = _answer_out_of_scope_with_local_llm(
+        question=question_for_answer,
+        ollama_api_url=ollama_api_url,
+        ollama_model=ollama_model,
+        logger=logger,
+        prev_user_question=getattr(conversation_state, "last_user_question", None),
+        prev_answer_preview=getattr(conversation_state, "last_answer_preview", None),
+        last_route=getattr(conversation_state, "last_route", None),
+    )
+    if local_llm_answer:
+        return local_llm_answer
+
+    return "这个问题超出当前 DocMind 的文档整理范围，我先不调用远程模型。你可以继续问文档、记录、项目或人物相关内容。"
 
 
 def run_chat_loop(
@@ -154,7 +371,10 @@ def run_chat_loop(
             event = detect_dialog_event(question, conversation_state,logger)
             conversation_state = apply_event_to_state(conversation_state, event)
 
-            route = resolve_route(question, event, ollama_api_url, ollama_model, logger)
+            route_info = resolve_route(question, event, ollama_api_url, ollama_model, logger, state=conversation_state)
+            route = route_info["route"]
+            prefetched_smalltalk_answer = route_info.get("smalltalk_reply", "")
+            route_question_input = route_info.get("route_question_input", question)
 
             # 1) system capability
             local_answer = try_handle_system_capability(route, question)
@@ -196,7 +416,14 @@ def run_chat_loop(
                 continue
 
             # 3) smalltalk
-            local_answer = try_handle_smalltalk(route, question)
+            local_answer = try_handle_smalltalk(
+                route=route,
+                question=question,
+                ollama_api_url=ollama_api_url,
+                ollama_model=ollama_model,
+                logger=logger,
+                prefetched_smalltalk_answer=prefetched_smalltalk_answer,
+            )
             if local_answer is not None:
                 print_answer(local_answer, start_qa)
                 append_memory(memory_buffer, question, local_answer)
@@ -210,7 +437,29 @@ def run_chat_loop(
                 )
                 continue
 
-            # 4) normal retrieval
+            # 4) out_of_scope
+            local_answer = try_handle_out_of_scope(
+                route=route,
+                question=question,
+                ollama_api_url=ollama_api_url,
+                ollama_model=ollama_model,
+                logger=logger,
+                effective_question=route_question_input,
+            )
+            if local_answer is not None:
+                print_answer(local_answer, start_qa)
+                append_memory(memory_buffer, question, local_answer)
+                conversation_state = update_state_after_local_answer(
+                    conversation_state,
+                    question=question,
+                    answer=local_answer,
+                    route="out_of_scope",
+                    local_topic=None,
+                    is_content_answer=False,
+                )
+                continue
+
+            # 5) normal retrieval
             conversation_state.mode = "content"
             conversation_state.last_user_question = question
             conversation_state.last_route = "normal_retrieval"

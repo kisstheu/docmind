@@ -4,6 +4,112 @@ import re
 import requests
 
 
+_LOCAL_SMALLTALK_SHORT_PHRASES = (
+    "你好",
+    "嗨",
+    "hello",
+    "hi",
+    "在吗",
+    "在不在",
+    "谢谢",
+    "感谢",
+    "多谢",
+    "辛苦了",
+    "哈哈",
+    "呵呵",
+    "hh",
+    "hhh",
+    "好的",
+    "行",
+    "ok",
+    "不错",
+    "厉害",
+    "很强",
+    "真强",
+    "挺强",
+    "这么强",
+    "太强",
+    "你可太强了",
+    "太厉害",
+    "高冷",
+    "好高冷",
+    "晚安",
+    "晚安咯",
+    "早上好",
+    "中午好",
+    "晚上好",
+    "早上好鸭",
+    "中午好鸭",
+    "秒回",
+    "回得真快",
+    "回复这么快",
+    "还在吗",
+    "在线吗",
+    "你在吗",
+    "几点了",
+    "现在几点",
+    "现在几点了",
+    "很晚了吧",
+    "这么晚了",
+    "不早了吧",
+    "太晚了",
+    "晚安",
+    "几点睡",
+    "你几点睡",
+    "几点睡觉",
+    "几点休息",
+    "几点起",
+    "你几点起",
+    "几点起床",
+    "你几点起床",
+    "什么时候起",
+    "你什么时候起",
+    "啥时候起",
+    "你啥时候起",
+    "啥时候睡觉",
+    "什么时候睡觉",
+    "你啥时候睡",
+    "你什么时候睡",
+    "你睡了吗",
+    "睡了没",
+    "困了吗",
+    "困不困",
+    "困了没",
+    "累了吗",
+    "累不累",
+    "累了没",
+    "饿了吗",
+    "饿不饿",
+    "饿了没",
+    "忙吗",
+    "你忙吗",
+)
+_LOCAL_SMALLTALK_BLOCK_TERMS = ("他", "她", "对方", "公司", "项目", "文件", "文档", "资料")
+_LOCAL_STATUS_TERMS = ("困", "累", "饿", "忙", "晚")
+_LOCAL_STATUS_MODALS = ("吗", "嘛", "呢", "了", "没", "不", "吧")
+
+
+def is_local_smalltalk_intent(question: str) -> bool:
+    """
+    轻量本地意图补判：用于在路由前拦截短句人格闲聊，避免误入检索链路。
+    """
+    q = _sanitize_search_query(question).replace(" ", "").lower()
+    if not q:
+        return False
+
+    if len(q) <= 16 and any(p in q for p in _LOCAL_SMALLTALK_SHORT_PHRASES):
+        if not any(p in q for p in _LOCAL_SMALLTALK_BLOCK_TERMS):
+            return True
+
+    if len(q) <= 8:
+        short = q[1:] if q.startswith("你") else q
+        if not any(p in short for p in _LOCAL_SMALLTALK_BLOCK_TERMS):
+            if any(t in short for t in _LOCAL_STATUS_TERMS) and any(m in short for m in _LOCAL_STATUS_MODALS):
+                return True
+
+    return False
+
+
 def _quick_rule_rewrite(question: str) -> str | None:
     q = (question or "").strip()
     q_norm = q.replace(" ", "")
@@ -70,7 +176,15 @@ def _is_too_generic(search_query: str) -> bool:
     return False
 
 
-def rewrite_search_query(question: str, memory_buffer, ollama_api_url: str, ollama_model: str, logger):
+def rewrite_search_query(
+    question: str,
+    memory_buffer,
+    ollama_api_url: str,
+    ollama_model: str,
+    logger,
+    timeout_sec: float = 10,
+    silent_fail: bool = False,
+):
     quick = _quick_rule_rewrite(question)
     if quick:
         logger.debug(f"🔍 [本地规则重写]：{quick}")
@@ -104,7 +218,7 @@ def rewrite_search_query(question: str, memory_buffer, ollama_api_url: str, olla
     )
     try:
         payload = {"model": ollama_model, "prompt": rewrite_prompt, "stream": False}
-        response = requests.post(ollama_api_url, json=payload, timeout=10)
+        response = requests.post(ollama_api_url, json=payload, timeout=timeout_sec)
         response.raise_for_status()
         search_query = response.json().get("response", "").strip()
         search_query = _sanitize_search_query(search_query)
@@ -120,8 +234,14 @@ def rewrite_search_query(question: str, memory_buffer, ollama_api_url: str, olla
     except Exception as e:
         fallback = _quick_rule_rewrite(question)
         if fallback:
-            logger.warning(f"⚠️ 本地意图提取失败，启用规则兜底：{e}")
+            if silent_fail:
+                logger.debug(f"[本地意图提取失败-静默] 规则兜底：{e}")
+            else:
+                logger.warning(f"⚠️ 本地意图提取失败，启用规则兜底：{e}")
             return fallback
 
-        logger.warning(f"⚠️ 本地意图提取失败，退回原问题：{e}")
+        if silent_fail:
+            logger.debug(f"[本地意图提取失败-静默] 退回原问题：{e}")
+        else:
+            logger.warning(f"⚠️ 本地意图提取失败，退回原问题：{e}")
         return question

@@ -107,7 +107,7 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
     if is_query_correction(question) and prev_q:
         return DialogEvent(
             name="query_correction",
-            route_hint="normal_retrieval",
+            route_hint=None,
             merged_query=f"{prev_q} {question}",
         )
 
