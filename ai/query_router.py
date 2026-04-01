@@ -1,11 +1,25 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import requests
 
 from ai.capability_smalltalk import answer_smalltalk
 from ai.query_rewriter import is_local_smalltalk_intent, rewrite_search_query
+
+
+def _get_smalltalk_rewrite_timeout_sec() -> float:
+    raw = (os.getenv("DOCMIND_SMALLTALK_REWRITE_TIMEOUT") or "").strip()
+    if not raw:
+        return 2.5
+
+    try:
+        value = float(raw)
+    except ValueError:
+        return 2.5
+
+    return min(max(value, 0.5), 10.0)
 
 
 def _normalize(q: str) -> str:
@@ -122,7 +136,21 @@ def _should_try_local_rewrite_for_smalltalk(q: str) -> bool:
     if not q or len(q) > 16:
         return False
 
-    block_terms = ("文件", "文档", "资料", "公司", "项目", "他", "她", "对方")
+    block_terms = (
+        "文件",
+        "文档",
+        "资料",
+        "公司",
+        "项目",
+        "他",
+        "她",
+        "对方",
+        "关于什么",
+        "什么内容",
+        "什么主题",
+        "主题",
+        "内容",
+    )
     if any(t in q for t in block_terms):
         return False
 
@@ -134,13 +162,14 @@ def _is_smalltalk_by_local_rewrite(question: str, ollama_api_url: str, ollama_mo
     if not _should_try_local_rewrite_for_smalltalk(q):
         return False
 
+    timeout_sec = _get_smalltalk_rewrite_timeout_sec()
     rewritten = rewrite_search_query(
         question,
         [],
         ollama_api_url,
         ollama_model,
         logger,
-        timeout_sec=0.8,
+        timeout_sec=timeout_sec,
         silent_fail=True,
     )
     rewritten_norm = _normalize(rewritten)

@@ -83,6 +83,17 @@ CATEGORY_FOLLOWUP_KEYWORDS = ("方面", "分类", "类别", "哪类", "怎么分
 EMPTY_TOPIC_WORDS = {"文件", "文档", "资料", "内容"}
 LIST_INTENT_KEYWORDS = ("列出", "列一下", "列下", "列出来", "清单", "罗列", "展开")
 TIME_LIST_INTENT_KEYWORDS = ("有哪些", "有哪", "哪些", "哪几个", "哪几份", "列出", "列一下", "列出来")
+TOPIC_OVERVIEW_KEYWORDS = (
+    "关于什么",
+    "什么内容",
+    "内容是什么",
+    "什么主题",
+    "主题是什么",
+    "主要讲什么",
+    "主要是什么",
+    "主要是啥",
+    "讲什么",
+)
 TOPIC_META_NOISE_KEYWORDS = (
     "最近", "最新", "最早", "最晚", "最旧",
     "时间", "日期", "更新", "修改", "创建",
@@ -265,6 +276,38 @@ def is_size_consistency_request(question: str, last_user_question: str | None = 
     return any(x in q for x in SIZE_CONSISTENCY_KEYWORDS)
 
 
+def is_topic_overview_request(question: str, last_local_topic: str | None = None) -> bool:
+    q = normalize_meta_question(clean_text(question))
+    if not q:
+        return False
+
+    has_topic_intent = any(x in q for x in TOPIC_OVERVIEW_KEYWORDS)
+    if not has_topic_intent:
+        return False
+
+    if any(x in q for x in ("文件", "文档", "资料")):
+        return True
+
+    if (
+        last_local_topic in {
+            "count",
+            "format",
+            "time",
+            "total_size",
+            "size_consistency",
+            "list_files",
+            "list_files_with_time",
+            "list_files_by_topic",
+            "category",
+            "category_summary",
+        }
+        and len(q) <= 20
+    ):
+        return True
+
+    return False
+
+
 def classify_repo_meta_question(
     question: str,
     last_user_question: str | None = None,
@@ -306,6 +349,10 @@ def classify_repo_meta_question(
     if is_list_files_request(q):
         print(f"[repo_meta分类] q={q} -> list_files")
         return "list_files"
+
+    if is_topic_overview_request(question, last_local_topic=last_local_topic):
+        print(f"[repo_meta分类] q={q} -> category")
+        return "category"
 
     for topic, keywords in RULES:
         if contains_any(q, keywords):

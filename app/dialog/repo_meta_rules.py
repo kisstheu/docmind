@@ -36,6 +36,20 @@ def is_repo_meta_request(question: str) -> bool:
     q = normalize_meta_question(question)
     has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
     has_list_intent = any(x in q for x in ["列出", "列下", "列一下", "列出来", "罗列", "展开一下", "展开列一下"])
+    has_topic_overview_intent = any(
+        x in q
+        for x in [
+            "关于什么",
+            "什么内容",
+            "内容是什么",
+            "什么主题",
+            "主题是什么",
+            "主要讲什么",
+            "主要是什么",
+            "主要是啥",
+            "讲什么",
+        ]
+    )
 
     patterns = [
         "多少文件", "多少个文件", "文件数量",
@@ -68,6 +82,9 @@ def is_repo_meta_request(question: str) -> bool:
         "文档分几类", "文件分几类",
     ]
     if any(p in q for p in patterns):
+        return True
+
+    if has_doc_word and has_topic_overview_intent:
         return True
 
     # 兜底：允许“列一下/列出来”触发 repo_meta，但必须显式提到文件/文档。
@@ -217,6 +234,40 @@ def looks_like_repo_time_question(question: str, state: "ConversationState | Non
         and has_explicit_date
         and has_list_intent
         and len(q) <= 24
+    ):
+        return True
+
+    return False
+
+
+def looks_like_repo_topic_question(question: str, state: "ConversationState | None" = None) -> bool:
+    q = normalize_meta_question(question)
+    if not q:
+        return False
+
+    topic_markers = (
+        "关于什么",
+        "什么内容",
+        "内容是什么",
+        "什么主题",
+        "主题是什么",
+        "主要讲什么",
+        "主要是什么",
+        "主要是啥",
+        "讲什么",
+    )
+    has_topic_intent = any(x in q for x in topic_markers)
+    if not has_topic_intent:
+        return False
+
+    mentions_doc = any(x in q for x in ("文件", "文档", "资料"))
+    if mentions_doc:
+        return True
+
+    if (
+        state is not None
+        and state.last_route == "repo_meta"
+        and len(q) <= 18
     ):
         return True
 

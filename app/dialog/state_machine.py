@@ -8,6 +8,7 @@ from app.dialog.repo_meta_rules import (
     is_entity_lookup_request,
     is_list_format_modifier,
     is_repo_meta_request,
+    looks_like_repo_topic_question,
     is_structured_output_request,
     is_system_capability_request,
     looks_like_repo_size_consistency_followup,
@@ -89,6 +90,9 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
         return DialogEvent(name="repo_meta_request", route_hint="repo_meta")
 
     if looks_like_repo_time_question(question, state):
+        return DialogEvent(name="repo_meta_request", route_hint="repo_meta")
+
+    if looks_like_repo_topic_question(question, state):
         return DialogEvent(name="repo_meta_request", route_hint="repo_meta")
 
     if looks_like_repo_size_consistency_followup(question, prev_q):
