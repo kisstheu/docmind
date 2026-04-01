@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from retrieval.repo_index_build import (
@@ -84,8 +85,13 @@ def load_or_build_embeddings(scanned, cache_file: Path, model_emb, logger, ollam
 
     sidecar_count = 0
     sidecar_examples: list[str] = []
+    unique_changed_paths = list(dict.fromkeys(final_changed_paths))
+    total_changed = len(unique_changed_paths)
+    changed_start = time.time()
 
-    for path in dict.fromkeys(final_changed_paths):
+    for idx, path in enumerate(unique_changed_paths, start=1):
+        progress_pct = int((idx / total_changed) * 100) if total_changed else 100
+        logger.info(f"   📌 索引进度 [{idx}/{total_changed}] {progress_pct}% -> {path}")
         file_record = read_changed_file(scanned_repo.notes_dir, path, logger)
         if not file_record:
             logger.warning(f"      ⚠️ 跳过空文件或读取失败文件：{path}")
@@ -107,6 +113,9 @@ def load_or_build_embeddings(scanned, cache_file: Path, model_emb, logger, ollam
         doc_entry, chunk_entry = cache_pair
         new_doc_cache[path] = doc_entry
         new_chunk_cache[path] = chunk_entry
+
+    if total_changed > 0:
+        logger.info(f"⏱️ 增量建库处理耗时: {time.time() - changed_start:.2f}s（共 {total_changed} 个文件）")
 
     if sidecar_count > 0:
         logger.info(f"      📄 本轮变动文件中共命中 {sidecar_count} 个伴生文件")
