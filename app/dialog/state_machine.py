@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -31,6 +32,54 @@ from app.dialog_utils import (
     is_relationship_analysis_request,
     is_repo_meta_confirmation,
 )
+
+
+GROUP_REFERENCE_TERMS = (
+    "这几个",
+    "这些",
+    "这两个",
+    "这三个",
+    "这两",
+    "这三",
+    "它们",
+    "前面",
+    "上面",
+    "上述",
+    "其中",
+)
+
+GROUP_MAPPING_TERMS = (
+    "对应",
+    "分别",
+    "各自",
+    "关联",
+    "匹配",
+)
+
+GROUP_TARGET_TERMS = (
+    "公司",
+    "名称",
+    "文件",
+    "文档",
+    "记录",
+    "人物",
+    "人名",
+    "姓名",
+)
+
+
+def _looks_like_group_reference_result_set_followup(question: str) -> bool:
+    q = (question or "").strip()
+    if not q:
+        return False
+
+    has_group_ref = any(term in q for term in GROUP_REFERENCE_TERMS) or bool(re.search(r"这[一二两三四五六七八九十\d]+", q))
+    if not has_group_ref:
+        return False
+
+    has_mapping_signal = any(term in q for term in GROUP_MAPPING_TERMS)
+    has_target_signal = any(term in q for term in GROUP_TARGET_TERMS)
+    return has_mapping_signal and has_target_signal
 
 
 @dataclass
@@ -172,11 +221,13 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
     # === 7. 结果集追问（窄继承）
     is_result_set_answer = (
         state.last_answer_type in {"enumeration_company", "enumeration_file", "enumeration_person"}
-    ) or enum_like
+    ) or enum_like or bool(state.last_result_set_items and state.last_result_set_entity_type)
 
     if state.last_result_set_items and any(term in question.lower() for term in ["内容", "一样", "相同", "一致"]) and "文件" in question.lower():
         rs_match = True  # 强制设置匹配
     elif state.last_result_set_items and looks_like_result_set_comparison_followup(question):
+        rs_match = True
+    elif state.last_result_set_items and _looks_like_group_reference_result_set_followup(question):
         rs_match = True
 
     if prev_route in {"normal_retrieval", "repo_meta"} and rs_match and is_result_set_answer:

@@ -330,6 +330,7 @@ def build_search_query(
     normalized_question = normalize_question_for_retrieval(question)
     context_anchor = ""
     explicit_file_anchors: list[str] = []
+    structured_uses_result_set = False
 
     event_name = getattr(event, "name", "")
     if event_name in {"result_set_followup", "result_set_expansion_followup"}:
@@ -344,6 +345,18 @@ def build_search_query(
         )
 
         logger.info(f"🔗 [结果集追问拼接] {base_query}")
+    elif event_name == "structured_request" and last_result_set_items and last_result_set_entity_type:
+        from app.dialog.state_machine import build_result_set_followup_query
+
+        base_query = build_result_set_followup_query(
+            question=normalized_question or question,
+            last_user_question=last_user_question,
+            last_answer_type=last_answer_type,
+            last_result_set_items=last_result_set_items,
+            last_result_set_entity_type=last_result_set_entity_type,
+        )
+        structured_uses_result_set = True
+        logger.info(f"🔗 [结构化继承结果集] {base_query}")
     else:
         if event_name in {"content_followup", "action_request", "judgment_request", "query_correction"}:
             if getattr(event, "merged_query", None) and should_keep_followup_anchor(question):
@@ -363,9 +376,12 @@ def build_search_query(
     explicit_file_anchors = _extract_explicit_file_anchors(base_query)
 
     # 结果集追问：直接使用受控拼接后的查询，不再经过普通 rewrite/过滤链路
-    if event_name in {"result_set_followup", "result_set_expansion_followup"}:
+    if event_name in {"result_set_followup", "result_set_expansion_followup"} or structured_uses_result_set:
         search_query = _force_append_anchor_terms(base_query.strip(), explicit_file_anchors, logger=logger)
-        logger.info("🛡️ [结果集追问] 跳过 query rewrite 与新增词过滤，直接使用候选集合查询")
+        if structured_uses_result_set:
+            logger.info("🛡️ [结构化结果集] 跳过 query rewrite 与新增词过滤，直接使用候选集合查询")
+        else:
+            logger.info("🛡️ [结果集追问] 跳过 query rewrite 与新增词过滤，直接使用候选集合查询")
         logger.info(f"🛡️ [强词保底后]：{search_query}")
         return search_query, context_anchor
 

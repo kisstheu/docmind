@@ -18,6 +18,32 @@ NO_NEW_PATTERNS = [
     "未识别出新的",
 ]
 
+FOLLOWUP_EVENT_NAMES = {
+    "content_followup",
+    "result_set_followup",
+    "result_set_expansion_followup",
+    "action_request",
+    "judgment_request",
+    "query_correction",
+}
+
+FOLLOWUP_HINT_MARKERS = [
+    "呢",
+    "吗",
+    "嘛",
+    "继续",
+    "还有",
+    "再",
+    "对应",
+    "分别",
+    "这",
+    "那",
+    "前面",
+    "上面",
+    "上述",
+    "它们",
+]
+
 
 def _contains_no_new_signal(answer_text: str) -> bool:
     a = (answer_text or "").strip()
@@ -39,6 +65,56 @@ def print_answer(answer_text: str, start_qa: float) -> None:
     print("\nAI回答：")
     print(answer_text)
     print(f"⏱️ 耗时: {time.time() - start_qa:.2f}s")
+
+
+def _merge_result_set_items(prev_items: list[str] | None, new_items: list[str] | None, limit: int = 20) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+
+    for raw in (prev_items or []) + (new_items or []):
+        item = (raw or "").strip()
+        if not item:
+            continue
+        key = re.sub(r"\s+", "", item).lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+        if len(merged) >= limit:
+            break
+
+    return merged
+
+
+def _is_followup_turn(question: str, event_name: str | None = None) -> bool:
+    if (event_name or "").strip() in FOLLOWUP_EVENT_NAMES:
+        return True
+
+    q = (question or "").strip()
+    if not q:
+        return False
+
+    if len(q) <= 16 and any(marker in q for marker in FOLLOWUP_HINT_MARKERS):
+        return True
+
+    if re.search(r"这[一二两三四五六七八九十\d]+", q):
+        return True
+
+    return False
+
+
+def _looks_like_file_locator_answer(answer_text: str) -> bool:
+    a = (answer_text or "").strip()
+    if not a:
+        return False
+
+    if re.search(r"(?:文件|文档|记录)[【\[][^\]】\n]+[】\]]", a):
+        return True
+
+    if re.search(r"(?:在|位于).{0,8}(?:文件|文档|记录)", a):
+        return True
+
+    return False
 
 
 def infer_answer_type(user_question: str, answer_text: str) -> str | None:
@@ -96,6 +172,17 @@ def infer_answer_type(user_question: str, answer_text: str) -> str | None:
             return "enumeration_person"
         if "以下人物" in a or "以下人员" in a:
             return "enumeration_person"
+
+    # 文件定位类回答：即使问句没显式写“文件”，也视为文件结果集
+    file_items = extract_file_items(a)
+    if file_items and _looks_like_file_locator_answer(a):
+        if (
+            any(x in q for x in ["呢", "哪个", "哪", "对应", "这", "那", "前面", "上面"])
+            or "文件" in q
+            or "文档" in q
+            or "记录" in q
+        ):
+            return "enumeration_file"
 
     return None
 
@@ -320,10 +407,17 @@ def update_state_after_local_answer(
     return state
 
 
-def update_state_after_retrieval_answer(state, question: str, answer_text: str, logger):
+def update_state_after_retrieval_answer(
+    state,
+    question: str,
+    answer_text: str,
+    logger,
+    event_name: str | None = None,
+):
     prev_result_set_items = list(state.last_result_set_items) if state.last_result_set_items else None
     prev_result_set_entity_type = state.last_result_set_entity_type
     prev_answer_type = state.last_answer_type
+    is_followup_turn = _is_followup_turn(question, event_name=event_name)
 
     state.last_user_question = question
     state.last_route = "normal_retrieval"
@@ -341,12 +435,6 @@ def update_state_after_retrieval_answer(state, question: str, answer_text: str, 
 
     if answer_type == "enumeration_company":
         company_items: list[str] = []
-        if not company_items and prev_result_set_entity_type == "公司" and prev_result_set_items:
-            company_items = prev_result_set_items
-            logger.debug("🧷 [候选集合提取] 本轮无新增公司，沿用上一轮公司候选集合")
-
-        state.last_result_set_items = company_items
-        state.last_result_set_entity_type = "公司"
         raw_items = extract_numbered_items(answer_text)
 
 
@@ -379,16 +467,31 @@ def update_state_after_retrieval_answer(state, question: str, answer_text: str, 
             deduped_items.append(item)
         company_items = deduped_items
 
+        if prev_result_set_entity_type == "公司" and prev_result_set_items:
+            if company_items and is_followup_turn:
+                company_items = _merge_result_set_items(prev_result_set_items, company_items)
+                logger.debug("🧷 [候选集合提取] 追问场景合并公司候选集合")
+            elif not company_items and _contains_no_new_signal(answer_text):
+                company_items = prev_result_set_items
+                logger.debug("🧷 [候选集合提取] 本轮无新增公司，沿用上一轮公司候选集合")
+
         state.last_result_set_items = company_items
+        state.last_result_set_entity_type = "公司"
 
         logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
         logger.debug(f"🧪 [候选集合提取] raw_items={raw_items}")
         logger.debug(f"🧪 [候选集合提取] company_items={company_items}")
     elif answer_type == "enumeration_file":
         file_items = extract_file_items(answer_text)
-        if not file_items and prev_result_set_entity_type == "文件" and prev_result_set_items and _contains_no_new_signal(answer_text):
-            file_items = prev_result_set_items
-            logger.debug("🧷 [候选集合提取] 本轮无新增文件，沿用上一轮文件候选集合")
+
+        if prev_result_set_entity_type == "文件" and prev_result_set_items:
+            if file_items and is_followup_turn:
+                file_items = _merge_result_set_items(prev_result_set_items, file_items)
+                logger.debug("🧷 [候选集合提取] 追问场景合并文件候选集合")
+            elif not file_items and _contains_no_new_signal(answer_text):
+                file_items = prev_result_set_items
+                logger.debug("🧷 [候选集合提取] 本轮无新增文件，沿用上一轮文件候选集合")
+
         state.last_result_set_items = file_items
         state.last_result_set_entity_type = "文件"
 
@@ -396,9 +499,15 @@ def update_state_after_retrieval_answer(state, question: str, answer_text: str, 
         logger.debug(f"🧪 [候选集合提取] file_items={file_items}")
     elif answer_type == "enumeration_person":
         person_items = extract_numbered_items(answer_text)
-        if not person_items and prev_result_set_entity_type == "人物" and prev_result_set_items and _contains_no_new_signal(answer_text):
-            person_items = prev_result_set_items
-            logger.debug("🧷 [候选集合提取] 本轮无新增人物，沿用上一轮人物候选集合")
+
+        if prev_result_set_entity_type == "人物" and prev_result_set_items:
+            if person_items and is_followup_turn:
+                person_items = _merge_result_set_items(prev_result_set_items, person_items)
+                logger.debug("🧷 [候选集合提取] 追问场景合并人物候选集合")
+            elif not person_items and _contains_no_new_signal(answer_text):
+                person_items = prev_result_set_items
+                logger.debug("🧷 [候选集合提取] 本轮无新增人物，沿用上一轮人物候选集合")
+
         state.last_result_set_items = person_items
         state.last_result_set_entity_type = "人物"
 
@@ -412,20 +521,52 @@ def update_state_after_retrieval_answer(state, question: str, answer_text: str, 
             "文件": "enumeration_file",
             "人物": "enumeration_person",
         }
+        fallback_file_items = extract_file_items(answer_text)
+        fallback_to_file_result_set = (
+            bool(fallback_file_items)
+            and _looks_like_file_locator_answer(answer_text)
+            and (
+                is_followup_turn
+                or "文件" in question
+                or "文档" in question
+                or "记录" in question
+            )
+        )
+
         keep_result_set_context = (
             prev_result_set_entity_type in entity_to_answer_type
             and bool(prev_result_set_items)
             and any(x in q_norm for x in EXPANSION_MARKERS)
             and _contains_no_new_signal(answer_text or "")
         )
+        preserve_result_set_on_result_set_followup = (
+            (event_name or "").strip() in {"result_set_followup", "result_set_expansion_followup"}
+            and prev_result_set_entity_type in entity_to_answer_type
+            and bool(prev_result_set_items)
+        )
 
-        if keep_result_set_context:
+        if fallback_to_file_result_set:
+            if prev_result_set_entity_type == "文件" and prev_result_set_items and is_followup_turn:
+                fallback_file_items = _merge_result_set_items(prev_result_set_items, fallback_file_items)
+                logger.debug("🧷 [状态保留] 文件定位回答触发追问合并，保留并扩充上一轮文件候选集合")
+
+            state.last_result_set_items = fallback_file_items
+            state.last_result_set_entity_type = "文件"
+            state.last_answer_type = "enumeration_file"
+            logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={state.last_answer_type}")
+            logger.debug(f"🧪 [候选集合提取] file_items={fallback_file_items}")
+        elif keep_result_set_context or preserve_result_set_on_result_set_followup:
             state.last_result_set_items = prev_result_set_items
             state.last_result_set_entity_type = prev_result_set_entity_type
             state.last_answer_type = prev_answer_type or entity_to_answer_type.get(prev_result_set_entity_type)
-            logger.debug(
-                f"🧷 [状态保留] 扩展追问未新增{prev_result_set_entity_type}，保留上一轮{prev_result_set_entity_type}候选集合"
-            )
+            if preserve_result_set_on_result_set_followup:
+                logger.debug(
+                    f"🧷 [状态保留] 结果集追问回答未产出新集合，保留上一轮{prev_result_set_entity_type}候选集合"
+                )
+            else:
+                logger.debug(
+                    f"🧷 [状态保留] 扩展追问未新增{prev_result_set_entity_type}，保留上一轮{prev_result_set_entity_type}候选集合"
+                )
             logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={state.last_answer_type}")
         else:
             state.last_result_set_items = None

@@ -641,6 +641,7 @@ def run_chat_loop(
                     question,
                     related_records_answer,
                     logger,
+                    event_name=event.name,
                 )
                 continue
 
@@ -660,7 +661,9 @@ def run_chat_loop(
                 conversation_state = update_state_after_retrieval_answer(
                     conversation_state,
                     question,
-                    fallback_answer,logger
+                    fallback_answer,
+                    logger,
+                    event_name=event.name,
                 )
                 continue
 
@@ -687,7 +690,9 @@ def run_chat_loop(
             conversation_state = update_state_after_retrieval_answer(
                 conversation_state,
                 question,
-                answer_text,logger
+                answer_text,
+                logger,
+                event_name=event.name,
             )
 
         except Exception as e:

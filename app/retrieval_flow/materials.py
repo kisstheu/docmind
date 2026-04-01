@@ -103,7 +103,7 @@ def build_safe_final_prompt(
     constrained_context_text = safe_context_text
     constrained_question = safe_question
 
-    if safe_result_set_items and event_name in {"result_set_followup", "result_set_expansion_followup"}:
+    if safe_result_set_items and event_name in {"result_set_followup", "result_set_expansion_followup", "structured_request"}:
         if event_name == "result_set_followup":
             result_set_block = (
                 "【上一轮候选集合】\n"
@@ -114,7 +114,7 @@ def build_safe_final_prompt(
                 "你只能在上述候选项中进行判断，不得新增集合外实体。\n"
                 "若证据不足，可回答“无法确定”，不要扩展候选集合。\n\n"
             )
-        else:
+        elif event_name == "result_set_expansion_followup":
             result_set_block = (
                 "【已知候选集合】\n"
                 + "\n".join(f"- {item}" for item in safe_result_set_items[:20])
@@ -123,6 +123,16 @@ def build_safe_final_prompt(
                 "这是在已知候选基础上的补充追问，可以新增集合外实体。\n"
                 "新增项必须有参考片段证据，并避免重复已知候选。\n"
                 "若没有新增，请明确说明“没有识别出新的实体”。\n\n"
+            )
+        else:
+            result_set_block = (
+                "【上一轮候选集合】\n"
+                + "\n".join(f"- {item}" for item in safe_result_set_items[:20])
+                + "\n\n"
+                "【结构化整理约束】\n"
+                "当前问题是在上一轮候选集合基础上做结构化整理。\n"
+                "请按候选集合逐项输出，不能漏项；若某项字段缺失，请写“未知”或“未明确”。\n"
+                "不要新增集合外实体。\n\n"
             )
         constrained_context_text = result_set_block + constrained_context_text
 
