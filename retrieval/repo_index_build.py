@@ -27,6 +27,60 @@ _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 _MAX_SHADOW_TAGS = 8
 _BAD_SHADOW_PREFIXES = ["无法确定", "无法识别", "请提供", "以下是", "根据文本", "关键词如下", "核心关键词如下"]
 _SHADOW_TAG_STOPWORDS = {"关键词", "核心关键词", "文本", "内容", "生活类", "技术类", "游戏类"}
+_MAX_SCENE_TAGS = 4
+_SCENE_TAG_VERSION = 2
+_BAD_SCENE_PREFIXES = ["无法确定", "无法识别", "请提供", "以下是", "根据文本", "场景标签如下", "用途标签如下"]
+_SCENE_TAG_STOPWORDS = {"场景", "用途", "主题", "内容", "文档", "资料", "知识库", "标签", "关键词", "材料类型"}
+_DOC_TYPE_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "招聘岗位信息",
+        (
+            "岗位职责",
+            "任职要求",
+            "岗位要求",
+            "职位描述",
+            "学历要求",
+            "经验要求",
+            "薪资",
+            "福利",
+            "加分项",
+            "招聘",
+            "jd",
+        ),
+    ),
+    (
+        "会议纪要",
+        (
+            "会议纪要",
+            "会议结论",
+            "议题",
+            "参会",
+            "行动项",
+            "待办事项",
+        ),
+    ),
+    (
+        "项目复盘",
+        (
+            "复盘",
+            "根因",
+            "问题回顾",
+            "改进项",
+            "经验教训",
+        ),
+    ),
+    (
+        "学习笔记",
+        (
+            "学习笔记",
+            "教程",
+            "课程",
+            "知识点",
+            "实践总结",
+            "读书笔记",
+        ),
+    ),
+)
 
 
 def collect_all_files(notes_dir: Path) -> List[Path]:
@@ -103,6 +157,94 @@ def clean_shadow_tags(raw: str) -> str:
     return " ".join(cleaned[:_MAX_SHADOW_TAGS])
 
 
+def clean_scene_tags(raw: str) -> str:
+    if not raw:
+        return ""
+
+    text = raw.strip().replace("\r", "\n")
+    for prefix in _BAD_SCENE_PREFIXES:
+        if text.startswith(prefix):
+            return ""
+
+    parts = re.split(r"[\s,，、;；|]+", text)
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        token = re.sub(r"^\s*\d+[.、]\s*", "", part).strip(" []()（）-")
+        if not token:
+            continue
+        if token in _SCENE_TAG_STOPWORDS:
+            continue
+        if token.endswith("标签如下") or token.endswith("关键词如下"):
+            continue
+        if token.startswith("场景") and len(token) <= 4:
+            continue
+        if token.startswith("用途") and len(token) <= 4:
+            continue
+        if len(token) < 2 or len(token) > 16:
+            continue
+
+        token = _canonicalize_scene_tag(token)
+        key = token.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(token)
+
+    return " ".join(cleaned[:_MAX_SCENE_TAGS])
+
+
+def _canonicalize_scene_tag(tag: str) -> str:
+    t = (tag or "").strip()
+    if not t:
+        return ""
+
+    lowered = t.lower()
+    if any(x in t for x in ("岗位职责", "任职要求", "岗位要求", "职位描述", "招聘")) or lowered in {"jd", "job description"}:
+        return "招聘岗位信息"
+    if ("会议" in t and any(x in t for x in ("纪要", "议题", "结论"))) or t == "会议纪要":
+        return "会议纪要"
+    if any(x in t for x in ("复盘", "回顾", "根因", "改进项")):
+        return "项目复盘"
+    if any(x in t for x in ("学习笔记", "教程", "课程", "知识点", "读书笔记")):
+        return "学习笔记"
+
+    return t
+
+
+def _guess_material_type_from_doc(doc: str) -> str | None:
+    text = (doc or "")[:4000].lower()
+    if not text:
+        return None
+
+    best_label = None
+    best_hits = 0
+    for label, keywords in _DOC_TYPE_RULES:
+        hits = sum(1 for kw in keywords if kw.lower() in text)
+        if hits > best_hits:
+            best_hits = hits
+            best_label = label
+
+    if best_hits >= 2:
+        return best_label
+    return None
+
+
+def _prepend_primary_scene_tag(scene_tags: str, primary_tag: str | None) -> str:
+    if not primary_tag:
+        return scene_tags
+
+    parts = [p for p in scene_tags.split() if p.strip()]
+    deduped: list[str] = [primary_tag]
+    seen = {primary_tag}
+    for item in parts:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+
+    return " ".join(deduped[:_MAX_SCENE_TAGS])
+
 
 def build_file_fingerprint(relative_path: str, stat_result) -> str:
     return f"{relative_path}|{stat_result.st_size}|{int(stat_result.st_mtime_ns)}"
@@ -177,7 +319,8 @@ def build_changed_file_cache_entry(
         return None
 
     shadow_tags = _extract_shadow_tags(context, file_record.doc, path)
-    doc_embedding = _encode_doc_embedding(context, file_record.doc, shadow_tags, path)
+    scene_tags = _extract_scene_tags(context, file_record.doc, path, shadow_tags=shadow_tags)
+    doc_embedding = _encode_doc_embedding(context, file_record.doc, shadow_tags, scene_tags, path)
 
     file_chunk_texts, file_chunk_meta = _build_chunk_payloads(file_record.doc, path)
     file_chunk_embeddings = _encode_chunk_embeddings(context, file_chunk_texts, file_chunk_meta, path)
@@ -189,6 +332,8 @@ def build_changed_file_cache_entry(
         "file_size": int(file_record.file_size),
         "file_info": file_record.file_info,
         "shadow_tags": shadow_tags,
+        "scene_tags": scene_tags,
+        "scene_tags_version": _SCENE_TAG_VERSION,
         "embedding": np.asarray(doc_embedding),
     }
     chunk_cache_entry = {
@@ -238,16 +383,58 @@ def _build_shadow_tag_prompt(doc: str) -> str:
 
 
 
-def _make_enhanced_doc(doc: str, shadow_tags: str) -> str:
+def _extract_scene_tags(context: IndexBuildContext, doc: str, path: str, shadow_tags: str) -> str:
+    primary_scene_tag = _guess_material_type_from_doc(doc)
+    try:
+        payload = {
+            "model": context.ollama_model,
+            "prompt": _build_scene_tag_prompt(doc, shadow_tags, primary_scene_tag=primary_scene_tag),
+            "stream": False,
+        }
+        response = requests.post(context.ollama_api_url, json=payload, timeout=180)
+        response.raise_for_status()
+        raw_tags = response.json().get("response", "").strip()
+        scene_tags = clean_scene_tags(raw_tags)
+        scene_tags = _prepend_primary_scene_tag(scene_tags, primary_scene_tag)
+        if scene_tags:
+            context.logger.info(f"      🧭 提取到场景标签：[{scene_tags}]")
+        return scene_tags
+    except Exception:
+        return _prepend_primary_scene_tag("", primary_scene_tag)
+
+
+def _build_scene_tag_prompt(doc: str, shadow_tags: str, primary_scene_tag: str | None = None) -> str:
+    guidance = ""
+    if primary_scene_tag:
+        guidance = f"识别到材料类型信号：{primary_scene_tag}。请优先保持这一类型。\n"
+
+    return (
+        "请从下面笔记文本中提炼 1-3 个“资料用途/问题场景”标签。\n"
+        "要求：\n"
+        "1. 第一个标签优先写“材料类型”，例如：招聘岗位信息/会议纪要/项目复盘/学习笔记。\n"
+        "2. 其余标签可写具体用途场景，避免只写技术名词。\n"
+        "3. 每个标签建议 4-10 字。\n"
+        "4. 只输出标签，用空格分隔，不要解释。\n\n"
+        + guidance
+        + f"已提取细标签：{shadow_tags or '无'}\n"
+        f"文本：\n{doc[:1200]}"
+    )
+
+
+def _make_enhanced_doc(doc: str, shadow_tags: str, scene_tags: str) -> str:
+    prefix_lines: list[str] = []
+    if scene_tags:
+        prefix_lines.append(f"【用途场景：{scene_tags}】")
     if shadow_tags:
-        return f"【核心隐藏特征：{shadow_tags}】\n{doc}"
+        prefix_lines.append(f"【核心隐藏特征：{shadow_tags}】")
+    if prefix_lines:
+        return "\n".join(prefix_lines) + "\n" + doc
     return doc
 
 
-
-def _encode_doc_embedding(context: IndexBuildContext, doc: str, shadow_tags: str, path: str):
+def _encode_doc_embedding(context: IndexBuildContext, doc: str, shadow_tags: str, scene_tags: str, path: str):
     context.logger.info(f"   🧠 正在编码全文向量：{path}")
-    enhanced_doc = _make_enhanced_doc(doc, shadow_tags)
+    enhanced_doc = _make_enhanced_doc(doc, shadow_tags, scene_tags)
     return context.model_emb.encode([enhanced_doc])[0]
 
 
@@ -314,6 +501,7 @@ def assemble_repo_state(scanned: ScannedRepo, current_paths: list[str], new_doc_
             {
                 "path": path,
                 "shadow_tags": doc_entry.get("shadow_tags", "") or "",
+                "scene_tags": doc_entry.get("scene_tags", "") or "",
                 "file_time": doc_time,
                 "file_size": int(doc_entry.get("file_size", 0) or 0),
                 "file_info": doc_entry["file_info"],

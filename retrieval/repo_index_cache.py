@@ -6,6 +6,8 @@ import numpy as np
 
 from retrieval.repo_index_types import CacheSnapshot, ManifestDiff, ReuseResult
 
+_REQUIRED_SCENE_TAG_VERSION = 2
+
 
 def _safe_load_object(cache, key: str, default):
     if key not in cache.files:
@@ -76,6 +78,18 @@ def classify_manifest_diff(current_paths: list[str], current_manifest: dict[str,
 
 
 
+def _is_doc_entry_reusable(doc_entry: dict, expected_fingerprint: str) -> bool:
+    if not isinstance(doc_entry, dict):
+        return False
+    if doc_entry.get("fingerprint") != expected_fingerprint:
+        return False
+    if "scene_tags" not in doc_entry:
+        return False
+    if not isinstance(doc_entry.get("scene_tags", ""), str):
+        return False
+    return int(doc_entry.get("scene_tags_version", 0) or 0) >= _REQUIRED_SCENE_TAG_VERSION
+
+
 def reuse_unchanged_entries(
     unchanged_paths: list[str],
     old_doc_cache: dict[str, dict],
@@ -92,9 +106,8 @@ def reuse_unchanged_entries(
         chunk_entry = old_chunk_cache.get(path)
 
         if (
-            isinstance(doc_entry, dict)
+            _is_doc_entry_reusable(doc_entry, path_to_fp[path])
             and isinstance(chunk_entry, dict)
-            and doc_entry.get("fingerprint") == path_to_fp[path]
             and chunk_entry.get("fingerprint") == path_to_fp[path]
         ):
             new_doc_cache[path] = doc_entry

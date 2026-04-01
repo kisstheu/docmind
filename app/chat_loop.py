@@ -69,6 +69,7 @@ def try_handle_repo_meta(
         model_emb=model_emb,
         last_user_question=prev_content_user_question,
         last_local_topic=conversation_state.last_local_topic,
+        last_local_answer=(conversation_state.last_answer_text or conversation_state.last_answer_preview),
         topic_summarizer=build_topic_summarizer(logger, ollama_api_url, ollama_model),
     )
     logger.info(f"📦 repo_meta 返回值: {repr(local_answer)[:200]} | topic={local_topic}")
@@ -317,6 +318,7 @@ def run_chat_loop(
     *,
     notes_dir: Path,
     change_log_file: Path,
+    question_recorder=None,
 ):
     global conversation_state
     change_store = FileChangeStore(change_log_file)
@@ -341,13 +343,15 @@ def run_chat_loop(
     print("🤖：你好！我是你的 DocMind 随身助理。你可以问我任何问题。")
 
     while True:
-        question = input("\n问：")
-        if question.strip().lower() in ["q", "quit", "exit"]:
+        raw_question = input("\n问：")
+        if raw_question.strip().lower() in ["q", "quit", "exit"]:
             break
-        if not question.strip():
+        if not raw_question.strip():
             continue
 
-        question = normalize_colloquial_question(question)
+        question = normalize_colloquial_question(raw_question)
+        if question_recorder is not None:
+            question_recorder.record(raw_question, normalized_question=question)
 
         try:
             import time

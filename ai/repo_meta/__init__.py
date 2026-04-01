@@ -1,6 +1,7 @@
 from ai.repo_meta.answering import answer_repo_meta_question, calc_repo_total_bytes
 from ai.repo_meta.category import (
     answer_repo_content_category_confirm_question,
+    answer_repo_content_category_overview_question,
     answer_repo_content_category_question,
     answer_repo_content_category_summary_question,
     expand_candidate_fragments,
@@ -29,6 +30,7 @@ from ai.repo_meta.semantic import (
 
 __all__ = [
     "answer_repo_content_category_confirm_question",
+    "answer_repo_content_category_overview_question",
     "answer_repo_content_category_question",
     "answer_repo_content_category_summary_question",
     "answer_repo_meta_question",

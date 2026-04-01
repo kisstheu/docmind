@@ -94,6 +94,22 @@ TOPIC_OVERVIEW_KEYWORDS = (
     "主要是啥",
     "讲什么",
 )
+DEEPER_SUMMARY_KEYWORDS = (
+    "还能再概括",
+    "再概括",
+    "更概括",
+    "再总结",
+    "再归纳",
+    "再抽象",
+    "一句话概括",
+    "一句话总结",
+    "整体上",
+    "总体上",
+    "本质上",
+    "归根结底",
+    "再上一层",
+    "再往上",
+)
 TOPIC_META_NOISE_KEYWORDS = (
     "最近", "最新", "最早", "最晚", "最旧",
     "时间", "日期", "更新", "修改", "创建",
@@ -300,9 +316,28 @@ def is_topic_overview_request(question: str, last_local_topic: str | None = None
             "list_files_by_topic",
             "category",
             "category_summary",
+            "category_overview",
         }
         and len(q) <= 20
     ):
+        return True
+
+    return False
+
+
+def is_deeper_category_summary_request(question: str, last_local_topic: str | None = None) -> bool:
+    if last_local_topic not in {"category_summary", "category_overview"}:
+        return False
+
+    q = normalize_meta_question(clean_text(question))
+    if not q:
+        return False
+
+    if contains_any(q, DEEPER_SUMMARY_KEYWORDS):
+        return True
+
+    # 短追问中包含“再/更/还”且带概括意图，也视为继续向上抽象。
+    if is_category_summary_request(q) and any(x in q for x in ("再", "更", "还")) and len(q) <= 12:
         return True
 
     return False
@@ -328,6 +363,10 @@ def classify_repo_meta_question(
     if last_local_topic == "list_files" and any(x in q for x in LIST_FORMAT_MODIFIERS):
         print(f"[repo_meta分类] q={q} -> list_files_with_time")
         return "list_files_with_time"
+
+    if is_deeper_category_summary_request(question, last_local_topic=last_local_topic):
+        print(f"[repo_meta分类] q={q} -> category_overview")
+        return "category_overview"
 
     topic_candidate = extract_topic_from_list_request(q)
     topic_candidate_valid = is_semantic_topic_candidate(topic_candidate) if topic_candidate else False
@@ -367,8 +406,11 @@ def classify_repo_meta_question(
         print(f"[repo_meta分类] q={q} -> category_summary")
         return "category_summary"
 
-    if last_local_topic in {"category", "category_summary"} and contains_any(q, ("仓库里呢", "本地存的", "本地的")):
-        return "category_summary"
+    if last_local_topic in {"category", "category_summary", "category_overview"} and contains_any(
+        q,
+        ("仓库里呢", "本地存的", "本地的"),
+    ):
+        return "category_overview" if last_local_topic == "category_overview" else "category_summary"
 
     if is_category_confirmation_request(q):
         print(f"[repo_meta分类] q={q} -> category_confirm")

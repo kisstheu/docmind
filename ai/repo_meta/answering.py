@@ -15,6 +15,7 @@ from ai.repo_meta.answering_parts.time import (
 )
 from ai.repo_meta.category import (
     answer_repo_content_category_confirm_question,
+    answer_repo_content_category_overview_question,
     answer_repo_content_category_question,
     answer_repo_content_category_summary_question,
 )
@@ -47,6 +48,7 @@ def answer_repo_meta_question(
     model_emb=None,
     last_user_question: str | None = None,
     last_local_topic: str | None = None,
+    last_local_answer: str | None = None,
     topic_summarizer=None,
 ):
     paths = list(repo_state.paths)
@@ -89,6 +91,12 @@ def answer_repo_meta_question(
         return answer_repo_content_category_question(repo_state), topic
     if topic == "category_summary":
         return answer_repo_content_category_summary_question(repo_state, topic_summarizer=topic_summarizer), topic
+    if topic == "category_overview":
+        return answer_repo_content_category_overview_question(
+            repo_state,
+            topic_summarizer=topic_summarizer,
+            previous_summary=last_local_answer,
+        ), topic
     if topic == "category_confirm":
         return answer_repo_content_category_confirm_question(question, repo_state), topic
 

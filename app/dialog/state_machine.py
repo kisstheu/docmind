@@ -158,7 +158,7 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
             return DialogEvent(name="repo_followup", route_hint="repo_meta")
 
         if (
-            last_topic in {"category", "category_summary", "category_confirm"}
+            last_topic in {"category", "category_summary", "category_overview", "category_confirm"}
             and is_repo_meta_confirmation(question)
         ):
             return DialogEvent(name="repo_confirm", route_hint="repo_meta")

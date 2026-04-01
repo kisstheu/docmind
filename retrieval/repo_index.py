@@ -6,6 +6,7 @@ from pathlib import Path
 from retrieval.repo_index_build import (
     assemble_repo_state,
     build_changed_file_cache_entry,
+    clean_scene_tags,
     clean_shadow_tags,
     collect_all_files,
     read_changed_file,
@@ -24,6 +25,7 @@ from retrieval.repo_index_types import IndexBuildContext, RepoState
 __all__ = [
     "RepoState",
     "collect_all_files",
+    "clean_scene_tags",
     "clean_shadow_tags",
     "read_changed_file",
     "scan_repository",

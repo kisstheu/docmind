@@ -9,6 +9,7 @@ from pathlib import Path
 
 from app.chat_loop import run_chat_loop
 from bootstrap.env_setup import apply_environment_defaults
+from infra.debug_question_trace import build_debug_question_recorder
 from infra.logging_setup import build_logger
 from retrieval.repo_index import load_or_build_embeddings, scan_repository
 
@@ -145,6 +146,8 @@ def main():
     logger.info(f"📂 当前笔记目录: {notes_dir.resolve()}")
     logger.info(f"💾 当前缓存文件: {cache_file.resolve()}")
 
+    question_recorder = build_debug_question_recorder(notes_dir=notes_dir, logger=logger)
+
     scanned = scan_repository(notes_dir, logger)
     repo_state = load_or_build_embeddings(
         scanned,
@@ -166,6 +169,7 @@ def main():
         logger,
         notes_dir=notes_dir,
         change_log_file=change_log_file,
+        question_recorder=question_recorder,
     )
 
 
