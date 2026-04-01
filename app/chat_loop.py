@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 
 from google.genai import types
 import requests
@@ -34,11 +35,113 @@ from app.chat_state_helpers import (
 )
 from app.chat_text_utils import normalize_colloquial_question
 from app.chat_text_utils import maybe_build_related_records_answer
+from app.context_anchor import is_context_dependent_question
+from app.dialog_utils import is_followup_question
 from app.file_actions.loop import handle_file_action_turn
 from infra.file_change_store import FileChangeStore
 
 
 conversation_state = ConversationState()
+
+CONTEXTLESS_FOLLOWUP_REPLY = (
+    "这个问题缺少明确主语或上下文，我先不调用远程模型。"
+    "请补充具体对象后再问，例如：请再概括一下 4月1日会议纪要。"
+)
+_CONTEXTLESS_FOLLOWUP_MARKERS = (
+    "关于什么",
+    "再概括",
+    "还能再概括",
+    "更概括",
+    "再总结",
+    "再归纳",
+    "一句话概括",
+    "一句话总结",
+    "展开一下",
+    "详细一点",
+    "再详细",
+    "继续",
+    "然后呢",
+    "还有呢",
+)
+_SUBJECT_HINT_TERMS = (
+    "文件",
+    "文档",
+    "资料",
+    "记录",
+    "笔记",
+    "截图",
+    "会议",
+    "纪要",
+    "公司",
+    "企业",
+    "项目",
+    "人物",
+    "人名",
+    "代码",
+    "仓库",
+    "目录",
+)
+_NO_CONTEXT_ANSWER_MARKERS = (
+    "没有检索到足够可靠的参考片段",
+    "信息不足",
+    "没有可检索文档",
+    "没有形成可检索片段",
+    "先不调用远程模型",
+)
+
+
+def _normalize_for_guard(text: str) -> str:
+    q = (text or "").strip().lower()
+    q = re.sub(r"[，。！？、,.!?\s]+", "", q)
+    return q
+
+
+def _looks_like_contextless_followup_question(question: str) -> bool:
+    q = _normalize_for_guard(question)
+    if not q or len(q) > 24:
+        return False
+
+    if any(term in q for term in _SUBJECT_HINT_TERMS):
+        return False
+
+    if any(marker in q for marker in _CONTEXTLESS_FOLLOWUP_MARKERS):
+        return True
+
+    return is_followup_question(question)
+
+
+def _has_usable_followup_context(state: ConversationState) -> bool:
+    last_answer = (state.last_answer_text or state.last_answer_preview or "").strip()
+    if last_answer and not any(marker in last_answer for marker in _NO_CONTEXT_ANSWER_MARKERS):
+        return True
+
+    last_query = (state.last_effective_search_query or "").strip()
+    if last_query and not _looks_like_contextless_followup_question(last_query):
+        return True
+
+    last_content_q = (state.last_content_user_question or "").strip()
+    if last_content_q and not _looks_like_contextless_followup_question(last_content_q):
+        return True
+
+    return False
+
+
+def try_handle_contextless_followup(question: str, state: ConversationState, event, logger) -> str | None:
+    event_route_hint = getattr(event, "route_hint", None)
+    if event_route_hint in {"repo_meta", "smalltalk", "system_capability"}:
+        return None
+
+    if not _looks_like_contextless_followup_question(question):
+        return None
+
+    if not is_context_dependent_question(question, state.last_effective_search_query):
+        return None
+
+    if _has_usable_followup_context(state):
+        return None
+
+    logger.info("⛔ [本地短路] 命中无主语追问，跳过检索与远程模型调用")
+    return CONTEXTLESS_FOLLOWUP_REPLY
 
 
 def try_handle_system_capability(route: str, question: str) -> str | None:
@@ -373,6 +476,25 @@ def run_chat_loop(
             prev_content_user_question = conversation_state.last_content_user_question
 
             event = detect_dialog_event(question, conversation_state,logger)
+            local_answer = try_handle_contextless_followup(
+                question=question,
+                state=conversation_state,
+                event=event,
+                logger=logger,
+            )
+            if local_answer is not None:
+                print_answer(local_answer, start_qa)
+                append_memory(memory_buffer, question, local_answer)
+                conversation_state = update_state_after_local_answer(
+                    conversation_state,
+                    question=question,
+                    answer=local_answer,
+                    route="normal_retrieval",
+                    local_topic=None,
+                    is_content_answer=False,
+                )
+                continue
+
             conversation_state = apply_event_to_state(conversation_state, event)
 
             route_info = resolve_route(question, event, ollama_api_url, ollama_model, logger, state=conversation_state)
