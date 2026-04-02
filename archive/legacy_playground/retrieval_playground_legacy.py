@@ -1,4 +1,12 @@
+"""
+Legacy manual retrieval playground.
+
+Archived from repo root on 2026-04-02 to avoid pytest auto-collection.
+This script is intentionally interactive and kept only for ad-hoc recall.
+"""
+
 from pathlib import Path
+
 import numpy as np
 from sentence_transformers import SentenceTransformer
 

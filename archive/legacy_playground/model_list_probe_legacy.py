@@ -1,9 +1,16 @@
+"""
+Legacy manual model-list probe.
+
+Archived from repo root on 2026-04-02 to avoid pytest auto-collection.
+This script is intentionally ad-hoc and kept only for historical reference.
+"""
+
 import os
+
+from google import genai
 
 os.environ["http_proxy"] = "http://127.0.0.1:7897"
 os.environ["https_proxy"] = "http://127.0.0.1:7897"
-
-from google import genai
 
 # 初始化客户端
 client = genai.Client(
@@ -31,3 +38,4 @@ try:
 
 except Exception as e:
     print(f"\n获取模型列表彻底失败，错误详情:\n{e}")
+
