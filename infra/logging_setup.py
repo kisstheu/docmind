@@ -7,6 +7,23 @@ from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 
+def _make_console_stream_safe() -> None:
+    """
+    避免 Windows/GBK 控制台在输出 emoji 时抛 UnicodeEncodeError。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(errors="replace")
+        except Exception:
+            # 日志系统必须尽量不因编码兼容失败而中断。
+            pass
+
+
 def build_logger(
     name: str = "DocMind",
     log_file: str = "logs/docmind_sys.log",
@@ -35,6 +52,8 @@ def build_logger(
 
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
+
+    _make_console_stream_safe()
 
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(console_level)

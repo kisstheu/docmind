@@ -179,6 +179,22 @@ def _build_image_list_tip(image_items: list[str], *, limit: int = 8) -> str:
     return "\n".join(lines)
 
 
+def _prioritize_anchor_image(image_items: list[str], anchor_path: str | None) -> list[str]:
+    if not image_items:
+        return []
+    if not anchor_path:
+        return list(image_items)
+
+    anchor = _match_repo_path(anchor_path, image_items)
+    if not anchor:
+        return list(image_items)
+
+    anchor_key = _normalize_path_key(anchor)
+    ordered = [anchor]
+    ordered.extend(x for x in image_items if _normalize_path_key(x) != anchor_key)
+    return ordered
+
+
 def resolve_image_from_result_set(
     *,
     question: str,
@@ -216,9 +232,14 @@ def resolve_image_from_result_set(
 
     idx = _extract_image_index(question)
     if idx is not None:
-        if idx < 1 or idx > len(image_items):
-            return None, f"序号超出范围。当前可选 1 到 {len(image_items)}。"
-        return image_items[idx - 1], None
+        # 以当前焦点图作为第 1 张，保证“打开第2张图”能切换到另一张图。
+        anchor_path = current_focus_file
+        if not _match_repo_path(anchor_path or "", image_items):
+            anchor_path = preferred_rel_path
+        selection_items = _prioritize_anchor_image(image_items, anchor_path)
+        if idx < 1 or idx > len(selection_items):
+            return None, f"序号超出范围。当前可选 1 到 {len(selection_items)}。"
+        return selection_items[idx - 1], None
 
     if preferred_rel_path:
         preferred = _match_repo_path(preferred_rel_path, repo_paths)
