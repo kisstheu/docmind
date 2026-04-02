@@ -12,6 +12,7 @@ from app.file_delete_flow import (
 )
 from app.file_image_view_flow import (
     create_shadow_image_copy,
+    is_image_view_index_selection_request,
     is_image_view_request,
     open_image_with_system_viewer,
     resolve_image_from_result_set,
@@ -24,6 +25,7 @@ from app.file_rename_flow import (
     normalize_target_filename,
     resolve_source_file,
 )
+from app.chat_state_helpers import extract_file_items
 from infra.file_change_store import FileChangeStore
 
 
@@ -95,12 +97,28 @@ def handle_requested_file_action(
         )
         return True, state, current_focus_file
 
-    if is_image_view_request(question):
+    should_handle_image_view = is_image_view_request(question)
+    if (
+        not should_handle_image_view
+        and (state.last_local_topic or "") in {"image_view_pending", "image_view_done"}
+        and is_image_view_index_selection_request(question)
+    ):
+        should_handle_image_view = True
+
+    if should_handle_image_view:
+        preferred_rel: str | None = None
+        last_answer = (state.last_answer_text or state.last_answer_preview or "").strip()
+        if last_answer:
+            prev_turn_files = extract_file_items(last_answer)
+            if prev_turn_files:
+                preferred_rel = prev_turn_files[-1]
+
         target_rel, tip = resolve_image_from_result_set(
             question=question,
             last_result_set_items=state.last_result_set_items,
             current_focus_file=current_focus_file,
             repo_paths=list(repo_state.paths),
+            preferred_rel_path=preferred_rel,
         )
         if not target_rel:
             state = reply_file_action(

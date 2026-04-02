@@ -336,6 +336,26 @@ FILE_LOOKUP_GENERIC_TERMS = {
     "看下",
 }
 
+FILE_LOOKUP_FOLLOWUP_PRONOUNS = {
+    "这",
+    "那",
+    "这个",
+    "那个",
+    "它",
+    "他",
+    "她",
+    "它们",
+    "他们",
+    "这条",
+    "那条",
+    "这个岗位",
+    "那个岗位",
+    "这个职位",
+    "那个职位",
+    "这个公司",
+    "那个公司",
+}
+
 
 def _normalize_lookup_token(text: str) -> str:
     return re.sub(r"[^a-z0-9\u4e00-\u9fa5]+", "", (text or "").lower())
@@ -378,6 +398,35 @@ def _extract_file_lookup_target(question: str) -> str:
         if target.startswith(prefix):
             target = target[len(prefix):].strip(" ，,：:")
     return target
+
+
+def _extract_followup_file_lookup_target(question: str) -> str:
+    q = _strip_file_lookup_prefix(question)
+    if not q:
+        return ""
+
+    q = re.sub(r"\s+", "", q)
+    q = q.strip("，,：:。！？!?`\"'[]【】")
+    q = re.sub(r"(?:呢|吗|嘛|呀|啊)+$", "", q)
+    q = re.sub(r"(?:怎么样|如何|咋样|怎么说|怎么理解)$", "", q)
+    q = q.strip("，,：:。！？!?`\"'[]【】")
+    if not q:
+        return ""
+
+    q_norm = _normalize_lookup_token(q)
+    if not q_norm:
+        return ""
+    if q_norm in FILE_LOOKUP_GENERIC_TERMS:
+        return ""
+    if q_norm in FILE_LOOKUP_FOLLOWUP_PRONOUNS:
+        return ""
+    if re.fullmatch(r"\d+(?:\.\d+)?", q_norm):
+        return ""
+    if len(q_norm) <= 1:
+        return ""
+    if not re.search(r"[a-zA-Z\u4e00-\u9fa5]", q):
+        return ""
+    return q
 
 
 def _build_file_lookup_terms(question: str, search_query: str, target: str) -> list[str]:
@@ -426,6 +475,7 @@ def maybe_build_file_location_answer(
     repo_state,
     max_items: int = 5,
     logger=None,
+    allow_followup_inference: bool = False,
 ) -> str | None:
     # Local import to avoid any potential cross-module initialization coupling.
     from retrieval.search_intent import is_file_location_lookup_query
@@ -433,10 +483,18 @@ def maybe_build_file_location_answer(
     if not relevant_indices:
         return None
 
-    if not is_file_location_lookup_query(question, search_query):
-        return None
-
+    is_direct_lookup = is_file_location_lookup_query(question, search_query)
     target = _extract_file_lookup_target(question)
+    if not is_direct_lookup:
+        if not allow_followup_inference:
+            return None
+        if not target:
+            target = _extract_followup_file_lookup_target(question)
+        if not target:
+            return None
+        if logger:
+            logger.info(f"   🧷 [文件定位追问推断] target={target}")
+
     terms = _build_file_lookup_terms(question, search_query, target)
     if not terms and not target:
         return None

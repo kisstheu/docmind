@@ -87,6 +87,10 @@ _CN_NUM_MAP = {
 }
 
 
+def _strip_selection_punctuation(text: str) -> str:
+    return (text or "").strip().strip("，。！？；：,.!?;:[]【】()（）\"'`")
+
+
 def _parse_cn_number(token: str) -> int | None:
     t = (token or "").strip()
     if not t:
@@ -106,14 +110,32 @@ def _parse_cn_number(token: str) -> int | None:
 
 
 def _extract_image_index(question: str) -> int | None:
-    q = (question or "").strip()
+    q = _strip_selection_punctuation(question)
     if not q:
         return None
 
-    m = re.search(r"第\s*([0-9一二两三四五六七八九十]+)\s*(?:张|个|幅)?", q)
-    if not m:
-        return None
-    return _parse_cn_number(m.group(1))
+    m = re.search(r"第\s*([0-9一二两三四五六七八九十]+)\s*(?:张|个|幅)?(?:图|图片)?", q)
+    if m:
+        return _parse_cn_number(m.group(1))
+
+    m = re.fullmatch(r"([0-9一二两三四五六七八九十]+)\s*(?:张|个|幅)?(?:图|图片)?", q)
+    if m:
+        return _parse_cn_number(m.group(1))
+    return None
+
+
+def is_image_view_index_selection_request(question: str) -> bool:
+    q = _strip_selection_punctuation(question)
+    if not q:
+        return False
+
+    # Treat bare index replies like "2"/"二"/"第2张图" as image selection only.
+    if _extract_image_index(q) is None:
+        return False
+
+    return bool(
+        re.fullmatch(r"(?:第\s*)?[0-9一二两三四五六七八九十]+\s*(?:张|个|幅)?(?:图|图片)?", q)
+    )
 
 
 def is_image_view_request(question: str) -> bool:
@@ -163,6 +185,7 @@ def resolve_image_from_result_set(
     last_result_set_items: list[str] | None,
     current_focus_file: str | None,
     repo_paths: list[str],
+    preferred_rel_path: str | None = None,
 ) -> tuple[str | None, str | None]:
     if not last_result_set_items:
         return None, "当前还没有可用的文件结果集。请先让我定位到目标文件，再说“打开这张图”。"
@@ -196,6 +219,11 @@ def resolve_image_from_result_set(
         if idx < 1 or idx > len(image_items):
             return None, f"序号超出范围。当前可选 1 到 {len(image_items)}。"
         return image_items[idx - 1], None
+
+    if preferred_rel_path:
+        preferred = _match_repo_path(preferred_rel_path, repo_paths)
+        if preferred and _normalize_path_key(preferred) in image_keys:
+            return preferred, None
 
     if current_focus_file:
         focused = _match_repo_path(current_focus_file, repo_paths)

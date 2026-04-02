@@ -654,6 +654,10 @@ def run_chat_loop(
                 relevant_indices=last_relevant_indices,
                 repo_state=repo_state,
                 logger=logger,
+                allow_followup_inference=(
+                    conversation_state.last_answer_type == "enumeration_file"
+                    and event.name in {"content_followup", "result_set_followup", "result_set_expansion_followup"}
+                ),
             )
             if local_file_locator_answer:
                 logger.info("🧩 [文件定位稳态回答] 使用本地规则直接回答，跳过远程模型生成")
