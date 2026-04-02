@@ -34,6 +34,9 @@ def is_system_capability_request(question: str) -> bool:
 
 def is_repo_meta_request(question: str) -> bool:
     q = normalize_meta_question(question)
+    if _is_file_locator_query(q):
+        return False
+
     has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
     has_list_intent = any(x in q for x in ["列出", "列下", "列一下", "列出来", "罗列", "展开一下", "展开列一下"])
     has_topic_overview_intent = any(
@@ -98,6 +101,21 @@ def is_repo_meta_request(question: str) -> bool:
         return True
 
     return False
+
+
+def _is_file_locator_query(q: str) -> bool:
+    merged = re.sub(r"\s+", "", (q or "").lower())
+    if not merged:
+        return False
+
+    direct_patterns = [
+        "在哪个文件", "在那个文件", "是哪个文件", "是那个文件",
+        "哪个文件", "哪些文件", "哪份文件", "文件里", "文件中",
+        "在哪个文档", "在那个文档", "是哪个文档", "是那个文档",
+        "哪个文档", "哪些文档",
+        "在哪个记录", "是哪个记录", "哪个记录", "哪些记录",
+    ]
+    return any(p in merged for p in direct_patterns)
 
 
 def is_entity_lookup_request(question: str) -> bool:

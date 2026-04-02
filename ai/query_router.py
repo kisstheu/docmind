@@ -50,6 +50,9 @@ def _is_smalltalk(question: str) -> bool:
 
 
 def _is_repo_meta(q: str) -> bool:
+    if _is_file_locator_query(q):
+        return False
+
     has_name_content_mismatch = _is_name_content_mismatch(q)
     has_list_doc_query = _is_list_doc_query(q)
     has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
@@ -59,6 +62,21 @@ def _is_repo_meta(q: str) -> bool:
         "修改时间", "创建时间", "占多大", "总大小", "空间",
     ])
     return has_name_content_mismatch or has_list_doc_query or (has_doc_word and has_meta_word)
+
+
+def _is_file_locator_query(q: str) -> bool:
+    merged = re.sub(r"\s+", "", (q or "").lower())
+    if not merged:
+        return False
+
+    direct_patterns = [
+        "在哪个文件", "在那个文件", "是哪个文件", "是那个文件",
+        "哪个文件", "哪些文件", "哪份文件", "文件里", "文件中",
+        "在哪个文档", "在那个文档", "是哪个文档", "是那个文档",
+        "哪个文档", "哪些文档",
+        "在哪个记录", "是哪个记录", "哪个记录", "哪些记录",
+    ]
+    return any(p in merged for p in direct_patterns)
 
 
 def _is_entity_lookup(q: str) -> bool:
@@ -227,6 +245,10 @@ def route_question(
     if is_rule_smalltalk:
         logger.info(f"🧭 [规则命中] smalltalk -> {question}")
         return {"route": "smalltalk"}
+
+    if _is_file_locator_query(q):
+        logger.info(f"🧭 [规则命中] file_locator -> {question}")
+        return {"route": "normal_retrieval"}
 
     if _is_entity_lookup(q):
         logger.info(f"🧭 [规则命中] entity_lookup -> {question}")

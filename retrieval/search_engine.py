@@ -343,7 +343,7 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
                 )
 
     relevant_indices = relevant_indices[:top_k]
-    logger.info(f"   🔍 [溯源完毕] 最终喂给大模型的片段数量: {len(relevant_indices)}")
+    logger.info(f"   🔍 [溯源完毕] 本轮检索候选片段数量: {len(relevant_indices)}")
 
     return {"relevant_indices": relevant_indices, "scores": scores, "current_focus_file": current_focus_file, }
 
@@ -377,7 +377,7 @@ def build_context_text(relevant_indices: List[int], repo_state, logger) -> str:
         )
 
     logger.debug(
-        f"本次最终送入大模型的chunk文件列表: {list(dict.fromkeys([repo_state.chunk_paths[idx] for idx in filtered_indices]))}"
+        f"本轮检索命中的chunk文件列表: {list(dict.fromkeys([repo_state.chunk_paths[idx] for idx in filtered_indices]))}"
     )
     return "【参考片段】:\n" + "\n---\n".join(context_blocks) + "\n\n"
 

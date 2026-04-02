@@ -33,8 +33,11 @@ from app.chat_state_helpers import (
     update_state_after_local_answer,
     update_state_after_retrieval_answer,
 )
-from app.chat_text_utils import normalize_colloquial_question
-from app.chat_text_utils import maybe_build_related_records_answer
+from app.chat_text_utils import (
+    maybe_build_file_location_answer,
+    maybe_build_related_records_answer,
+    normalize_colloquial_question,
+)
 from app.context_anchor import is_context_dependent_question
 from app.dialog_utils import is_followup_question
 from app.file_actions.loop import handle_file_action_turn
@@ -645,6 +648,26 @@ def run_chat_loop(
                 )
                 continue
 
+            local_file_locator_answer = maybe_build_file_location_answer(
+                question=question,
+                search_query=search_query,
+                relevant_indices=last_relevant_indices,
+                repo_state=repo_state,
+                logger=logger,
+            )
+            if local_file_locator_answer:
+                logger.info("🧩 [文件定位稳态回答] 使用本地规则直接回答，跳过远程模型生成")
+                print_answer(local_file_locator_answer, start_qa)
+                append_memory(memory_buffer, question, local_file_locator_answer)
+                conversation_state = update_state_after_retrieval_answer(
+                    conversation_state,
+                    question,
+                    local_file_locator_answer,
+                    logger,
+                    event_name=event.name,
+                )
+                continue
+
             if (
                 route == "normal_retrieval"
                 and not materials["context_text"].strip()
@@ -678,6 +701,7 @@ def run_chat_loop(
                 result_set_items=conversation_state.last_result_set_items,
             )
 
+            logger.info("🛰️ [远程模型生成] 进入生成阶段，开始调用远程大模型")
             response = client.models.generate_content(
                 model=model_id,
                 contents=final_prompt,
