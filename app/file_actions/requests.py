@@ -10,6 +10,12 @@ from app.file_delete_flow import (
     is_delete_request,
     resolve_delete_source_file,
 )
+from app.file_image_view_flow import (
+    create_shadow_image_copy,
+    is_image_view_request,
+    open_image_with_system_viewer,
+    resolve_image_from_result_set,
+)
 from app.file_rename_flow import (
     build_rename_preview,
     extract_new_name_candidate,
@@ -88,6 +94,77 @@ def handle_requested_file_action(
             is_content_answer=False,
         )
         return True, state, current_focus_file
+
+    if is_image_view_request(question):
+        target_rel, tip = resolve_image_from_result_set(
+            question=question,
+            last_result_set_items=state.last_result_set_items,
+            current_focus_file=current_focus_file,
+            repo_paths=list(repo_state.paths),
+        )
+        if not target_rel:
+            state = reply_file_action(
+                state=state,
+                memory_buffer=memory_buffer,
+                question=question,
+                answer=tip or "没有定位到要查看的图片。",
+                start_qa=start_qa,
+                local_topic="image_view_pending",
+                is_content_answer=False,
+            )
+            return True, state, current_focus_file
+
+        shadow_path, shadow_err = create_shadow_image_copy(
+            notes_dir=notes_dir,
+            source_rel_path=target_rel,
+        )
+        if not shadow_path:
+            state = reply_file_action(
+                state=state,
+                memory_buffer=memory_buffer,
+                question=question,
+                answer=shadow_err or "创建影子查看文件失败。",
+                start_qa=start_qa,
+                local_topic="image_view_failed",
+                is_content_answer=False,
+            )
+            return True, state, current_focus_file
+
+        opened, open_err = open_image_with_system_viewer(shadow_path)
+        if not opened:
+            answer = (
+                "已生成影子图片，但自动打开失败。\n"
+                f"- 原文件：{target_rel}\n"
+                f"- 影子副本：{shadow_path}\n"
+                f"- 错误：{open_err or 'unknown'}"
+            )
+            state = reply_file_action(
+                state=state,
+                memory_buffer=memory_buffer,
+                question=question,
+                answer=answer,
+                start_qa=start_qa,
+                local_topic="image_view_failed",
+                is_content_answer=False,
+            )
+            return True, state, current_focus_file
+
+        answer = (
+            "已打开影子图片（原文件不会被改动）：\n"
+            f"- 原文件：{target_rel}\n"
+            f"- 影子副本：{shadow_path}\n"
+            "可继续说“打开第2张图”切换查看。"
+        )
+        state = reply_file_action(
+            state=state,
+            memory_buffer=memory_buffer,
+            question=question,
+            answer=answer,
+            start_qa=start_qa,
+            local_topic="image_view_done",
+            is_content_answer=False,
+        )
+        return True, state, target_rel
 
     if is_rename_request(question):
         source_hint = resolve_source_file(
