@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -20,6 +21,22 @@ from retrieval.repo_index_cache import (
     save_incremental_cache,
 )
 from retrieval.repo_index_types import IndexBuildContext, RepoState
+
+
+def _coerce_float(raw, default: float, min_value: float, max_value: float) -> float:
+    try:
+        value = float(raw)
+    except Exception:
+        return default
+    return max(min_value, min(max_value, value))
+
+
+def _coerce_int(raw, default: int, min_value: int, max_value: int) -> int:
+    try:
+        value = int(raw)
+    except Exception:
+        return default
+    return max(min_value, min(max_value, value))
 
 
 __all__ = [
@@ -46,8 +63,29 @@ def _coerce_scanned_repo(scanned):
 
 
 
-def load_or_build_embeddings(scanned, cache_file: Path, model_emb, logger, ollama_api_url: str, ollama_model: str):
+def load_or_build_embeddings(
+    scanned,
+    cache_file: Path,
+    model_emb,
+    logger,
+    ollama_api_url: str,
+    ollama_model: str,
+    ollama_timeout_sec: float | None = None,
+    ollama_max_retries: int | None = None,
+):
     scanned_repo = _scan_repository(scanned["notes_dir"], logger) if isinstance(scanned, dict) else scanned
+    resolved_ollama_timeout = _coerce_float(
+        ollama_timeout_sec if ollama_timeout_sec is not None else os.getenv("DOCMIND_INDEX_OLLAMA_TIMEOUT_SEC"),
+        default=8.0,
+        min_value=2.0,
+        max_value=180.0,
+    )
+    resolved_ollama_retries = _coerce_int(
+        ollama_max_retries if ollama_max_retries is not None else os.getenv("DOCMIND_INDEX_OLLAMA_RETRIES"),
+        default=0,
+        min_value=0,
+        max_value=5,
+    )
 
     current_paths = scanned_repo.paths
     current_manifest = {entry.path: entry.fingerprint for entry in scanned_repo.entries}
@@ -83,6 +121,11 @@ def load_or_build_embeddings(scanned, cache_file: Path, model_emb, logger, ollam
         logger=logger,
         ollama_api_url=ollama_api_url,
         ollama_model=ollama_model,
+        ollama_timeout_sec=resolved_ollama_timeout,
+        ollama_max_retries=resolved_ollama_retries,
+    )
+    logger.info(
+        f"⚙️ 建库标签提取: ollama (timeout={resolved_ollama_timeout:.1f}s, retries={resolved_ollama_retries})"
     )
 
     sidecar_count = 0

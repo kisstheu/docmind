@@ -111,6 +111,8 @@ python ask_notes.py
 - `DOCMIND_LOG_BACKUP_COUNT=<int>`：日志保留份数
 - `DOCMIND_LOG_ROTATE_WHEN=<unit>` / `DOCMIND_LOG_ROTATE_INTERVAL=<int>`：日志切分策略
 - `DOCMIND_LOG_ROTATE_UTC=0/1`：日志切分是否按 UTC 计算
+- `DOCMIND_INDEX_OLLAMA_TIMEOUT_SEC=<sec>`：建库标签提取请求超时秒数（默认 8）
+- `DOCMIND_INDEX_OLLAMA_RETRIES=<int>`：建库标签提取重试次数（默认 0）
 
 说明：参数/环境变量名中的 `notes` 为历史兼容命名，实际可指向任意本地文档/资料目录。
 

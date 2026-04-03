@@ -115,3 +115,5 @@ class IndexBuildContext:
     logger: Any
     ollama_api_url: str
     ollama_model: str
+    ollama_timeout_sec: float = 8.0
+    ollama_max_retries: int = 0

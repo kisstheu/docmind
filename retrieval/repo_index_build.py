@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import re
 from pathlib import Path
 from typing import Any, List
@@ -31,56 +32,7 @@ _MAX_SCENE_TAGS = 4
 _SCENE_TAG_VERSION = 2
 _BAD_SCENE_PREFIXES = ["无法确定", "无法识别", "请提供", "以下是", "根据文本", "场景标签如下", "用途标签如下"]
 _SCENE_TAG_STOPWORDS = {"场景", "用途", "主题", "内容", "文档", "资料", "知识库", "标签", "关键词", "材料类型"}
-_DOC_TYPE_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (
-        "招聘岗位信息",
-        (
-            "岗位职责",
-            "任职要求",
-            "岗位要求",
-            "职位描述",
-            "学历要求",
-            "经验要求",
-            "薪资",
-            "福利",
-            "加分项",
-            "招聘",
-            "jd",
-        ),
-    ),
-    (
-        "会议纪要",
-        (
-            "会议纪要",
-            "会议结论",
-            "议题",
-            "参会",
-            "行动项",
-            "待办事项",
-        ),
-    ),
-    (
-        "项目复盘",
-        (
-            "复盘",
-            "根因",
-            "问题回顾",
-            "改进项",
-            "经验教训",
-        ),
-    ),
-    (
-        "学习笔记",
-        (
-            "学习笔记",
-            "教程",
-            "课程",
-            "知识点",
-            "实践总结",
-            "读书笔记",
-        ),
-    ),
-)
+_OLLAMA_RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 
 def collect_all_files(notes_dir: Path) -> List[Path]:
@@ -175,6 +127,8 @@ def clean_scene_tags(raw: str) -> str:
             continue
         if token in _SCENE_TAG_STOPWORDS:
             continue
+        if token.startswith("材料类型提示"):
+            continue
         if token.endswith("标签如下") or token.endswith("关键词如下"):
             continue
         if token.startswith("场景") and len(token) <= 4:
@@ -210,40 +164,6 @@ def _canonicalize_scene_tag(tag: str) -> str:
         return "学习笔记"
 
     return t
-
-
-def _guess_material_type_from_doc(doc: str) -> str | None:
-    text = (doc or "")[:4000].lower()
-    if not text:
-        return None
-
-    best_label = None
-    best_hits = 0
-    for label, keywords in _DOC_TYPE_RULES:
-        hits = sum(1 for kw in keywords if kw.lower() in text)
-        if hits > best_hits:
-            best_hits = hits
-            best_label = label
-
-    if best_hits >= 2:
-        return best_label
-    return None
-
-
-def _prepend_primary_scene_tag(scene_tags: str, primary_tag: str | None) -> str:
-    if not primary_tag:
-        return scene_tags
-
-    parts = [p for p in scene_tags.split() if p.strip()]
-    deduped: list[str] = [primary_tag]
-    seen = {primary_tag}
-    for item in parts:
-        if item in seen:
-            continue
-        seen.add(item)
-        deduped.append(item)
-
-    return " ".join(deduped[:_MAX_SCENE_TAGS])
 
 
 def build_file_fingerprint(relative_path: str, stat_result) -> str:
@@ -318,8 +238,7 @@ def build_changed_file_cache_entry(
         context.logger.warning(f"      ⚠️ 跳过空文件或读取失败文件：{path}")
         return None
 
-    shadow_tags = _extract_shadow_tags(context, file_record.doc, path)
-    scene_tags = _extract_scene_tags(context, file_record.doc, path, shadow_tags=shadow_tags)
+    shadow_tags, scene_tags = _extract_tags_for_indexing(context, file_record.doc, path)
     doc_embedding = _encode_doc_embedding(context, file_record.doc, shadow_tags, scene_tags, path)
 
     file_chunk_texts, file_chunk_meta = _build_chunk_payloads(file_record.doc, path)
@@ -346,79 +265,102 @@ def build_changed_file_cache_entry(
     return doc_cache_entry, chunk_cache_entry
 
 
-
-def _extract_shadow_tags(context: IndexBuildContext, doc: str, path: str) -> str:
+def _extract_tags_for_indexing(context: IndexBuildContext, doc: str, path: str) -> tuple[str, str]:
     context.logger.info(f"   🤖 正在透视文件：{path} ...")
     try:
-        payload = {
-            "model": context.ollama_model,
-            "prompt": _build_shadow_tag_prompt(doc),
-            "stream": False,
-        }
-        response = requests.post(context.ollama_api_url, json=payload, timeout=180)
-        response.raise_for_status()
-        raw_tags = response.json().get("response", "").strip()
-        shadow_tags = clean_shadow_tags(raw_tags)
+        raw = _request_ollama_response(
+            context=context,
+            prompt=_build_combined_tag_prompt(doc),
+            path=path,
+            purpose="标签提取",
+        )
+        raw_shadow_tags, raw_scene_tags = _parse_combined_tag_response(raw)
+        shadow_tags = clean_shadow_tags(raw_shadow_tags)
+        scene_tags = clean_scene_tags(raw_scene_tags)
+
         if shadow_tags:
             context.logger.info(f"      ✨ 提取到影子标签：[{shadow_tags}]")
-        else:
-            context.logger.info(f"      ℹ️ 影子标签已清洗为空，原始输出：[{raw_tags[:80]}]")
-        return shadow_tags
-    except Exception as e:
-        context.logger.warning(f"      ⚠️ {path} 透视失败，使用空标签 ({e})")
-        return ""
-
-
-
-def _build_shadow_tag_prompt(doc: str) -> str:
-    return (
-        "请提取以下私人笔记片段的 5-8 个最核心搜索关键词。\n"
-        "【严格分类指令】：\n"
-        "1. [技术/职场类]：【仅当】内容明确涉及代码、软件开发、公司事务时，才允许加入“项目”、“工作”及技术词。\n"
-        "2. [游戏/娱乐类]：【仅当】明确涉及游戏时，才加入“游戏”、“个人爱好”及具体游戏名。\n"
-        "3. [生活类]：如果涉及生活琐事、情感日常，【绝对禁止】加入任何技术、代码或工作词汇！提取其本身的专属词即可。\n"
-        "【输出格式】：极度简练，只返回空格分隔的关键词，不许废话。\n\n"
-        f"文本：\n{doc[:1500]}"
-    )
-
-
-
-def _extract_scene_tags(context: IndexBuildContext, doc: str, path: str, shadow_tags: str) -> str:
-    primary_scene_tag = _guess_material_type_from_doc(doc)
-    try:
-        payload = {
-            "model": context.ollama_model,
-            "prompt": _build_scene_tag_prompt(doc, shadow_tags, primary_scene_tag=primary_scene_tag),
-            "stream": False,
-        }
-        response = requests.post(context.ollama_api_url, json=payload, timeout=180)
-        response.raise_for_status()
-        raw_tags = response.json().get("response", "").strip()
-        scene_tags = clean_scene_tags(raw_tags)
-        scene_tags = _prepend_primary_scene_tag(scene_tags, primary_scene_tag)
         if scene_tags:
             context.logger.info(f"      🧭 提取到场景标签：[{scene_tags}]")
-        return scene_tags
-    except Exception:
-        return _prepend_primary_scene_tag("", primary_scene_tag)
+        return shadow_tags, scene_tags
+    except Exception as e:
+        context.logger.warning(f"      ⚠️ {path} 透视失败，使用空标签 ({e})")
+        return "", ""
 
 
-def _build_scene_tag_prompt(doc: str, shadow_tags: str, primary_scene_tag: str | None = None) -> str:
-    guidance = ""
-    if primary_scene_tag:
-        guidance = f"识别到材料类型信号：{primary_scene_tag}。请优先保持这一类型。\n"
-
+def _build_combined_tag_prompt(doc: str) -> str:
     return (
-        "请从下面笔记文本中提炼 1-3 个“资料用途/问题场景”标签。\n"
-        "要求：\n"
-        "1. 第一个标签优先写“材料类型”，例如：招聘岗位信息/会议纪要/项目复盘/学习笔记。\n"
-        "2. 其余标签可写具体用途场景，避免只写技术名词。\n"
-        "3. 每个标签建议 4-10 字。\n"
-        "4. 只输出标签，用空格分隔，不要解释。\n\n"
-        + guidance
-        + f"已提取细标签：{shadow_tags or '无'}\n"
-        f"文本：\n{doc[:1200]}"
+        "请从下面文本中提取两类标签，并严格按两行输出：\n"
+        "影子标签: 5-8个关键词，空格分隔\n"
+        "场景标签: 1-3个标签，空格分隔，第一项优先写材料类型\n"
+        "不要输出其他解释。\n"
+        + f"文本：\n{doc[:1600]}"
     )
+
+
+def _parse_combined_tag_response(raw: str) -> tuple[str, str]:
+    text = (raw or "").strip()
+    if not text:
+        return "", ""
+
+    if text.startswith("{") and text.endswith("}"):
+        try:
+            data = json.loads(text)
+            return str(data.get("shadow_tags", "") or ""), str(data.get("scene_tags", "") or "")
+        except Exception:
+            pass
+
+    shadow_raw = ""
+    scene_raw = ""
+    shadow_match = re.search(r"(?:^|\n)\s*(?:影子标签|细标签|关键词|shadow_tags?)\s*[:：]\s*(.+)", text, flags=re.IGNORECASE)
+    if shadow_match:
+        shadow_raw = shadow_match.group(1).strip()
+
+    scene_match = re.search(r"(?:^|\n)\s*(?:场景标签|用途标签|scene_tags?)\s*[:：]\s*(.+)", text, flags=re.IGNORECASE)
+    if scene_match:
+        scene_raw = scene_match.group(1).strip()
+
+    if shadow_raw or scene_raw:
+        return shadow_raw, scene_raw
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) >= 2:
+        return lines[0], lines[1]
+    if len(lines) == 1:
+        return lines[0], ""
+    return "", ""
+
+
+def _request_ollama_response(context: IndexBuildContext, prompt: str, path: str, purpose: str) -> str:
+    max_attempts = max(1, int(getattr(context, "ollama_max_retries", 0) or 0) + 1)
+    timeout_sec = float(getattr(context, "ollama_timeout_sec", 8.0) or 8.0)
+    payload = {"model": context.ollama_model, "prompt": prompt, "stream": False}
+    last_error: Exception | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = requests.post(context.ollama_api_url, json=payload, timeout=timeout_sec)
+            if response.status_code >= 400:
+                error = requests.HTTPError(f"{response.status_code} {response.reason}", response=response)
+                if response.status_code in _OLLAMA_RETRYABLE_STATUS_CODES and attempt < max_attempts:
+                    context.logger.warning(
+                        f"      ⚠️ {path} {purpose}失败，第 {attempt}/{max_attempts} 次重试中 (HTTP {response.status_code})"
+                    )
+                    continue
+                raise error
+
+            raw = str(response.json().get("response", "") or "").strip()
+            return raw
+        except Exception as e:
+            last_error = e
+            if attempt < max_attempts:
+                context.logger.warning(f"      ⚠️ {path} {purpose}失败，第 {attempt}/{max_attempts} 次重试中 ({e})")
+                continue
+            break
+
+    if last_error is None:
+        raise RuntimeError(f"{purpose}失败，未获得可用响应")
+    raise last_error
 
 
 def _make_enhanced_doc(doc: str, shadow_tags: str, scene_tags: str) -> str:
