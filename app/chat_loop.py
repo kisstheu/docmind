@@ -34,6 +34,7 @@ from app.chat_state_helpers import (
     update_state_after_retrieval_answer,
 )
 from app.chat_text_utils import (
+    maybe_build_direct_lookup_answer,
     maybe_build_file_location_answer,
     maybe_build_related_records_answer,
     normalize_colloquial_question,
@@ -126,6 +127,19 @@ def _has_usable_followup_context(state: ConversationState) -> bool:
     if last_content_q and not _looks_like_contextless_followup_question(last_content_q):
         return True
 
+    return False
+
+
+def _is_simple_retrieval_turn(question: str, event_name: str) -> bool:
+    q = (question or "").strip()
+    if not q:
+        return False
+    if event_name in {"entity_lookup_followup", "result_set_followup", "result_set_expansion_followup"}:
+        return True
+    if event_name in {"content_followup", "action_request"} and len(q) <= 64:
+        return True
+    if event_name == "unknown" and len(q) <= 28:
+        return True
     return False
 
 
@@ -671,6 +685,68 @@ def run_chat_loop(
                     event_name=event.name,
                 )
                 continue
+
+            local_entity_mapping_answer = maybe_build_direct_lookup_answer(
+                question=question,
+                search_query=search_query,
+                relevant_indices=last_relevant_indices,
+                repo_state=repo_state,
+                logger=logger,
+                allow_followup_inference=(
+                    (
+                        (
+                            bool(conversation_state.last_result_set_items)
+                            and str(conversation_state.last_answer_type or "").startswith("enumeration_")
+                        )
+                        or (
+                            "可直接核对的证据"
+                            in str(conversation_state.last_answer_text or conversation_state.last_answer_preview or "")
+                        )
+                    )
+                    and event.name in {
+                        "unknown",
+                        "content_followup",
+                        "result_set_followup",
+                        "result_set_expansion_followup",
+                        "entity_lookup_followup",
+                    }
+                ),
+            )
+            if local_entity_mapping_answer:
+                logger.info("🧩 [直接检索稳态回答] 使用本地证据抽取，跳过远程模型生成")
+                print_answer(local_entity_mapping_answer, start_qa)
+                append_memory(memory_buffer, question, local_entity_mapping_answer)
+                conversation_state = update_state_after_retrieval_answer(
+                    conversation_state,
+                    question,
+                    local_entity_mapping_answer,
+                    logger,
+                    event_name=event.name,
+                )
+                continue
+
+            if route == "normal_retrieval" and _is_simple_retrieval_turn(question, event.name):
+                forced_local_answer = maybe_build_direct_lookup_answer(
+                    question=question,
+                    search_query=search_query,
+                    relevant_indices=last_relevant_indices,
+                    repo_state=repo_state,
+                    logger=logger,
+                    allow_followup_inference=True,
+                    force_local_evidence=True,
+                )
+                if forced_local_answer:
+                    logger.info("🧩 [简单检索本地兜底] 跳过远程模型生成")
+                    print_answer(forced_local_answer, start_qa)
+                    append_memory(memory_buffer, question, forced_local_answer)
+                    conversation_state = update_state_after_retrieval_answer(
+                        conversation_state,
+                        question,
+                        forced_local_answer,
+                        logger,
+                        event_name=event.name,
+                    )
+                    continue
 
             if (
                 route == "normal_retrieval"

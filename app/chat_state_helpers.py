@@ -128,7 +128,7 @@ def infer_answer_type(user_question: str, answer_text: str) -> str | None:
         if len(numbered_lines) >= 2:
             return "enumeration_company"
 
-    if "公司" in q and any(x in q for x in ["多少", "哪些", "哪几家", "哪几个", "列出", "列一下", "提到了"]):
+    if "公司" in q and any(x in q for x in ["多少", "哪些", "哪几家", "哪几个", "哪个", "列出", "列一下", "提到了"]):
         if len(numbered_lines) >= 2:
             return "enumeration_company"
         if "以下公司" in a:
@@ -141,6 +141,16 @@ def infer_answer_type(user_question: str, answer_text: str) -> str | None:
             return "enumeration_company"
         if a.count("有限公司") >= 2:
             return "enumeration_company"
+
+    if (
+        len(numbered_lines) >= 1
+        and re.search(r"(?:^|\n)\s*\d+[.、]\s*.+?（\s*HR[:：]", a, flags=re.IGNORECASE)
+        and (
+            re.search(r"(有限公司|股份有限公司|集团|科技|软件|信息)", a)
+            or re.search(r"公司[-\s]*HR", a, flags=re.IGNORECASE)
+        )
+    ):
+        return "enumeration_company"
 
     if any(x in q_norm for x in EXPANSION_MARKERS):
         if len(numbered_lines) >= 1 and ("公司" in a or "名称" in a):
@@ -240,6 +250,9 @@ def extract_file_items(answer_text: str) -> list[str]:
         _add_file_item(item)
 
     for m in re.findall(r"(?:文件|文档|记录)[【\[]([^】\]\n]+)[】\]]", answer_text or ""):
+        _add_file_item(m)
+
+    for m in re.findall(r"(?:来源|出处|原文件|源文件)\s*[：:]\s*([^\n]+)", answer_text or "", flags=re.IGNORECASE):
         _add_file_item(m)
 
     return items

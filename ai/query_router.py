@@ -64,6 +64,17 @@ def _is_repo_meta(q: str) -> bool:
     return has_name_content_mismatch or has_list_doc_query or (has_doc_word and has_meta_word)
 
 
+def _has_explicit_repo_meta_signal(question: str, q: str) -> bool:
+    if _is_repo_meta(q):
+        return True
+    try:
+        from app.dialog.repo_meta_rules import is_repo_meta_request
+
+        return bool(is_repo_meta_request(question))
+    except Exception:
+        return False
+
+
 def _is_file_locator_query(q: str) -> bool:
     merged = re.sub(r"\s+", "", (q or "").lower())
     if not merged:
@@ -93,7 +104,8 @@ def _is_entity_lookup(q: str) -> bool:
         "找", "查", "搜",
         "提到", "提及",
         "名字", "名称",
-        "哪些", "哪几个", "哪几家", "列出",
+        "哪些", "哪个", "哪位", "哪几个", "哪几家", "列出",
+        "对应", "分别", "关联", "匹配",
     ])
     has_repo_meta_intent = any(x in q for x in [
         "多少", "数量", "格式", "分类", "清单",
@@ -332,6 +344,10 @@ def route_question(
         if route == "smalltalk" and not (is_rule_smalltalk or _is_stateful_smalltalk_followup(q, state_hint)):
             route = "normal_retrieval"
         if route == "out_of_scope" and not _is_definitely_out_of_scope(q):
+            route = "normal_retrieval"
+        if route == "system_capability" and not _is_capability(q):
+            route = "normal_retrieval"
+        if route == "repo_meta" and not _has_explicit_repo_meta_signal(question, q):
             route = "normal_retrieval"
 
         if route != "smalltalk":

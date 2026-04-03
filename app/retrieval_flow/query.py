@@ -232,6 +232,27 @@ def _force_append_anchor_terms(query: str, anchors: list[str], logger=None) -> s
     return " ".join(merged_terms).strip()
 
 
+def _extract_selector_anchors(text: str) -> list[str]:
+    q = (text or "").strip()
+    if not q:
+        return []
+
+    anchors: list[str] = []
+
+    for raw in re.findall(r"\d{1,2}\s*[-–—~]\s*\d{1,2}\s*[kK]", q):
+        t = re.sub(r"\s+", "", raw)
+        t = re.sub(r"[-–—~]", "-", t)
+        if t and t not in anchors:
+            anchors.append(t)
+
+    for raw in re.findall(r"\d{1,2}\s*薪", q):
+        t = re.sub(r"\s+", "", raw)
+        if t and t not in anchors:
+            anchors.append(t)
+
+    return anchors
+
+
 def _force_company_name_anchor_for_followup(
     *,
     search_query: str,
@@ -374,10 +395,12 @@ def build_search_query(
             base_query = normalized_question or question
 
     explicit_file_anchors = _extract_explicit_file_anchors(base_query)
+    selector_anchors = _extract_selector_anchors(base_query)
+    combined_anchors = list(dict.fromkeys([*explicit_file_anchors, *selector_anchors]))
 
     # 结果集追问：直接使用受控拼接后的查询，不再经过普通 rewrite/过滤链路
     if event_name in {"result_set_followup", "result_set_expansion_followup"} or structured_uses_result_set:
-        search_query = _force_append_anchor_terms(base_query.strip(), explicit_file_anchors, logger=logger)
+        search_query = _force_append_anchor_terms(base_query.strip(), combined_anchors, logger=logger)
         if structured_uses_result_set:
             logger.info("🛡️ [结构化结果集] 跳过 query rewrite 与新增词过滤，直接使用候选集合查询")
         else:
@@ -395,7 +418,7 @@ def build_search_query(
 
     if event_name == "structured_request" and _is_global_timeline_request(question):
         search_query = _build_global_timeline_query()
-        search_query = _force_append_anchor_terms(search_query, explicit_file_anchors, logger=logger)
+        search_query = _force_append_anchor_terms(search_query, combined_anchors, logger=logger)
         logger.info("🛡️ [全局时间线稳态检索] 使用固定主题词，避免改写抖动")
         logger.info(f"🛡️ [强词保底后]：{search_query}")
         return search_query, context_anchor
@@ -409,7 +432,7 @@ def build_search_query(
             last_answer_type=last_answer_type,
             logger=logger,
         )
-        search_query = _force_append_anchor_terms(search_query, explicit_file_anchors, logger=logger)
+        search_query = _force_append_anchor_terms(search_query, combined_anchors, logger=logger)
         logger.info("🛡️ [相关记录保词] 跳过新增词过滤，保留规则扩展词")
         logger.info(f"🛡️ [强词保底后]：{search_query}")
         return search_query, context_anchor
@@ -424,7 +447,7 @@ def build_search_query(
             last_answer_type=last_answer_type,
             logger=logger,
         )
-        search_query = _force_append_anchor_terms(search_query, explicit_file_anchors, logger=logger)
+        search_query = _force_append_anchor_terms(search_query, combined_anchors, logger=logger)
         logger.debug(f"🧩 [结构化请求原始检索词] {raw_search_query}")
         logger.info("🛡️ [结构化请求保锚] 跳过新增词过滤，保留主题补全词")
         logger.info(f"🛡️ [强词保底后]：{search_query}")
@@ -433,7 +456,22 @@ def build_search_query(
     # 弱追问 / 判断追问：不要把补全出来的主题词再过滤掉
     if event_name in {"judgment_request", "content_followup", "action_request"} and should_keep_followup_anchor(
             question):
-        search_query = raw_search_query.strip() or base_query.strip()
+        base_query_text = (base_query or "").strip()
+        rewritten_text = (raw_search_query or "").strip()
+
+        search_query = base_query_text or rewritten_text
+        if base_query_text and rewritten_text:
+            base_terms = [t for t in base_query_text.split() if t.strip()]
+            merged_terms = list(base_terms)
+            seen = {t for t in base_terms}
+            for token in rewritten_text.split():
+                t = (token or "").strip()
+                if not t or t in seen:
+                    continue
+                merged_terms.append(t)
+                seen.add(t)
+            search_query = " ".join(merged_terms).strip()
+
         search_query = _force_company_name_anchor_for_followup(
             search_query=search_query,
             base_query=base_query,
@@ -441,7 +479,7 @@ def build_search_query(
             last_answer_type=last_answer_type,
             logger=logger,
         )
-        search_query = _force_append_anchor_terms(search_query, explicit_file_anchors, logger=logger)
+        search_query = _force_append_anchor_terms(search_query, combined_anchors, logger=logger)
         logger.info("🛡️ [弱追问保锚] 跳过新增词过滤，保留主题补全词")
         logger.info(f"🛡️ [强词保底后]：{search_query}")
         return search_query, context_anchor
@@ -476,6 +514,6 @@ def build_search_query(
         last_answer_type=last_answer_type,
         logger=logger,
     )
-    search_query = _force_append_anchor_terms(search_query, explicit_file_anchors, logger=logger)
+    search_query = _force_append_anchor_terms(search_query, combined_anchors, logger=logger)
     logger.info(f"🛡️ [强词保底后]：{search_query}")
     return search_query, context_anchor
