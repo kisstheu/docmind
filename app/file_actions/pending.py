@@ -4,8 +4,8 @@ from pathlib import Path
 
 from app.dialog.state_machine import ConversationState
 from app.file_actions.common import clear_pending_action_state, reply_file_action
-from app.file_delete_flow import parse_delete_confirmation_decision
-from app.file_rename_flow import parse_confirmation_decision
+from app.file_flows.delete import parse_delete_confirmation_decision
+from app.file_flows.rename import parse_confirmation_decision
 from app.repo_state_mutations import apply_repo_state_delete, apply_repo_state_rename
 from infra.file_change_store import FileChangeStore, collect_file_snapshot
 

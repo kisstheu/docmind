@@ -97,6 +97,160 @@ class FileChangeStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_file ON file_events(file_id, created_at)")
             conn.commit()
 
+    def _upsert_file_row(
+        self,
+        *,
+        conn: sqlite3.Connection,
+        notes_dir_key: str,
+        before: dict,
+        after: dict,
+        now: str,
+    ) -> str:
+        before_path = before["relative_path"]
+        row = conn.execute(
+            "SELECT file_id FROM files WHERE notes_dir = ? AND current_path = ?",
+            (notes_dir_key, before_path),
+        ).fetchone()
+
+        if row:
+            file_id = row[0]
+            conn.execute(
+                """
+                UPDATE files
+                SET current_path = ?,
+                    last_size = ?,
+                    last_mtime = ?,
+                    last_ctime = ?,
+                    last_sha256 = ?,
+                    updated_at = ?
+                WHERE file_id = ?
+                """,
+                (
+                    after["relative_path"],
+                    int(after["size"]),
+                    float(after["mtime"]),
+                    float(after["ctime"]),
+                    after["sha256"],
+                    now,
+                    file_id,
+                ),
+            )
+            return file_id
+
+        file_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO files (
+                file_id, notes_dir, original_path, current_path,
+                original_size, original_mtime, original_ctime, original_sha256,
+                last_size, last_mtime, last_ctime, last_sha256,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                file_id,
+                notes_dir_key,
+                before["relative_path"],
+                after["relative_path"],
+                int(before["size"]),
+                float(before["mtime"]),
+                float(before["ctime"]),
+                before["sha256"],
+                int(after["size"]),
+                float(after["mtime"]),
+                float(after["ctime"]),
+                after["sha256"],
+                now,
+                now,
+            ),
+        )
+        return file_id
+
+    def _insert_file_event(
+        self,
+        *,
+        conn: sqlite3.Connection,
+        file_id: str,
+        event_type: str,
+        notes_dir_key: str,
+        before: dict,
+        after: dict,
+        reason: str,
+        requested_text: str,
+        confirmed_text: str,
+        now: str,
+    ) -> int:
+        cur = conn.execute(
+            """
+            INSERT INTO file_events (
+                file_id, event_type, notes_dir,
+                before_path, after_path,
+                before_size, before_mtime, before_ctime, before_sha256,
+                after_size, after_mtime, after_ctime, after_sha256,
+                reason, requested_text, confirmed_text, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                file_id,
+                event_type,
+                notes_dir_key,
+                before["relative_path"],
+                after["relative_path"],
+                int(before["size"]),
+                float(before["mtime"]),
+                float(before["ctime"]),
+                before["sha256"],
+                int(after["size"]),
+                float(after["mtime"]),
+                float(after["ctime"]),
+                after["sha256"],
+                reason,
+                requested_text,
+                confirmed_text,
+                now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def _record_file_event(
+        self,
+        *,
+        event_type: str,
+        notes_dir: Path,
+        before: dict,
+        after: dict,
+        reason: str = "",
+        requested_text: str = "",
+        confirmed_text: str = "",
+    ) -> int:
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        notes_dir_key = str(notes_dir.resolve())
+
+        with self._connect() as conn:
+            file_id = self._upsert_file_row(
+                conn=conn,
+                notes_dir_key=notes_dir_key,
+                before=before,
+                after=after,
+                now=now,
+            )
+            event_id = self._insert_file_event(
+                conn=conn,
+                file_id=file_id,
+                event_type=event_type,
+                notes_dir_key=notes_dir_key,
+                before=before,
+                after=after,
+                reason=reason,
+                requested_text=requested_text,
+                confirmed_text=confirmed_text,
+                now=now,
+            )
+            conn.commit()
+            return event_id
+
     def record_rename(
         self,
         *,
@@ -107,101 +261,15 @@ class FileChangeStore:
         requested_text: str = "",
         confirmed_text: str = "",
     ) -> int:
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        notes_dir_key = str(notes_dir.resolve())
-        before_path = before["relative_path"]
-
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT file_id FROM files WHERE notes_dir = ? AND current_path = ?",
-                (notes_dir_key, before_path),
-            ).fetchone()
-
-            if row:
-                file_id = row[0]
-                conn.execute(
-                    """
-                    UPDATE files
-                    SET current_path = ?,
-                        last_size = ?,
-                        last_mtime = ?,
-                        last_ctime = ?,
-                        last_sha256 = ?,
-                        updated_at = ?
-                    WHERE file_id = ?
-                    """,
-                    (
-                        after["relative_path"],
-                        int(after["size"]),
-                        float(after["mtime"]),
-                        float(after["ctime"]),
-                        after["sha256"],
-                        now,
-                        file_id,
-                    ),
-                )
-            else:
-                file_id = str(uuid.uuid4())
-                conn.execute(
-                    """
-                    INSERT INTO files (
-                        file_id, notes_dir, original_path, current_path,
-                        original_size, original_mtime, original_ctime, original_sha256,
-                        last_size, last_mtime, last_ctime, last_sha256,
-                        created_at, updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        file_id,
-                        notes_dir_key,
-                        before["relative_path"],
-                        after["relative_path"],
-                        int(before["size"]),
-                        float(before["mtime"]),
-                        float(before["ctime"]),
-                        before["sha256"],
-                        int(after["size"]),
-                        float(after["mtime"]),
-                        float(after["ctime"]),
-                        after["sha256"],
-                        now,
-                        now,
-                    ),
-                )
-
-            cur = conn.execute(
-                """
-                INSERT INTO file_events (
-                    file_id, event_type, notes_dir,
-                    before_path, after_path,
-                    before_size, before_mtime, before_ctime, before_sha256,
-                    after_size, after_mtime, after_ctime, after_sha256,
-                    reason, requested_text, confirmed_text, created_at
-                )
-                VALUES (?, 'rename', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    file_id,
-                    notes_dir_key,
-                    before["relative_path"],
-                    after["relative_path"],
-                    int(before["size"]),
-                    float(before["mtime"]),
-                    float(before["ctime"]),
-                    before["sha256"],
-                    int(after["size"]),
-                    float(after["mtime"]),
-                    float(after["ctime"]),
-                    after["sha256"],
-                    reason,
-                    requested_text,
-                    confirmed_text,
-                    now,
-                ),
-            )
-            conn.commit()
-            return int(cur.lastrowid)
+        return self._record_file_event(
+            event_type="rename",
+            notes_dir=notes_dir,
+            before=before,
+            after=after,
+            reason=reason,
+            requested_text=requested_text,
+            confirmed_text=confirmed_text,
+        )
 
     def record_delete(
         self,
@@ -213,101 +281,15 @@ class FileChangeStore:
         requested_text: str = "",
         confirmed_text: str = "",
     ) -> int:
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        notes_dir_key = str(notes_dir.resolve())
-        before_path = before["relative_path"]
-
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT file_id FROM files WHERE notes_dir = ? AND current_path = ?",
-                (notes_dir_key, before_path),
-            ).fetchone()
-
-            if row:
-                file_id = row[0]
-                conn.execute(
-                    """
-                    UPDATE files
-                    SET current_path = ?,
-                        last_size = ?,
-                        last_mtime = ?,
-                        last_ctime = ?,
-                        last_sha256 = ?,
-                        updated_at = ?
-                    WHERE file_id = ?
-                    """,
-                    (
-                        after["relative_path"],
-                        int(after["size"]),
-                        float(after["mtime"]),
-                        float(after["ctime"]),
-                        after["sha256"],
-                        now,
-                        file_id,
-                    ),
-                )
-            else:
-                file_id = str(uuid.uuid4())
-                conn.execute(
-                    """
-                    INSERT INTO files (
-                        file_id, notes_dir, original_path, current_path,
-                        original_size, original_mtime, original_ctime, original_sha256,
-                        last_size, last_mtime, last_ctime, last_sha256,
-                        created_at, updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        file_id,
-                        notes_dir_key,
-                        before["relative_path"],
-                        after["relative_path"],
-                        int(before["size"]),
-                        float(before["mtime"]),
-                        float(before["ctime"]),
-                        before["sha256"],
-                        int(after["size"]),
-                        float(after["mtime"]),
-                        float(after["ctime"]),
-                        after["sha256"],
-                        now,
-                        now,
-                    ),
-                )
-
-            cur = conn.execute(
-                """
-                INSERT INTO file_events (
-                    file_id, event_type, notes_dir,
-                    before_path, after_path,
-                    before_size, before_mtime, before_ctime, before_sha256,
-                    after_size, after_mtime, after_ctime, after_sha256,
-                    reason, requested_text, confirmed_text, created_at
-                )
-                VALUES (?, 'delete', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    file_id,
-                    notes_dir_key,
-                    before["relative_path"],
-                    after["relative_path"],
-                    int(before["size"]),
-                    float(before["mtime"]),
-                    float(before["ctime"]),
-                    before["sha256"],
-                    int(after["size"]),
-                    float(after["mtime"]),
-                    float(after["ctime"]),
-                    after["sha256"],
-                    reason,
-                    requested_text,
-                    confirmed_text,
-                    now,
-                ),
-            )
-            conn.commit()
-            return int(cur.lastrowid)
+        return self._record_file_event(
+            event_type="delete",
+            notes_dir=notes_dir,
+            before=before,
+            after=after,
+            reason=reason,
+            requested_text=requested_text,
+            confirmed_text=confirmed_text,
+        )
 
     def list_recent_renames(self, *, notes_dir: Path, limit: int = 20) -> list[dict]:
         notes_dir_key = str(notes_dir.resolve())
