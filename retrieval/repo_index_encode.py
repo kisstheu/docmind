@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 
 from retrieval.chunking import chunk_text
-from retrieval.repo_index_types import RepoState, ScannedRepo
+from retrieval.repo_index_types import PreparedFileBuild, RepoState, ScannedRepo
 
 
 def _make_enhanced_doc(doc: str, shadow_tags: str, scene_tags: str) -> str:
@@ -23,7 +23,7 @@ def _make_enhanced_doc(doc: str, shadow_tags: str, scene_tags: str) -> str:
 def _encode_doc_embedding(context, doc: str, shadow_tags: str, scene_tags: str, path: str):
     context.logger.info(f"   🧪 正在编码全文向量：{path}")
     enhanced_doc = _make_enhanced_doc(doc, shadow_tags, scene_tags)
-    return context.model_emb.encode([enhanced_doc])[0]
+    return _model_encode(context.model_emb, [enhanced_doc], batch_size=1)[0]
 
 
 def _build_chunk_payloads(doc: str, path: str) -> tuple[list[str], list[dict]]:
@@ -46,17 +46,99 @@ def _make_enhanced_chunk_texts(chunk_text_list: list[str], path: str, meta_list:
 def _encode_chunk_embeddings(context, file_chunk_texts: list[str], file_chunk_meta: list[dict], path: str):
     enhanced_chunk_texts = _make_enhanced_chunk_texts(file_chunk_texts, path, file_chunk_meta)
     if not enhanced_chunk_texts:
-        embedding_dim = 0
-        dim_getter = getattr(context.model_emb, "get_sentence_embedding_dimension", None)
-        if callable(dim_getter):
-            try:
-                embedding_dim = int(dim_getter() or 0)
-            except Exception:
-                embedding_dim = 0
-        return np.empty((0, embedding_dim), dtype=np.float32)
+        return np.empty((0, _get_embedding_dim(context.model_emb)), dtype=np.float32)
 
     context.logger.info(f"   🧪 正在编码 chunk 向量：{path}（{len(enhanced_chunk_texts)} 段）")
-    return context.model_emb.encode(enhanced_chunk_texts)
+    return _model_encode(context.model_emb, enhanced_chunk_texts, batch_size=len(enhanced_chunk_texts))
+
+
+def _get_embedding_dim(model_emb) -> int:
+    dim_getter = getattr(model_emb, "get_sentence_embedding_dimension", None)
+    if not callable(dim_getter):
+        return 0
+    try:
+        return int(dim_getter() or 0)
+    except Exception:
+        return 0
+
+
+def _model_encode(model_emb, texts: list[str], batch_size: int):
+    if not texts:
+        return np.empty((0, _get_embedding_dim(model_emb)), dtype=np.float32)
+
+    try:
+        encoded = model_emb.encode(
+            texts,
+            batch_size=batch_size,
+            show_progress_bar=False,
+            convert_to_numpy=True,
+        )
+    except TypeError:
+        encoded = model_emb.encode(texts)
+    return np.asarray(encoded)
+
+
+def build_cache_entries_from_prepared(
+    context,
+    prepared_files: list[PreparedFileBuild],
+    embed_batch_size: int,
+) -> dict[str, tuple[dict, dict]]:
+    if not prepared_files:
+        return {}
+
+    enhanced_docs = [
+        _make_enhanced_doc(prepared.file_record.doc, prepared.shadow_tags, prepared.scene_tags)
+        for prepared in prepared_files
+    ]
+    context.logger.info(f"   🧪 全文编码进度 [0/{len(prepared_files)}] 0%")
+    context.logger.info(
+        f"   🧪 批量编码全文向量：{len(prepared_files)} 个文件（batch_size={embed_batch_size}）"
+    )
+    doc_embeddings = _model_encode(context.model_emb, enhanced_docs, batch_size=embed_batch_size)
+    context.logger.info(f"   🧪 全文编码进度 [{len(prepared_files)}/{len(prepared_files)}] 100%")
+
+    enhanced_chunk_texts: list[str] = []
+    chunk_ranges: dict[str, tuple[int, int]] = {}
+    for prepared in prepared_files:
+        start = len(enhanced_chunk_texts)
+        enhanced_chunk_texts.extend(_make_enhanced_chunk_texts(prepared.chunk_texts, prepared.path, prepared.chunk_meta))
+        chunk_ranges[prepared.path] = (start, len(enhanced_chunk_texts))
+
+    if enhanced_chunk_texts:
+        context.logger.info(f"   🧪 chunk编码进度 [0/{len(prepared_files)}] 0%")
+        context.logger.info(
+            f"   🧪 批量编码 chunk 向量：{len(prepared_files)} 个文件（{len(enhanced_chunk_texts)} 段, batch_size={embed_batch_size}）"
+        )
+        chunk_embeddings = _model_encode(context.model_emb, enhanced_chunk_texts, batch_size=embed_batch_size)
+        context.logger.info(f"   🧪 chunk编码进度 [{len(prepared_files)}/{len(prepared_files)}] 100%")
+    else:
+        chunk_embeddings = np.empty((0, _get_embedding_dim(context.model_emb)), dtype=np.float32)
+
+    cache_entries: dict[str, tuple[dict, dict]] = {}
+    for idx, prepared in enumerate(prepared_files):
+        chunk_start, chunk_end = chunk_ranges[prepared.path]
+        file_record = prepared.file_record
+        doc_cache_entry = {
+            "fingerprint": prepared.fingerprint,
+            "doc": file_record.doc,
+            "file_time": file_record.file_time.timestamp(),
+            "file_size": int(file_record.file_size),
+            "file_info": file_record.file_info,
+            "shadow_tags": prepared.shadow_tags,
+            "scene_tags": prepared.scene_tags,
+            "scene_tags_version": int(prepared.scene_tags_version),
+            "embedding": np.asarray(doc_embeddings[idx]),
+        }
+        chunk_cache_entry = {
+            "fingerprint": prepared.fingerprint,
+            "chunk_texts": prepared.chunk_texts,
+            "chunk_meta": prepared.chunk_meta,
+            "chunk_file_time": file_record.file_time.timestamp(),
+            "chunk_embeddings": np.asarray(chunk_embeddings[chunk_start:chunk_end]),
+        }
+        cache_entries[prepared.path] = (doc_cache_entry, chunk_cache_entry)
+
+    return cache_entries
 
 
 def assemble_repo_state(
@@ -142,4 +224,3 @@ def assemble_repo_state(
         earliest_note=scanned.earliest_note,
         latest_note=scanned.latest_note,
     )
-

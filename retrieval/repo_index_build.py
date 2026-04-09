@@ -1,22 +1,23 @@
 from __future__ import annotations
 
+import math
 import datetime
 import json
 import re
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import numpy as np
 import requests
 
 from loaders.file_loader import read_file
 from retrieval.repo_index_encode import (
     _build_chunk_payloads,
-    _encode_chunk_embeddings,
-    _encode_doc_embedding,
     assemble_repo_state,
+    build_cache_entries_from_prepared,
 )
 from retrieval.repo_index_scan import collect_all_files
-from retrieval.repo_index_types import FileReadResult, IndexBuildContext, ScanEntry, ScannedRepo
+from retrieval.repo_index_types import FileReadResult, IndexBuildContext, PreparedFileBuild, ScanEntry, ScannedRepo
 
 _MAX_SHADOW_TAGS = 8
 _BAD_SHADOW_PREFIXES = ["无法确定", "无法识别", "请提供", "以下是", "根据文本", "关键词如下", "核心关键词如下"]
@@ -28,6 +29,7 @@ _BAD_SCENE_PREFIXES = ["无法确定", "无法识别", "请提供", "以下是",
 _SCENE_TAG_STOPWORDS = {"场景", "用途", "主题", "内容", "文档", "资料", "知识库", "标签", "关键词", "材料类型"}
 
 _OLLAMA_RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+_DEFAULT_TAG_EXCERPT_CHARS = 700
 
 
 def clean_shadow_tags(raw: str) -> str:
@@ -191,8 +193,151 @@ def _build_combined_tag_prompt(doc: str) -> str:
         "影子标签: 5-8个关键词，空格分隔\n"
         "场景标签: 1-3个标签，空格分隔，第一项优先写材料类型\n"
         "不要输出其他解释。\n"
-        + f"文本：\n{doc[:1600]}"
+        + f"文本：\n{_build_tag_excerpt(doc)}"
     )
+
+
+def _build_batch_tag_prompt(batch_items: list[PreparedFileBuild]) -> str:
+    parts = [
+        "请为每个文件片段提取两类标签，并仅输出 JSON 数组。",
+        "每个元素格式为: {\"id\":\"F1\",\"shadow_tags\":\"关键词1 关键词2\",\"scene_tags\":\"标签1 标签2\"}",
+        "shadow_tags: 5-8个关键词，空格分隔。",
+        "scene_tags: 1-3个标签，空格分隔，第一项优先写材料类型。",
+        "不要输出解释，不要输出 markdown 代码块。",
+    ]
+    for idx, item in enumerate(batch_items, start=1):
+        parts.append(f"[F{idx}] path={item.path}")
+        parts.append(_build_tag_excerpt(item.file_record.doc))
+    return "\n\n".join(parts)
+
+
+def _build_tag_excerpt(doc: str) -> str:
+    text = (doc or "").strip()
+    limit = _DEFAULT_TAG_EXCERPT_CHARS
+    if len(text) <= limit:
+        return text
+    if limit <= 240:
+        return text[:limit]
+
+    head = int(limit * 0.65)
+    tail = max(0, limit - head - 5)
+    if tail == 0:
+        return text[:limit]
+    return f"{text[:head]}\n...\n{text[-tail:]}"
+
+
+def _candidate_key(text: str) -> str:
+    return (text or "").strip().casefold()
+
+
+def _normalize_candidate(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", text or "").strip("[](){}<>:：,，。；;|/-_~!@#$%^&*+=?\"'`")
+    if not cleaned:
+        return ""
+    if cleaned.isdigit():
+        return ""
+    if len(cleaned) < 2 or len(cleaned) > 32:
+        return ""
+    return cleaned
+
+
+def _extract_token_candidates(doc: str) -> list[str]:
+    text = (doc or "").strip()
+    if not text:
+        return []
+
+    candidates: list[str] = []
+    for match in re.finditer(r"[\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9+#._/-]{1,31}", text):
+        candidate = _normalize_candidate(match.group(0))
+        if candidate:
+            candidates.append(candidate)
+    return candidates
+
+
+def _extract_line_candidates(doc: str) -> list[str]:
+    candidates: list[str] = []
+    for raw_line in (doc or "").splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line:
+            continue
+        candidate = _normalize_candidate(line)
+        if candidate and len(candidate) <= 18:
+            candidates.append(candidate)
+    return candidates
+
+
+def _build_statistical_tag_stats(existing_docs: list[str], prepared_files: list[PreparedFileBuild]) -> dict:
+    corpus_docs = [doc for doc in existing_docs if isinstance(doc, str) and doc.strip()]
+    corpus_docs.extend(prepared.file_record.doc for prepared in prepared_files if prepared.file_record.doc.strip())
+    total_docs = max(1, len(corpus_docs))
+
+    token_df: Counter[str] = Counter()
+    line_df: Counter[str] = Counter()
+    for doc in corpus_docs:
+        token_df.update({_candidate_key(token) for token in _extract_token_candidates(doc)})
+        line_df.update({_candidate_key(line) for line in _extract_line_candidates(doc)})
+
+    return {
+        "total_docs": total_docs,
+        "token_df": token_df,
+        "line_df": line_df,
+    }
+
+
+def _idf(total_docs: int, doc_freq: int) -> float:
+    return math.log((total_docs + 1) / (doc_freq + 1)) + 1.0
+
+
+def _score_shadow_tags(doc: str, stats: dict) -> str:
+    total_docs = int(stats["total_docs"])
+    token_df: Counter[str] = stats["token_df"]
+    token_counter: Counter[str] = Counter()
+    representative: dict[str, str] = {}
+
+    for token in _extract_token_candidates(doc):
+        key = _candidate_key(token)
+        if not key:
+            continue
+        token_counter[key] += 1
+        representative.setdefault(key, token)
+
+    scored: list[tuple[float, str]] = []
+    for key, freq in token_counter.items():
+        token = representative[key]
+        score = float(freq) * _idf(total_docs, int(token_df.get(key, 0)))
+        score += min(len(token), 12) * 0.03
+        if any(ch.isalpha() for ch in token) and any("\u4e00" <= ch <= "\u9fff" for ch in token):
+            score += 0.08
+        scored.append((score, token))
+
+    scored.sort(key=lambda item: (-item[0], -len(item[1]), item[1]))
+    return clean_shadow_tags(" ".join(token for _score, token in scored[:_MAX_SHADOW_TAGS]))
+
+
+def _score_scene_tags(doc: str, stats: dict) -> str:
+    total_docs = int(stats["total_docs"])
+    line_df: Counter[str] = stats["line_df"]
+    candidates = _extract_line_candidates(doc)
+    if not candidates:
+        candidates = [token for token in _extract_token_candidates(doc) if 2 <= len(token) <= 16]
+
+    seen: set[str] = set()
+    scored: list[tuple[float, str]] = []
+    for candidate in candidates:
+        key = _candidate_key(candidate)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        score = _idf(total_docs, int(line_df.get(key, 0)))
+        score += min(len(candidate), 12) * 0.02
+        scored.append((score, candidate))
+
+    scored.sort(key=lambda item: (-item[0], -len(item[1]), item[1]))
+    return clean_scene_tags(" ".join(candidate for _score, candidate in scored[:_MAX_SCENE_TAGS]))
+
+
+def _extract_statistical_tags_for_indexing(doc: str, stats: dict) -> tuple[str, str]:
+    return _score_shadow_tags(doc, stats), _score_scene_tags(doc, stats)
 
 
 def _parse_combined_tag_response(raw: str) -> tuple[str, str]:
@@ -226,6 +371,33 @@ def _parse_combined_tag_response(raw: str) -> tuple[str, str]:
     if len(lines) == 1:
         return lines[0], ""
     return "", ""
+
+
+def _parse_batch_tag_response(raw: str) -> dict[str, tuple[str, str]]:
+    text = (raw or "").strip()
+    if not text:
+        return {}
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+
+    parsed = json.loads(text)
+    items = parsed.get("items", []) if isinstance(parsed, dict) else parsed
+    results: dict[str, tuple[str, str]] = {}
+    if not isinstance(items, list):
+        return results
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id", "") or "").strip()
+        if not item_id:
+            continue
+        results[item_id] = (
+            str(item.get("shadow_tags", "") or "").strip(),
+            str(item.get("scene_tags", "") or "").strip(),
+        )
+    return results
 
 
 def _request_ollama_response(context: IndexBuildContext, prompt: str, path: str, purpose: str) -> str:
@@ -283,40 +455,167 @@ def _extract_tags_for_indexing(context: IndexBuildContext, doc: str, path: str) 
         return "", ""
 
 
+def _process_ollama_tag_batch(
+    context: IndexBuildContext,
+    batch: list[PreparedFileBuild],
+) -> None:
+    if not batch:
+        return
+
+    if len(batch) == 1:
+        prepared = batch[0]
+        prepared.shadow_tags, prepared.scene_tags = _extract_tags_for_indexing(
+            context,
+            prepared.file_record.doc,
+            prepared.path,
+        )
+        return
+
+    path_summary = ", ".join(item.path for item in batch[:2])
+    if len(batch) > 2:
+        path_summary += ", ..."
+    context.logger.info(f"   🤖 批量透视文件：{path_summary}")
+
+    parsed_batch: dict[str, tuple[str, str]] = {}
+    try:
+        raw = _request_ollama_response(
+            context=context,
+            prompt=_build_batch_tag_prompt(batch),
+            path=path_summary,
+            purpose="批量标签提取",
+        )
+        parsed_batch = _parse_batch_tag_response(raw)
+    except Exception as e:
+        context.logger.warning(f"      ⚠️ 批量标签提取失败，回退单文件提取 ({e})")
+
+    for idx, prepared in enumerate(batch, start=1):
+        raw_shadow_tags, raw_scene_tags = parsed_batch.get(f"F{idx}", ("", ""))
+        if raw_shadow_tags or raw_scene_tags:
+            prepared.shadow_tags = clean_shadow_tags(raw_shadow_tags)
+            prepared.scene_tags = clean_scene_tags(raw_scene_tags)
+            if prepared.shadow_tags:
+                context.logger.info(f"      ✅ 提取到影子标签：[{prepared.shadow_tags}]")
+            if prepared.scene_tags:
+                context.logger.info(f"      🧭 提取到场景标签：[{prepared.scene_tags}]")
+            continue
+
+        prepared.shadow_tags, prepared.scene_tags = _extract_tags_for_indexing(
+            context,
+            prepared.file_record.doc,
+            prepared.path,
+        )
+
+
+def _summarize_tag_batch(batch: list[PreparedFileBuild]) -> str:
+    if not batch:
+        return ""
+    if len(batch) == 1:
+        return batch[0].path
+
+    path_summary = ", ".join(item.path for item in batch[:2])
+    if len(batch) > 2:
+        path_summary += ", ..."
+    return path_summary
+
+
+def populate_prepared_file_tags(
+    context: IndexBuildContext,
+    prepared_files: list[PreparedFileBuild],
+    tag_batch_size: int,
+    existing_docs: list[str] | None = None,
+    tag_concurrency: int = 1,
+) -> None:
+    if not prepared_files:
+        return
+
+    tag_mode = getattr(context, "tag_mode", "statistical")
+    if tag_mode == "statistical":
+        context.logger.info("   [build] tag_mode=statistical")
+        stats = _build_statistical_tag_stats(existing_docs or [], prepared_files)
+        total_files = len(prepared_files)
+        context.logger.info(f"   🏷️ 标签进度 [0/{total_files}] 0%")
+        for idx, prepared in enumerate(prepared_files, start=1):
+            prepared.shadow_tags, prepared.scene_tags = _extract_statistical_tags_for_indexing(
+                prepared.file_record.doc,
+                stats,
+            )
+            progress_pct = int((idx / total_files) * 100) if total_files else 100
+            context.logger.info(f"   🏷️ 标签进度 [{idx}/{total_files}] {progress_pct}% -> {prepared.path}")
+        return
+
+    batch_size = max(1, tag_batch_size)
+    batches = [prepared_files[start:start + batch_size] for start in range(0, len(prepared_files), batch_size)]
+    worker_count = min(max(1, tag_concurrency), len(batches))
+    context.logger.info(f"   [build] tag_batch_size={batch_size}, tag_concurrency={worker_count}")
+    total_files = len(prepared_files)
+    context.logger.info(f"   🏷️ 标签进度 [0/{total_files}] 0%")
+
+    if worker_count == 1:
+        completed_files = 0
+        for batch in batches:
+            _process_ollama_tag_batch(context, batch)
+            completed_files += len(batch)
+            progress_pct = int((completed_files / total_files) * 100) if total_files else 100
+            context.logger.info(
+                f"   🏷️ 标签进度 [{completed_files}/{total_files}] {progress_pct}% -> {_summarize_tag_batch(batch)}"
+            )
+        return
+
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="index-tags") as executor:
+        future_to_batch = {
+            executor.submit(_process_ollama_tag_batch, context, batch): batch
+            for batch in batches
+        }
+        completed_files = 0
+        for future in as_completed(future_to_batch):
+            future.result()
+            batch = future_to_batch[future]
+            completed_files += len(batch)
+            progress_pct = int((completed_files / total_files) * 100) if total_files else 100
+            context.logger.info(
+                f"   🏷️ 标签进度 [{completed_files}/{total_files}] {progress_pct}% -> {_summarize_tag_batch(batch)}"
+            )
+
+
 def build_changed_file_cache_entry(
     context: IndexBuildContext,
     path: str,
     fingerprint: str,
     file_record: FileReadResult | None = None,
 ) -> tuple[dict, dict] | None:
+    prepared = prepare_changed_file_for_indexing(
+        context=context,
+        path=path,
+        fingerprint=fingerprint,
+        file_record=file_record,
+    )
+    if prepared is None:
+        return None
+
+    populate_prepared_file_tags(context, [prepared], tag_batch_size=1)
+    return build_cache_entries_from_prepared(context, [prepared], embed_batch_size=1).get(path)
+
+
+def prepare_changed_file_for_indexing(
+    context: IndexBuildContext,
+    path: str,
+    fingerprint: str,
+    file_record: FileReadResult | None = None,
+) -> PreparedFileBuild | None:
     if file_record is None:
         file_record = read_changed_file(context.notes_dir, path, context.logger)
     if not file_record:
         context.logger.warning(f"      ⚠️ 跳过空文件或读取失败文件：{path}")
         return None
 
-    shadow_tags, scene_tags = _extract_tags_for_indexing(context, file_record.doc, path)
-    doc_embedding = _encode_doc_embedding(context, file_record.doc, shadow_tags, scene_tags, path)
     file_chunk_texts, file_chunk_meta = _build_chunk_payloads(file_record.doc, path)
-    file_chunk_embeddings = _encode_chunk_embeddings(context, file_chunk_texts, file_chunk_meta, path)
-
-    doc_cache_entry = {
-        "fingerprint": fingerprint,
-        "doc": file_record.doc,
-        "file_time": file_record.file_time.timestamp(),
-        "file_size": int(file_record.file_size),
-        "file_info": file_record.file_info,
-        "shadow_tags": shadow_tags,
-        "scene_tags": scene_tags,
-        "scene_tags_version": _SCENE_TAG_VERSION,
-        "embedding": np.asarray(doc_embedding),
-    }
-    chunk_cache_entry = {
-        "fingerprint": fingerprint,
-        "chunk_texts": file_chunk_texts,
-        "chunk_meta": file_chunk_meta,
-        "chunk_file_time": file_record.file_time.timestamp(),
-        "chunk_embeddings": np.asarray(file_chunk_embeddings),
-    }
-    return doc_cache_entry, chunk_cache_entry
-
+    return PreparedFileBuild(
+        path=path,
+        fingerprint=fingerprint,
+        file_record=file_record,
+        shadow_tags="",
+        scene_tags="",
+        scene_tags_version=_SCENE_TAG_VERSION,
+        chunk_texts=file_chunk_texts,
+        chunk_meta=file_chunk_meta,
+    )

@@ -109,11 +109,25 @@ class FileReadResult:
 
 
 @dataclass
+class PreparedFileBuild:
+    path: str
+    fingerprint: str
+    file_record: FileReadResult
+    shadow_tags: str
+    scene_tags: str
+    scene_tags_version: int
+    chunk_texts: List[str]
+    chunk_meta: List[dict]
+
+
+@dataclass
 class IndexBuildContext:
     notes_dir: Path
     model_emb: Any
     logger: Any
     ollama_api_url: str
     ollama_model: str
+    tag_mode: str = "statistical"
+    tag_concurrency: int = 1
     ollama_timeout_sec: float = 8.0
     ollama_max_retries: int = 0

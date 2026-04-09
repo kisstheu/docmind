@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from retrieval.repo_index_build import (
     assemble_repo_state,
-    build_changed_file_cache_entry,
     clean_scene_tags,
     clean_shadow_tags,
     collect_all_files,
+    populate_prepared_file_tags,
+    prepare_changed_file_for_indexing,
     read_changed_file,
     scan_repository as _scan_repository,
 )
@@ -20,6 +22,7 @@ from retrieval.repo_index_cache import (
     reuse_unchanged_entries,
     save_incremental_cache,
 )
+from retrieval.repo_index_encode import build_cache_entries_from_prepared
 from retrieval.repo_index_types import IndexBuildContext, RepoState
 
 
@@ -37,6 +40,18 @@ def _coerce_int(raw, default: int, min_value: int, max_value: int) -> int:
     except Exception:
         return default
     return max(min_value, min(max_value, value))
+
+
+def _default_prepare_workers() -> int:
+    cpu_count = os.cpu_count() or 1
+    return max(1, min(4, cpu_count))
+
+
+def _scale_ollama_timeout(timeout_sec: float, tag_concurrency: int) -> float:
+    concurrency = max(1, int(tag_concurrency or 1))
+    if concurrency <= 1:
+        return timeout_sec
+    return timeout_sec * (1.0 + 0.5 * (concurrency - 1))
 
 
 __all__ = [
@@ -86,6 +101,37 @@ def load_or_build_embeddings(
         min_value=0,
         max_value=5,
     )
+    resolved_prepare_workers = _coerce_int(
+        os.getenv("DOCMIND_INDEX_PREPARE_WORKERS"),
+        default=_default_prepare_workers(),
+        min_value=1,
+        max_value=8,
+    )
+    resolved_embed_batch_size = _coerce_int(
+        os.getenv("DOCMIND_INDEX_EMBED_BATCH_SIZE"),
+        default=16,
+        min_value=1,
+        max_value=128,
+    )
+    resolved_tag_batch_size = _coerce_int(
+        os.getenv("DOCMIND_INDEX_TAG_BATCH_SIZE"),
+        default=1,
+        min_value=1,
+        max_value=12,
+    )
+    resolved_tag_mode = (os.getenv("DOCMIND_INDEX_TAG_MODE") or "ollama").strip().lower()
+    if resolved_tag_mode not in {"statistical", "ollama"}:
+        resolved_tag_mode = "ollama"
+    resolved_tag_concurrency = _coerce_int(
+        os.getenv("DOCMIND_INDEX_TAG_CONCURRENCY"),
+        default=2 if resolved_tag_mode == "ollama" else 1,
+        min_value=1,
+        max_value=4,
+    )
+    effective_ollama_timeout = _scale_ollama_timeout(
+        resolved_ollama_timeout,
+        resolved_tag_concurrency if resolved_tag_mode == "ollama" else 1,
+    )
 
     current_paths = scanned_repo.paths
     current_manifest = {entry.path: entry.fingerprint for entry in scanned_repo.entries}
@@ -121,43 +167,91 @@ def load_or_build_embeddings(
         logger=logger,
         ollama_api_url=ollama_api_url,
         ollama_model=ollama_model,
-        ollama_timeout_sec=resolved_ollama_timeout,
+        tag_mode=resolved_tag_mode,
+        tag_concurrency=resolved_tag_concurrency,
+        ollama_timeout_sec=effective_ollama_timeout,
         ollama_max_retries=resolved_ollama_retries,
     )
-    logger.info(
-        f"⚙️ 建库标签提取: ollama (timeout={resolved_ollama_timeout:.1f}s, retries={resolved_ollama_retries})"
-    )
+    if resolved_tag_mode == "ollama":
+        logger.info(
+            f"⚙️ 建库标签提取: ollama (base_timeout={resolved_ollama_timeout:.1f}s, effective_timeout={effective_ollama_timeout:.1f}s, retries={resolved_ollama_retries}, batch_size={resolved_tag_batch_size}, concurrency={resolved_tag_concurrency})"
+        )
+    else:
+        logger.info("⚙️ 建库标签提取: statistical")
 
     sidecar_count = 0
     sidecar_examples: list[str] = []
     unique_changed_paths = list(dict.fromkeys(final_changed_paths))
     total_changed = len(unique_changed_paths)
     changed_start = time.time()
+    prepare_workers = min(resolved_prepare_workers, total_changed) if total_changed else 1
 
-    for idx, path in enumerate(unique_changed_paths, start=1):
-        progress_pct = int((idx / total_changed) * 100) if total_changed else 100
-        logger.info(f"   📌 索引进度 [{idx}/{total_changed}] {progress_pct}% -> {path}")
-        file_record = read_changed_file(scanned_repo.notes_dir, path, logger)
-        if not file_record:
-            logger.warning(f"      ⚠️ 跳过空文件或读取失败文件：{path}")
-            continue
-
-        if file_record.used_sidecar:
-            sidecar_count += 1
-            if len(sidecar_examples) < 5:
-                sidecar_examples.append(path + ".ocr.txt")
-
-        cache_pair = build_changed_file_cache_entry(
-            context,
-            path,
-            path_to_fp[path],
-            file_record=file_record,
+    if total_changed > 0:
+        logger.info(
+            f"   [build] prepare_workers={prepare_workers}, embed_batch_size={resolved_embed_batch_size}, tag_mode={resolved_tag_mode}, tag_batch_size={resolved_tag_batch_size}, tag_concurrency={resolved_tag_concurrency}"
         )
-        if cache_pair is None:
-            continue
-        doc_entry, chunk_entry = cache_pair
-        new_doc_cache[path] = doc_entry
-        new_chunk_cache[path] = chunk_entry
+        logger.info(f"   📌 预处理进度 [0/{total_changed}] 0%")
+
+    prepared_by_path: dict[str, object] = {}
+    future_to_path: dict[object, str] = {}
+    if total_changed > 0:
+        with ThreadPoolExecutor(max_workers=prepare_workers, thread_name_prefix="index-build") as executor:
+            for path in unique_changed_paths:
+                future = executor.submit(
+                    prepare_changed_file_for_indexing,
+                    context,
+                    path,
+                    path_to_fp[path],
+                )
+                future_to_path[future] = path
+
+            completed_prepare = 0
+            for future in as_completed(future_to_path):
+                path = future_to_path[future]
+                try:
+                    prepared = future.result()
+                except Exception as exc:
+                    completed_prepare += 1
+                    progress_pct = int((completed_prepare / total_changed) * 100) if total_changed else 100
+                    logger.warning(f"      ⚠️ {path} 预处理异常，已跳过 ({exc})")
+                    logger.info(f"   📌 预处理进度 [{completed_prepare}/{total_changed}] {progress_pct}% -> {path}")
+                    continue
+                if prepared is None:
+                    completed_prepare += 1
+                    progress_pct = int((completed_prepare / total_changed) * 100) if total_changed else 100
+                    logger.info(f"   📌 预处理进度 [{completed_prepare}/{total_changed}] {progress_pct}% -> {path}")
+                    continue
+
+                prepared_by_path[path] = prepared
+                if prepared.file_record.used_sidecar:
+                    sidecar_count += 1
+                    if len(sidecar_examples) < 5:
+                        sidecar_examples.append(path + ".ocr.txt")
+                completed_prepare += 1
+                progress_pct = int((completed_prepare / total_changed) * 100) if total_changed else 100
+                logger.info(f"   📌 预处理进度 [{completed_prepare}/{total_changed}] {progress_pct}% -> {path}")
+
+    ordered_prepared = [prepared_by_path[path] for path in unique_changed_paths if path in prepared_by_path]
+    if ordered_prepared:
+        populate_prepared_file_tags(
+            context,
+            ordered_prepared,
+            tag_batch_size=resolved_tag_batch_size,
+            tag_concurrency=resolved_tag_concurrency,
+            existing_docs=[entry.get("doc", "") for entry in new_doc_cache.values()],
+        )
+        cache_entries = build_cache_entries_from_prepared(
+            context,
+            ordered_prepared,
+            embed_batch_size=resolved_embed_batch_size,
+        )
+        for path in unique_changed_paths:
+            cache_pair = cache_entries.get(path)
+            if cache_pair is None:
+                continue
+            doc_entry, chunk_entry = cache_pair
+            new_doc_cache[path] = doc_entry
+            new_chunk_cache[path] = chunk_entry
 
     if total_changed > 0:
         logger.info(f"⏱️ 增量建库处理耗时: {time.time() - changed_start:.2f}s（共 {total_changed} 个文件）")
