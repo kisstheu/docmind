@@ -89,6 +89,7 @@ class ConversationState:
     last_route: str | None = None
     last_local_topic: str | None = None
     last_answer_preview: str | None = None
+    last_category_context_answer: str | None = None
 
     last_content_user_question: str | None = None
     last_content_route: str | None = None
@@ -106,6 +107,7 @@ class ConversationState:
     pending_action_target_path: str | None = None
     pending_action_requested_text: str | None = None
     pending_action_preview: str | None = None
+    pending_action_payload: str | None = None
 
 
 @dataclass
@@ -256,6 +258,7 @@ def apply_event_to_state(state: ConversationState, event: DialogEvent) -> Conver
         last_route=state.last_route,
         last_local_topic=state.last_local_topic,
         last_answer_preview=state.last_answer_preview,
+        last_category_context_answer=state.last_category_context_answer,
 
         last_content_user_question=state.last_content_user_question,
         last_content_route=state.last_content_route,
@@ -274,6 +277,7 @@ def apply_event_to_state(state: ConversationState, event: DialogEvent) -> Conver
         pending_action_target_path=state.pending_action_target_path,
         pending_action_requested_text=state.pending_action_requested_text,
         pending_action_preview=state.pending_action_preview,
+        pending_action_payload=state.pending_action_payload,
     )
 
     if event.route_hint == "repo_meta":

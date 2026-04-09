@@ -42,6 +42,12 @@ CATEGORY_COUNT_KEYWORDS = (
     "文档有多少类", "文件有多少类",
     "文档分几类", "文件分几类",
 )
+CATEGORY_BREAKDOWN_COUNT_KEYWORDS = (
+    "每类数量", "每类的数量", "每个类别数量", "每个类别的数量",
+    "每个板块数量", "每个板块的数量", "各类数量", "各类别数量",
+    "每类有多少", "每一类有多少", "每个方面有多少", "每个分类有多少",
+    "列出每类数量", "列出每类的数量", "按类统计数量", "按类别统计数量",
+)
 LIST_FILE_KEYWORDS = (
     "有哪些文档", "都有哪些文档", "文档有哪些",
     "有哪些文件", "都有哪些文件", "文件有哪些",
@@ -209,16 +215,36 @@ def validate_summary_output(result: str) -> list[str]:
 def summarize_topics_coarsely_with_local_llm(
     fine_topics,
     topic_summarizer: Callable[[str], str] | None,
+    *,
+    topic_source: str = "细标签",
+    prefer_scene: bool = False,
 ) -> str:
     if not topic_summarizer:
         raise RuntimeError("未提供 topic_summarizer，本地模型概括不可用")
 
-    top_topics = [item["tag"] for item in fine_topics[:12]]
+    top_topics: list[str] = []
+    for item in fine_topics[:12]:
+        tag = str(item.get("tag", "") or "").strip()
+        count = int(item.get("count", 0) or 0)
+        if not tag:
+            continue
+        if count > 0:
+            top_topics.append(f"- {tag}（约 {count}）")
+        else:
+            top_topics.append(f"- {tag}")
+
     if not top_topics:
         raise RuntimeError("没有可用于概括的细标签")
 
+    scene_hint = ""
+    if prefer_scene:
+        scene_hint = (
+            "如果这些标签里既有技术词也有用途/问题场景词，优先保留场景主线。\n"
+            "尽量把相近的场景标签并成更高一层的资料板块，而不是原样复述。\n"
+        )
+
     prompt = (
-        "下面是个人知识库中出现频率较高的一批细标签。\n"
+        f"下面是个人知识库中出现频率较高的一批{topic_source}。\n"
         "请把它们压缩概括成 4 到 6 个更大的内容方面。\n"
         "必须遵守：\n"
         "1. 只输出列表\n"
@@ -227,9 +253,12 @@ def summarize_topics_coarsely_with_local_llm(
         "4. 不要逐条复述原始细标签\n"
         "5. 要把相近内容合并成更大的方面\n"
         "6. 用自然中文，不要太学术\n"
-        "7. 表达像人在整理自己的文档，而不是写报告\n\n"
-        "细标签：\n"
-        + "\n".join(f"- {topic}" for topic in top_topics)
+        "7. 表达像人在整理自己的文档，而不是写报告\n"
+        "8. 优先沿用原始标签里已经出现的高频核心词来命名，不要改写成“工作相关”“技术相关”“其他信息”这类空泛词\n"
+        "9. 如果多个标签共享明显的核心词，尽量把那个核心词保留在板块名里\n\n"
+        + scene_hint
+        + f"{topic_source}：\n"
+        + "\n".join(top_topics)
     )
 
     bullet_lines = validate_summary_output(topic_summarizer(prompt))

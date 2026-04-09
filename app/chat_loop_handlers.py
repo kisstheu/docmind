@@ -163,6 +163,7 @@ def try_handle_repo_meta(
         last_user_question=prev_content_user_question,
         last_local_topic=conversation_state.last_local_topic,
         last_local_answer=(conversation_state.last_answer_text or conversation_state.last_answer_preview),
+        category_context_answer=getattr(conversation_state, "last_category_context_answer", None),
         topic_summarizer=build_topic_summarizer(logger, ollama_api_url, ollama_model),
     )
     logger.info(f"📷 repo_meta 返回值: {repr(local_answer)[:200]} | topic={local_topic}")
@@ -285,4 +286,3 @@ def try_handle_retrieval_force_local_or_empty_context(
         return "本轮没有检索到可用证据，建议换更具体关键词或指定文件名重试。"
 
     return None
-

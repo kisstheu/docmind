@@ -16,6 +16,7 @@ def handle_file_action_turn(
     memory_buffer: list[str],
     current_focus_file: str | None,
     repo_state,
+    model_emb,
     notes_dir: Path,
     change_store: FileChangeStore,
 ) -> tuple[bool, ConversationState, str | None]:
@@ -26,6 +27,7 @@ def handle_file_action_turn(
         memory_buffer=memory_buffer,
         current_focus_file=current_focus_file,
         repo_state=repo_state,
+        model_emb=model_emb,
         notes_dir=notes_dir,
         change_store=change_store,
     )
@@ -39,6 +41,7 @@ def handle_file_action_turn(
         memory_buffer=memory_buffer,
         current_focus_file=current_focus_file,
         repo_state=repo_state,
+        model_emb=model_emb,
         notes_dir=notes_dir,
         change_store=change_store,
     )

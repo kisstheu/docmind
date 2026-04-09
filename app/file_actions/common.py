@@ -16,6 +16,7 @@ def clear_pending_action_state(state: ConversationState) -> None:
     state.pending_action_target_path = None
     state.pending_action_requested_text = None
     state.pending_action_preview = None
+    state.pending_action_payload = None
 
 
 def find_repo_path_by_reference(source_ref: str | None, repo_paths: list[str]) -> str | None:

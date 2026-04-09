@@ -7,6 +7,7 @@ from app.dialog.state_machine import ConversationState
 from app.file_actions.common import reply_file_action
 from app.file_actions.request_mutations import (
     handle_delete_request_action,
+    handle_organize_request_action,
     handle_rename_request_action,
 )
 from app.file_actions.request_resolution import (
@@ -277,6 +278,7 @@ def handle_requested_file_action(
     repo_state,
     notes_dir: Path,
     change_store: FileChangeStore,
+    model_emb=None,
 ) -> tuple[bool, ConversationState, str | None]:
     repo_paths = list(repo_state.paths)
 
@@ -347,6 +349,20 @@ def handle_requested_file_action(
         state=state,
         memory_buffer=memory_buffer,
         current_focus_file=current_focus_file,
+        repo_paths=repo_paths,
+        notes_dir=notes_dir,
+    )
+    if handled:
+        return True, state, current_focus_file
+
+    handled, state, current_focus_file = handle_organize_request_action(
+        question=question,
+        start_qa=start_qa,
+        state=state,
+        memory_buffer=memory_buffer,
+        current_focus_file=current_focus_file,
+        repo_state=repo_state,
+        model_emb=model_emb,
         repo_paths=repo_paths,
         notes_dir=notes_dir,
     )

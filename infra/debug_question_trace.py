@@ -36,18 +36,19 @@ class DebugQuestionRecorder:
     last_run_file: Path
     notes_dir: Path
     _counter: int = field(default=0, init=False)
+    _header: str = field(default="", init=False)
+    _last_run_initialized: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         self.session_file.parent.mkdir(parents=True, exist_ok=True)
         self.last_run_file.parent.mkdir(parents=True, exist_ok=True)
 
         started_at = datetime.now().isoformat(timespec="seconds")
-        header = (
+        self._header = (
             f"# session_started: {started_at}\n"
             f"# notes_dir: {self.notes_dir}\n\n"
         )
-        self.session_file.write_text(header, encoding="utf-8")
-        self.last_run_file.write_text(header, encoding="utf-8")
+        self.session_file.write_text(self._header, encoding="utf-8")
 
     def record(self, question: str, normalized_question: str | None = None) -> None:
         raw_question = (question or "").strip()
@@ -67,6 +68,7 @@ class DebugQuestionRecorder:
 
         line = json.dumps(payload, ensure_ascii=False) + "\n"
         self._append(self.session_file, line)
+        self._ensure_last_run_ready()
         self._append(self.last_run_file, line)
 
     @staticmethod
@@ -74,6 +76,16 @@ class DebugQuestionRecorder:
         try:
             with path.open("a", encoding="utf-8") as f:
                 f.write(text)
+        except Exception:
+            # Debug recorder must never affect main flow.
+            return
+
+    def _ensure_last_run_ready(self) -> None:
+        if self._last_run_initialized:
+            return
+        try:
+            self.last_run_file.write_text(self._header, encoding="utf-8")
+            self._last_run_initialized = True
         except Exception:
             # Debug recorder must never affect main flow.
             return
@@ -101,4 +113,3 @@ def build_debug_question_recorder(notes_dir: Path, logger=None) -> DebugQuestion
         logger.info(f"[debug] question trace enabled: {recorder.last_run_file}")
 
     return recorder
-

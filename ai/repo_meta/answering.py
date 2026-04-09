@@ -14,7 +14,9 @@ from ai.repo_meta.answering_parts.time import (
     _answer_time,
 )
 from ai.repo_meta.category import (
+    answer_repo_content_category_count_breakdown_question,
     answer_repo_content_category_confirm_question,
+    answer_repo_content_category_label_list_question,
     answer_repo_content_category_overview_question,
     answer_repo_content_category_question,
     answer_repo_content_category_summary_question,
@@ -23,8 +25,23 @@ from ai.repo_meta.classifier import classify_repo_meta_question, extract_topic_f
 from ai.repo_meta.semantic import find_files_by_semantic_cluster
 
 
-def _answer_list_files_by_topic(question: str, repo_state, model_emb=None, topic_summarizer=None) -> tuple[str, str]:
+def _answer_list_files_by_topic(
+    question: str,
+    repo_state,
+    model_emb=None,
+    topic_summarizer=None,
+    category_context_answer: str | None = None,
+) -> tuple[str, str]:
     target_topic = extract_topic_from_list_request(question)
+    category_answer = answer_repo_content_category_label_list_question(
+        target_topic=target_topic,
+        repo_state=repo_state,
+        previous_summary=category_context_answer,
+        topic_summarizer=topic_summarizer,
+    )
+    if category_answer:
+        return category_answer, "list_files_by_topic"
+
     matched, _matched_tags, best_cluster = find_files_by_semantic_cluster(
         repo_state,
         model_emb,
@@ -49,6 +66,7 @@ def answer_repo_meta_question(
     last_user_question: str | None = None,
     last_local_topic: str | None = None,
     last_local_answer: str | None = None,
+    category_context_answer: str | None = None,
     topic_summarizer=None,
 ):
     paths = list(repo_state.paths)
@@ -78,6 +96,7 @@ def answer_repo_meta_question(
             repo_state,
             model_emb=model_emb,
             topic_summarizer=topic_summarizer,
+            category_context_answer=category_context_answer,
         )
     if topic == "time":
         return _answer_time(question, paths, file_times)
@@ -91,6 +110,12 @@ def answer_repo_meta_question(
         return answer_repo_content_category_question(repo_state), topic
     if topic == "category_summary":
         return answer_repo_content_category_summary_question(repo_state, topic_summarizer=topic_summarizer), topic
+    if topic == "category_count_breakdown":
+        return answer_repo_content_category_count_breakdown_question(
+            repo_state,
+            previous_summary=last_local_answer,
+            topic_summarizer=topic_summarizer,
+        ), topic
     if topic == "category_overview":
         return answer_repo_content_category_overview_question(
             repo_state,

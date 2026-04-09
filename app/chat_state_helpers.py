@@ -108,6 +108,8 @@ def update_state_after_local_answer(
     state.last_local_topic = local_topic
     state.last_answer_preview = answer[:200]
     state.last_answer_text = answer
+    if local_topic in {"category_summary", "category_count_breakdown", "category_overview"}:
+        state.last_category_context_answer = answer
 
     if is_content_answer:
         state.last_content_user_question = question

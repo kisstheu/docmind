@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from ai.capability_common import (
+    CATEGORY_BREAKDOWN_COUNT_KEYWORDS,
     CATEGORY_CONFIRM_KEYWORDS,
     CATEGORY_COUNT_KEYWORDS,
     CATEGORY_KEYWORDS,
@@ -29,9 +30,13 @@ LIST_FORMAT_MODIFIERS = (
 LIST_BY_TOPIC_PATTERNS = (
     r"列一个(.+?)的文件",
     r"列出(.+?)的文件",
+    r"列出(.+?)文件名",
     r"把(.+?)相关文件列出来",
     r"把(.+?)的文件列出来",
+    r"把(.+?)文件名列出来",
+    r"把(.+?)相关的文件名列出来",
     r"(.+?)有哪些文件",
+    r"(.+?)有哪些文件名",
     r"(.+?)相关文档",
 )
 
@@ -186,6 +191,13 @@ def classify_repo_meta_question(
         print(f"[repo_meta分类] q={q} -> category")
         return "category"
 
+    if last_local_topic in {"category", "category_summary", "category_overview"} and contains_any(
+        q,
+        CATEGORY_BREAKDOWN_COUNT_KEYWORDS,
+    ):
+        print(f"[repo_meta分类] q={q} -> category_count_breakdown")
+        return "category_count_breakdown"
+
     for topic, keywords in RULES:
         if contains_any(q, keywords):
             print(f"[repo_meta分类] q={q} -> {topic}")
@@ -230,4 +242,3 @@ def classify_repo_meta_question(
 
     print(f"[repo_meta分类] q={q} -> None")
     return None
-

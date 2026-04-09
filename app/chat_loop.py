@@ -109,6 +109,7 @@ def run_chat_loop(
                 memory_buffer=memory_buffer,
                 current_focus_file=current_focus_file,
                 repo_state=repo_state,
+                model_emb=model_emb,
                 notes_dir=notes_dir,
                 change_store=change_store,
             )
