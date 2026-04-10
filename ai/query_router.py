@@ -7,6 +7,7 @@ import requests
 
 from ai.capability_smalltalk import answer_smalltalk
 from ai.query_rewriter import is_local_smalltalk_intent, rewrite_search_query
+from app.context_anchor import is_context_dependent_question
 
 
 def _get_smalltalk_rewrite_timeout_sec() -> float:
@@ -147,7 +148,7 @@ def _is_definitely_out_of_scope(q: str) -> bool:
     if any(t in q for t in in_scope_markers):
         return False
 
-    assistant_target_markers = ("你", "你们", "助手", "机器人", "docmind", "ai")
+    assistant_target_markers = ("你", "你们", "助手", "机器人", "docmind")
     if not any(t in q for t in assistant_target_markers):
         return False
 
@@ -160,6 +161,37 @@ def _is_definitely_out_of_scope(q: str) -> bool:
 
     # 面向助手且不含文档意图的泛问题，若本地也不判为闲聊，则视为越界。
     return not is_local_smalltalk_intent(q)
+
+
+def _should_preserve_contextual_retrieval(
+    question: str,
+    q: str,
+    state_hint: dict | None,
+    *,
+    is_rule_smalltalk: bool,
+) -> bool:
+    if not state_hint or is_rule_smalltalk:
+        return False
+    if _is_capability(q) or _is_file_locator_query(q) or _is_entity_lookup(q):
+        return False
+    if _has_explicit_repo_meta_signal(question, q):
+        return False
+    if any(t in q for t in ("你", "你们", "助手", "机器人", "docmind")):
+        return False
+
+    last_route = _normalize(str(state_hint.get("last_route") or ""))
+    if last_route != "normal_retrieval":
+        return False
+
+    last_query = str(
+        state_hint.get("last_effective_search_query")
+        or state_hint.get("last_user_question")
+        or ""
+    ).strip()
+    if not last_query:
+        return False
+
+    return is_context_dependent_question(question, last_query)
 
 
 def _should_try_local_rewrite_for_smalltalk(q: str) -> bool:
@@ -248,8 +280,12 @@ def route_question(
 ) -> dict:
     q = _normalize(question)
     is_rule_smalltalk = _is_smalltalk(question)
+    state_hint = state_hint or {}
+    last_route_hint = str(state_hint.get("last_route") or "").strip()
+    last_user_question_hint = str(state_hint.get("last_user_question") or "").strip()
+    last_answer_preview_hint = str(state_hint.get("last_answer_preview") or "").strip()
+    last_effective_search_query_hint = str(state_hint.get("last_effective_search_query") or "").strip()
 
-    # ✅ 第一层：极少量护栏（避免严重误判）
     if _is_capability(q):
         logger.info(f"🧭 [规则命中] capability -> {question}")
         return {"route": "system_capability"}
@@ -279,6 +315,15 @@ def route_question(
     except Exception:
         pass
 
+    if _should_preserve_contextual_retrieval(
+        question,
+        q,
+        state_hint,
+        is_rule_smalltalk=is_rule_smalltalk,
+    ):
+        logger.info(f"🧭 [规则命中] contextual_followup -> {question}")
+        return {"route": "normal_retrieval"}
+
     if _is_definitely_out_of_scope(q):
         logger.info(f"🧭 [规则命中] out_of_scope -> {question}")
         return {"route": "out_of_scope"}
@@ -286,11 +331,6 @@ def route_question(
     if _is_smalltalk_by_local_rewrite(question, ollama_api_url, ollama_model, logger):
         logger.info(f"🧭 [本地引擎路由补判] smalltalk -> {question}")
         return {"route": "smalltalk"}
-
-    state_hint = state_hint or {}
-    last_route_hint = str(state_hint.get("last_route") or "").strip()
-    last_user_question_hint = str(state_hint.get("last_user_question") or "").strip()
-    last_answer_preview_hint = str(state_hint.get("last_answer_preview") or "").strip()
 
     prompt = f"""
 你是一个问句路由器，只负责判断用户问题属于哪一类。
@@ -300,6 +340,7 @@ def route_question(
 - 上一轮路由: {last_route_hint or "unknown"}
 - 上一轮用户问题: {last_user_question_hint or "unknown"}
 - 上一轮回答摘要: {last_answer_preview_hint or "unknown"}
+- 上一轮有效检索词: {last_effective_search_query_hint or "unknown"}
 
 分类：
 - system_capability
@@ -352,7 +393,15 @@ def route_question(
         # 模型偶发会把正常问题误判为 smalltalk，做一次保守收敛。
         if route == "smalltalk" and not (is_rule_smalltalk or _is_stateful_smalltalk_followup(q, state_hint)):
             route = "normal_retrieval"
-        if route == "out_of_scope" and not _is_definitely_out_of_scope(q):
+        if route == "out_of_scope" and (
+            _should_preserve_contextual_retrieval(
+                question,
+                q,
+                state_hint,
+                is_rule_smalltalk=is_rule_smalltalk,
+            )
+            or not _is_definitely_out_of_scope(q)
+        ):
             route = "normal_retrieval"
         if route == "system_capability" and not _is_capability(q):
             route = "normal_retrieval"

@@ -30,6 +30,8 @@ def build_retrieval_materials(
     current_focus_file,
     last_relevant_indices=None,
     event=None,
+    allowed_paths=None,
+    scope_label: str | None = None,
 ):
     inventory_candidates_text = (
         build_inventory_candidates_text(question, repo_state, flags["inventory_target_type"])
@@ -52,6 +54,18 @@ def build_retrieval_materials(
                 repo_state=repo_state,
                 logger=logger,
             )
+            if allowed_paths is not None:
+                chunk_paths = list(getattr(repo_state, "chunk_paths", []) or [])
+                allowed_path_set = {
+                    str(path or "").strip()
+                    for path in allowed_paths
+                    if str(path or "").strip()
+                }
+                relevant_indices = [
+                    idx
+                    for idx in relevant_indices
+                    if idx < len(chunk_paths) and str(chunk_paths[idx] or "").strip() in allowed_path_set
+                ]
         else:
             retrieval = perform_retrieval(
                 question,
@@ -61,6 +75,8 @@ def build_retrieval_materials(
                 logger,
                 current_focus_file,
                 context_anchor=context_anchor,
+                allowed_paths=allowed_paths,
+                scope_label=scope_label,
             )
             current_focus_file = retrieval["current_focus_file"]
             relevant_indices = retrieval["relevant_indices"]

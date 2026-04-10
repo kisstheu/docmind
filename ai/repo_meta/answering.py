@@ -14,6 +14,8 @@ from ai.repo_meta.answering_parts.time import (
     _answer_time,
 )
 from ai.repo_meta.category import (
+    answer_repo_content_category_label_drilldown_question,
+    answer_repo_content_category_label_count_question,
     answer_repo_content_category_count_breakdown_question,
     answer_repo_content_category_confirm_question,
     answer_repo_content_category_label_list_question,
@@ -83,6 +85,15 @@ def answer_repo_meta_question(
     )
 
     if topic == "count":
+        category_count_answer = answer_repo_content_category_label_count_question(
+            question,
+            repo_state,
+            previous_summary=category_context_answer or last_local_answer,
+            model_emb=model_emb,
+            topic_summarizer=topic_summarizer,
+        )
+        if category_count_answer:
+            return category_count_answer, "count"
         return _answer_count(paths)
     if topic == "total_size":
         return _answer_total_size(repo_state)
@@ -116,6 +127,17 @@ def answer_repo_meta_question(
             previous_summary=last_local_answer,
             topic_summarizer=topic_summarizer,
         ), topic
+    if topic == "category_drilldown":
+        drilldown_answer = answer_repo_content_category_label_drilldown_question(
+            question,
+            repo_state,
+            previous_summary=category_context_answer or last_local_answer,
+            last_local_answer=last_local_answer,
+            model_emb=model_emb,
+            topic_summarizer=topic_summarizer,
+        )
+        if drilldown_answer:
+            return drilldown_answer, topic
     if topic == "category_overview":
         return answer_repo_content_category_overview_question(
             repo_state,

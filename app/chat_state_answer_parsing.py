@@ -22,7 +22,51 @@ _COMPANY_WORD = "\u516c\u53f8"
 _NAME_WORD = "\u540d\u79f0"
 _FILE_WORDS = ("\u6587\u4ef6", "\u6587\u6863", "\u8bb0\u5f55")
 _PERSON_WORDS = ("\u4eba\u7269", "\u4eba\u5458", "\u4eba\u540d", "\u59d3\u540d")
-_FOLLOWUP_HINTS = ("\u5417", "\u54ea\u4e2a", "\u54ea", "\u5bf9\u5e94", "\u8fd9", "\u90a3", "\u524d\u9762", "\u4e0a\u9762")
+_FILE_FOLLOWUP_HINTS = (
+    "\u54ea\u4e2a",
+    "\u5bf9\u5e94",
+    "\u8fd9\u4e2a",
+    "\u90a3\u4e2a",
+    "\u524d\u9762",
+    "\u4e0a\u9762",
+    "\u8fd9\u4efd",
+    "\u90a3\u4efd",
+    "\u8fd9\u7bc7",
+    "\u90a3\u7bc7",
+    "\u5728\u54ea",
+)
+_ANALYTIC_QUESTION_MARKERS = (
+    "\u4e3a\u4ec0\u4e48",
+    "\u600e\u4e48",
+    "\u5982\u4f55",
+    "\u5206\u6790",
+    "\u603b\u7ed3",
+    "\u6bd4\u8f83",
+    "\u533a\u522b",
+    "\u65b9\u5411",
+    "\u5173\u7cfb",
+    "\u7ec4\u5408",
+    "\u5206\u5e03",
+    "\u8d8b\u52bf",
+    "\u7ed3\u6784",
+    "\u6a21\u5f0f",
+    "\u5171\u73b0",
+    "\u642d\u914d",
+    "\u6280\u672f\u6808",
+    "\u7ecf\u9a8c\u8981\u6c42",
+    "\u5207\u5165\u53e3",
+    "\u95e8\u69db",
+)
+_SOURCE_EVIDENCE_MARKERS = (
+    "\u6765\u6e90",
+    "\u4f9d\u636e",
+    "\u5f52\u7eb3",
+    "\u603b\u7ed3",
+    "\u53ef\u4ee5\u770b\u51fa",
+    "\u4e3b\u8981\u6709",
+    "\u4e3b\u8981\u96c6\u4e2d",
+    "\u4e2d\u7684\u4fe1\u606f",
+)
 
 
 def _contains_no_new_signal(answer_text: str) -> bool:
@@ -41,6 +85,55 @@ def _looks_like_file_locator_answer(answer_text: str) -> bool:
     if re.search(r"(?:\u5728|\u4f4d\u4e8e).{0,8}(?:\u6587\u4ef6|\u6587\u6863|\u8bb0\u5f55)", a):
         return True
     return False
+
+
+def _looks_like_contextual_file_followup_question(question: str) -> bool:
+    q = (question or "").strip()
+    if not q:
+        return False
+    if any(x in q for x in _FILE_WORDS):
+        return True
+    if len(re.sub(r"\s+", "", q)) > 24:
+        return False
+    return any(marker in q for marker in _FILE_FOLLOWUP_HINTS)
+
+
+def _looks_like_analytic_content_question(question: str) -> bool:
+    q = re.sub(r"[\s\u3002\uff1f\uff01\uff0c,.;:]+", "", (question or "").strip())
+    if not q:
+        return False
+    if any(x in q for x in _FILE_WORDS) and any(x in q for x in ("\u54ea\u4e2a", "\u54ea\u4efd", "\u54ea\u7bc7", "\u5728\u54ea")):
+        return False
+    if any(marker in q for marker in _ANALYTIC_QUESTION_MARKERS):
+        return True
+    if re.search(r"\u54ea.*\u65b9\u5411", q):
+        return True
+    if re.search(r"(?:\u8981\u6c42|\u6280\u80fd|\u638c\u63e1|\u6280\u672f\u6808|\u80fd\u529b|\u7ecf\u9a8c).*(?:\u54ea\u4e9b|\u4ec0\u4e48|\u76f8\u5bf9\u8f83\u4f4e|\u5207\u5165\u53e3)", q):
+        return True
+    if re.search(r"\u54ea.*(?:\u6280\u672f|\u6280\u80fd)", q):
+        return True
+    if re.search(r"\u66f4\u5bb9\u6613.*\u5207\u5165\u53e3", q):
+        return True
+    return False
+
+
+def _looks_like_source_backed_analytic_answer(user_question: str, answer_text: str) -> bool:
+    q = (user_question or "").strip()
+    a = (answer_text or "").strip()
+    if not q or not a:
+        return False
+    if any(x in q for x in _FILE_WORDS):
+        return False
+    if not _looks_like_analytic_content_question(q):
+        return False
+    file_items = extract_file_items(a)
+    if not file_items:
+        return False
+    if not _looks_like_file_locator_answer(a):
+        return False
+    if len(file_items) >= 2:
+        return True
+    return any(marker in a for marker in _SOURCE_EVIDENCE_MARKERS)
 
 
 def _has_company_list_intent(question: str) -> bool:
@@ -120,7 +213,9 @@ def infer_answer_type(user_question: str, answer_text: str) -> str | None:
 
     file_items = extract_file_items(a)
     if file_items and _looks_like_file_locator_answer(a):
-        if any(x in q for x in _FOLLOWUP_HINTS) or any(x in q for x in _FILE_WORDS):
+        if _looks_like_source_backed_analytic_answer(q, a):
+            return None
+        if _looks_like_contextual_file_followup_question(q):
             return "enumeration_file"
 
     return None
@@ -197,4 +292,3 @@ def infer_local_answer_type(user_question: str, answer_text: str, local_topic: s
             return "enumeration_file"
 
     return None
-

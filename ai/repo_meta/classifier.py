@@ -85,6 +85,18 @@ TIMELINE_REQUEST_KEYWORDS = (
 LIST_FOLLOWUP_KEYWORDS = ("列一个", "列一下吧", "列出来", "展开一下", "展开列一个")
 CATEGORY_FOLLOWUP_KEYWORDS = ("方面", "分类", "类别", "哪类", "怎么分", "如何分")
 LIST_INTENT_KEYWORDS = ("列出", "列一个", "列下", "列出来", "清单", "罗列", "展开")
+CATEGORY_DRILLDOWN_KEYWORDS = (
+    "再拆分一下分类",
+    "拆分一下分类",
+    "再拆分一下",
+    "继续拆分",
+    "往下拆分",
+    "再细分一下",
+    "细分一下",
+    "子分类",
+    "再分一下类",
+    "再拆一下",
+)
 
 RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("count", COUNT_KEYWORDS),
@@ -145,6 +157,25 @@ def is_list_files_request(question: str) -> bool:
     return has_doc_word and has_list_intent
 
 
+def is_category_drilldown_request(question: str, last_local_topic: str | None = None) -> bool:
+    q = normalize_meta_question(clean_text(question))
+    if not q:
+        return False
+
+    has_drilldown_intent = contains_any(q, CATEGORY_DRILLDOWN_KEYWORDS) or (
+        "分类" in q and any(x in q for x in ("拆分", "细分", "往下", "展开"))
+    )
+    if not has_drilldown_intent:
+        return False
+
+    if last_local_topic in {"count", "list_files_by_topic", "category_count_breakdown"}:
+        return True
+
+    return last_local_topic in {"category_summary", "category_overview"} and any(
+        x in q for x in ("这个板块", "这个分类", "这块", "这一类", "这里面")
+    )
+
+
 def classify_repo_meta_question(
     question: str,
     last_user_question: str | None = None,
@@ -167,6 +198,10 @@ def classify_repo_meta_question(
     if is_deeper_category_summary_request(question, last_local_topic=last_local_topic):
         print(f"[repo_meta分类] q={q} -> category_overview")
         return "category_overview"
+
+    if is_category_drilldown_request(question, last_local_topic=last_local_topic):
+        print(f"[repo_meta分类] q={q} -> category_drilldown")
+        return "category_drilldown"
 
     topic_candidate = extract_topic_from_list_request(q)
     topic_candidate_valid = is_semantic_topic_candidate(topic_candidate) if topic_candidate else False

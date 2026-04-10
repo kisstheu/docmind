@@ -35,8 +35,17 @@ from retrieval.search_term_scoring import (
 )
 
 
-def perform_retrieval(question: str, search_query: str, repo_state, model_emb, logger, current_focus_file: str | None,
-        context_anchor: str = "", ):
+def perform_retrieval(
+    question: str,
+    search_query: str,
+    repo_state,
+    model_emb,
+    logger,
+    current_focus_file: str | None,
+    context_anchor: str = "",
+    allowed_paths=None,
+    scope_label: str | None = None,
+):
     chunk_texts = list(getattr(repo_state, "chunk_texts", []) or [])
     chunk_paths = list(getattr(repo_state, "chunk_paths", []) or [])
     chunk_file_times = list(getattr(repo_state, "chunk_file_times", []) or [])
@@ -69,6 +78,26 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
     chunk_paths = chunk_paths[:max_count]
     chunk_file_times = chunk_file_times[:max_count]
     chunk_embeddings = chunk_embeddings[:max_count]
+
+    allowed_path_set = None
+    candidate_indices = list(range(max_count))
+    if allowed_paths is not None:
+        allowed_path_set = {
+            str(path or "").strip()
+            for path in allowed_paths
+            if str(path or "").strip()
+        }
+        candidate_indices = [idx for idx, path in enumerate(chunk_paths) if path in allowed_path_set]
+        if current_focus_file and current_focus_file not in allowed_path_set:
+            current_focus_file = None
+        if not candidate_indices:
+            scope_name = (scope_label or "指定范围").strip() or "指定范围"
+            logger.info(f"   [范围约束未命中] {scope_name} 内暂无可检索片段")
+            return {"relevant_indices": [], "scores": np.empty((0,)), "current_focus_file": current_focus_file, }
+        scope_name = (scope_label or "指定范围").strip() or "指定范围"
+        scoped_paths = {chunk_paths[idx] for idx in candidate_indices}
+        logger.info(f"   [范围约束] {scope_name} -> {len(scoped_paths)} files / {len(candidate_indices)} chunks")
+    candidate_index_set = set(candidate_indices)
 
     q_emb = model_emb.encode(["为这个句子生成表示以用于检索相关文章：" + search_query])[0]
     scores = np.dot(chunk_embeddings, q_emb)
@@ -140,6 +169,8 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
 
     now = datetime.datetime.now()
     for i in range(len(scores)):
+        if i not in candidate_index_set:
+            continue
         delta_days = (now - chunk_file_times[i]).days
         if delta_days < 30:
             time_weight = 1.0
@@ -152,6 +183,8 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
         scores[i] *= time_weight
 
     for i, chunk_text_item in enumerate(chunk_texts):
+        if i not in candidate_index_set:
+            continue
         path_no_ext = Path(chunk_paths[i]).stem.lower()
         chunk_text_lower = chunk_text_item.lower()
 
@@ -227,10 +260,12 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
                 logger.info(f"   🎯 [精确拦截-词边界] -> {repo_state.paths[i]}")
                 break
 
+    if allowed_path_set is not None and current_focus_file and current_focus_file not in allowed_path_set:
+        current_focus_file = None
     if current_focus_file and not any(k in question for k in shift_keywords):
         logger.info(f"   🔒 [全局焦点锁定] AI注意力集中于 -> {current_focus_file}")
         for i in range(len(scores)):
-            if chunk_paths[i] == current_focus_file:
+            if i in candidate_index_set and chunk_paths[i] == current_focus_file:
                 scores[i] += 0.18
 
     is_macro_request = any(kw in question for kw in
@@ -264,18 +299,19 @@ def perform_retrieval(question: str, search_query: str, repo_state, model_emb, l
     else:
         top_k, threshold = 12, 0.40
 
-    relevant_indices = [i for i in np.argsort(scores)[::-1] if scores[i] > threshold]
+    ranked_candidate_indices = sorted(candidate_indices, key=lambda idx: float(scores[idx]), reverse=True)
+    relevant_indices = [i for i in ranked_candidate_indices if scores[i] > threshold]
     weak_query = is_weak_query(question, search_terms)
     fallback_threshold = 0.24 if is_entity_lookup else 0.30
 
     if not relevant_indices and should_enable_fallback(search_terms, weak_query):
-        relevant_indices = [i for i in np.argsort(scores)[::-1] if scores[i] > fallback_threshold]
+        relevant_indices = [i for i in ranked_candidate_indices if scores[i] > fallback_threshold]
         logger.info("   🛡️ [兜底打捞] 未达到阈值，启动底线捞取...")
     elif not relevant_indices and weak_query:
         logger.info("   🚫 [禁用兜底] 当前问题过弱或属于能力类问题，避免误捞上下文")
 
     if not relevant_indices and is_entity_lookup:
-        relevant_indices = rescue_entity_lookup_indices(scores, top_k=top_k)
+        relevant_indices = ranked_candidate_indices[:top_k] if ranked_candidate_indices else rescue_entity_lookup_indices(scores, top_k=top_k)
         logger.info(f"   🛟 [实体检索保底] 触发低阈值候选兜底，补入 {len(relevant_indices)} 个片段")
 
     is_file_lookup = is_file_location_lookup_query(question, search_query)

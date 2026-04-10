@@ -20,6 +20,18 @@ ANCHOR_WEAK_TERMS = {
     "这个", "那个", "这些", "那些", "这样", "这种",
 }
 
+GROUP_REFERENCE_MARKERS = {
+    "这些",
+    "那些",
+    "其中",
+    "这类",
+    "那类",
+    "该类",
+    "这批",
+    "那批",
+    "上述",
+}
+
 
 def _extract_candidate_terms(text: str) -> list[str]:
     if not text:
@@ -78,6 +90,9 @@ def is_context_dependent_question(question: str, last_query: Optional[str] = Non
         return True
 
     if any(x in q for x in referential_markers) and len(q) <= 30:
+        return True
+
+    if any(x in q for x in GROUP_REFERENCE_MARKERS) and len(q) <= 48:
         return True
 
     # 当前句没有多少可检索实体，但上一轮存在有效主题时，优先视为承接追问

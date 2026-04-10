@@ -8,8 +8,25 @@ from app.chat_text.lookup_answer_main import (
     FILE_LOOKUP_POLITE_PREFIXES,
 )
 
+_ANALYTIC_FILE_LOOKUP_BLOCK_PATTERNS = (
+    re.compile(r"(?:\u8981\u6c42|\u6280\u80fd|\u638c\u63e1|\u6280\u672f\u6808|\u80fd\u529b|\u7ecf\u9a8c).*(?:\u54ea\u4e9b|\u4ec0\u4e48|\u76f8\u5bf9\u8f83\u4f4e|\u5207\u5165\u53e3)"),
+    re.compile(r"\u54ea.*(?:\u6280\u672f|\u6280\u80fd)"),
+    re.compile(r"\u66f4\u5bb9\u6613.*\u5207\u5165\u53e3"),
+)
+
 def _normalize_lookup_token(text: str) -> str:
     return re.sub(r"[^a-z0-9\u4e00-\u9fa5]+", "", (text or "").lower())
+
+
+def _looks_like_analytic_followup_question(question: str) -> bool:
+    q = re.sub(r"\s+", "", (question or ""))
+    if not q:
+        return False
+    if any(word in q for word in ("\u6587\u4ef6", "\u6587\u6863", "\u8bb0\u5f55")) and any(
+        marker in q for marker in ("\u54ea\u4e2a", "\u54ea\u4efd", "\u54ea\u7bc7", "\u5728\u54ea")
+    ):
+        return False
+    return any(pattern.search(q) for pattern in _ANALYTIC_FILE_LOOKUP_BLOCK_PATTERNS)
 
 
 def _strip_file_lookup_prefix(question: str) -> str:
@@ -137,6 +154,8 @@ def maybe_build_file_location_answer(
     is_direct_lookup = is_file_location_lookup_query(question, search_query)
     target = _extract_file_lookup_target(question)
     if not is_direct_lookup:
+        if _looks_like_analytic_followup_question(question):
+            return None
         if not allow_followup_inference:
             return None
         if not target:

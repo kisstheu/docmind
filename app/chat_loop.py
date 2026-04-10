@@ -1,5 +1,10 @@
 from __future__ import annotations
+import os
+import sys
+import time
 from pathlib import Path
+
+from ai.repo_meta.category import resolve_repo_content_category_scope
 from app.dialog_state_machine import (
     ConversationState,
     apply_event_to_state,
@@ -68,6 +73,60 @@ def try_handle_out_of_scope(*args, **kwargs):
 def try_handle_retrieval_force_local_or_empty_context(*args, **kwargs):
     return _loop_handlers.try_handle_retrieval_force_local_or_empty_context(*args, **kwargs)
 
+
+def _has_buffered_console_input() -> bool:
+    if os.name != "nt" or not sys.stdin.isatty():
+        return False
+
+    try:
+        import msvcrt
+    except Exception:
+        return False
+
+    try:
+        return bool(msvcrt.kbhit())
+    except Exception:
+        return False
+
+
+def _merge_user_question_lines(lines: list[str]) -> str:
+    parts: list[str] = []
+    for raw in lines:
+        text = " ".join(str(raw or "").split())
+        if text:
+            parts.append(text)
+    return " ".join(parts).strip()
+
+
+def _read_user_question(
+    prompt: str = "\n问：",
+    *,
+    input_func=input,
+    has_buffered_input=_has_buffered_console_input,
+    max_buffered_lines: int = 4,
+    debounce_seconds: float = 0.12,
+    sleep_func=time.sleep,
+    monotonic_func=time.monotonic,
+) -> str:
+    lines = [input_func(prompt)]
+    if max_buffered_lines <= 1:
+        return _merge_user_question_lines(lines)
+
+    wait_for_more = not _merge_user_question_lines(lines)
+    deadline = monotonic_func() + max(debounce_seconds, 0.0)
+    while len(lines) < max_buffered_lines:
+        if has_buffered_input():
+            lines.append(input_func(""))
+            wait_for_more = not _merge_user_question_lines(lines)
+            deadline = monotonic_func() + min(max(debounce_seconds, 0.0), 0.05)
+            continue
+        if not wait_for_more or monotonic_func() >= deadline:
+            break
+        sleep_func(0.02)
+
+    return _merge_user_question_lines(lines)
+
+
 conversation_state = ConversationState()
 def run_chat_loop(
     repo_state,
@@ -91,7 +150,7 @@ def run_chat_loop(
     print("=================================")
     print("🤖：你好！我是你的 DocMind 随身助理。你可以问我任何问题。")
     while True:
-        raw_question = input("\n问：")
+        raw_question = _read_user_question()
         if raw_question.strip().lower() in ["q", "quit", "exit"]:
             break
         if not raw_question.strip():
@@ -100,7 +159,6 @@ def run_chat_loop(
         if question_recorder is not None:
             question_recorder.record(raw_question, normalized_question=question)
         try:
-            import time
             start_qa = time.time()
             file_action_handled, conversation_state, current_focus_file = handle_file_action_turn(
                 question=question,
@@ -228,6 +286,22 @@ def run_chat_loop(
             conversation_state.last_route = "normal_retrieval"
             conversation_state.last_local_topic = None
             flags = determine_query_flags(question)
+            analytic_retrieval = _loop_handlers.looks_like_analytic_retrieval_question(question)
+            category_scope_label = None
+            category_scope_paths = None
+            if conversation_state.last_category_context_answer:
+                category_scope_label, resolved_scope_paths = resolve_repo_content_category_scope(
+                    question=question,
+                    repo_state=repo_state,
+                    previous_summary=conversation_state.last_category_context_answer,
+                    last_local_answer=(conversation_state.last_answer_text or conversation_state.last_answer_preview),
+                    model_emb=model_emb,
+                )
+                if resolved_scope_paths:
+                    category_scope_paths = resolved_scope_paths
+                    logger.info(
+                        f"[板块范围继承] {category_scope_label} -> {len(category_scope_paths)} files"
+                    )
             search_query, context_anchor = build_search_query(
                 question=question,
                 event=event,
@@ -256,6 +330,8 @@ def run_chat_loop(
                 current_focus_file=current_focus_file,
                 last_relevant_indices=last_relevant_indices,
                 event=event,
+                allowed_paths=category_scope_paths,
+                scope_label=category_scope_label,
             )
             current_focus_file = materials["current_focus_file"]
             last_relevant_indices = materials["relevant_indices"]
@@ -276,7 +352,7 @@ def run_chat_loop(
                     event_name=event.name,
                 )
                 continue
-            local_file_locator_answer = maybe_build_file_location_answer(
+            local_file_locator_answer = None if analytic_retrieval else maybe_build_file_location_answer(
                 question=question,
                 search_query=search_query,
                 relevant_indices=last_relevant_indices,
@@ -299,7 +375,7 @@ def run_chat_loop(
                     event_name=event.name,
                 )
                 continue
-            local_entity_mapping_answer = maybe_build_direct_lookup_answer(
+            local_entity_mapping_answer = None if analytic_retrieval else maybe_build_direct_lookup_answer(
                 question=question,
                 search_query=search_query,
                 relevant_indices=last_relevant_indices,

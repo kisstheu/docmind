@@ -31,6 +31,20 @@ GENERIC_FOLLOWUP_MARKERS = (
     "后续",
 )
 
+_ANALYTIC_FOLLOWUP_MARKERS = (
+    "这些",
+    "那些",
+    "其中",
+    "哪一类",
+    "哪类",
+    "需求最多",
+    "数量",
+    "占比",
+    "简单说明",
+    "按数量",
+    "按占比",
+)
+
 
 def _wants_force_wider_scope(question: str) -> bool:
     q = normalize_question_for_retrieval(question)
@@ -84,10 +98,25 @@ def filter_reused_indices_for_question(question: str, candidate_indices, repo_st
     return list(candidate_indices)
 
 
+def _looks_like_contextual_analytic_followup(question: str) -> bool:
+    q = normalize_question_for_retrieval(question)
+    if not q:
+        return False
+    if any(marker in q for marker in _ANALYTIC_FOLLOWUP_MARKERS):
+        return True
+    if re.search(r"这些.*方向", q):
+        return True
+    if re.search(r"哪.*类.*最多", q):
+        return True
+    return False
+
+
 def should_keep_followup_anchor(question: str) -> bool:
     q = (question or "").strip()
     if not q:
         return False
+    if _looks_like_contextual_analytic_followup(q):
+        return True
 
     weak_followups = {
         "我能赢吗",
@@ -234,4 +263,3 @@ def _build_global_timeline_query() -> str:
         "生活",
     ]
     return " ".join(terms)
-

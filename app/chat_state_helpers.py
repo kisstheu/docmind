@@ -6,6 +6,7 @@ from app.chat_state_answer_parsing import (
     EXPANSION_MARKERS,
     _contains_no_new_signal,
     _looks_like_file_locator_answer,
+    _looks_like_source_backed_analytic_answer,
     extract_file_items,
     extract_numbered_items,
     infer_answer_type,
@@ -239,8 +240,13 @@ def update_state_after_retrieval_answer(
             "人物": "enumeration_person",
         }
         fallback_file_items = extract_file_items(answer_text)
+        preserve_source_file_refs = (
+            bool(fallback_file_items)
+            and _looks_like_source_backed_analytic_answer(question, answer_text)
+        )
         fallback_to_file_result_set = (
             bool(fallback_file_items)
+            and not preserve_source_file_refs
             and _looks_like_file_locator_answer(answer_text)
             and (is_followup_turn or "文件" in question or "文档" in question or "记录" in question)
         )
@@ -267,6 +273,16 @@ def update_state_after_retrieval_answer(
             state.last_answer_type = "enumeration_file"
             logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={state.last_answer_type}")
             logger.debug(f"🧪 [候选集合提取] file_items={fallback_file_items}")
+        elif preserve_source_file_refs:
+            if prev_result_set_entity_type is None and prev_result_set_items and is_followup_turn:
+                fallback_file_items = _merge_result_set_items(prev_result_set_items, fallback_file_items)
+                logger.debug("🧪 [状态保留] 分析回答附带来源文件，合并上一轮来源文件候选集合")
+
+            state.last_result_set_items = fallback_file_items
+            state.last_result_set_entity_type = None
+            state.last_answer_type = None
+            logger.debug("🧪 [状态保留] 分析回答仅保留来源文件候选，不视为文件结果集")
+            logger.debug(f"🧪 [候选集合提取] analytic_source_file_items={fallback_file_items}")
         elif keep_result_set_context or preserve_result_set_on_result_set_followup:
             state.last_result_set_items = prev_result_set_items
             state.last_result_set_entity_type = prev_result_set_entity_type

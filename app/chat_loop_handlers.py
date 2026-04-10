@@ -62,6 +62,42 @@ _NO_CONTEXT_ANSWER_MARKERS = (
     "先不调用远程模型",
 )
 
+_ANALYTIC_RETRIEVAL_MARKERS = (
+    "\u4e3a\u4ec0\u4e48",
+    "\u600e\u4e48",
+    "\u5982\u4f55",
+    "\u5206\u6790",
+    "\u603b\u7ed3",
+    "\u6bd4\u8f83",
+    "\u533a\u522b",
+    "\u4e3b\u8981\u96c6\u4e2d",
+    "\u96c6\u4e2d\u5728\u54ea",
+    "\u54ea\u4e9b\u65b9\u5411",
+    "\u6280\u672f\u65b9\u5411",
+    "\u65b9\u5411\u4e4b\u95f4",
+    "\u4e4b\u95f4\u7684\u5173\u7cfb",
+    "\u5173\u7cfb\u548c\u7ec4\u5408",
+    "\u7ec4\u5408\u60c5\u51b5",
+    "\u5206\u5e03",
+    "\u8d8b\u52bf",
+    "\u7ed3\u6784",
+    "\u6a21\u5f0f",
+    "\u5171\u73b0",
+    "\u642d\u914d",
+    "\u54ea\u4e00\u7c7b",
+    "\u54ea\u7c7b",
+    "\u9700\u6c42\u6700\u591a",
+    "\u6570\u91cf",
+    "\u5360\u6bd4",
+    "\u6309\u6570\u91cf",
+    "\u6309\u5360\u6bd4",
+    "\u7b80\u5355\u8bf4\u660e",
+    "\u6280\u672f\u6808",
+    "\u7ecf\u9a8c\u8981\u6c42",
+    "\u5207\u5165\u53e3",
+    "\u95e8\u69db",
+)
+
 
 def build_chat_config(repo_state):
     return types.GenerateContentConfig(
@@ -106,9 +142,39 @@ def _has_usable_followup_context(state: ConversationState) -> bool:
     return False
 
 
+def looks_like_analytic_retrieval_question(question: str) -> bool:
+    q = _normalize_for_guard(question)
+    if not q:
+        return False
+    if any(word in q for word in ("\u6587\u4ef6", "\u6587\u6863", "\u8bb0\u5f55")) and re.search(
+        r"(?:\u54ea\u4e2a|\u54ea\u4efd|\u54ea\u7bc7|\u5728\u54ea)",
+        q,
+    ):
+        return False
+    if any(marker in q for marker in _ANALYTIC_RETRIEVAL_MARKERS):
+        return True
+    if re.search(r"\u8fd9\u4e9b.*\u65b9\u5411", q):
+        return True
+    if re.search(r"\u54ea\u4e9b.*\u65b9\u5411", q):
+        return True
+    if re.search(r"\u54ea.*\u7c7b.*\u6700\u591a", q):
+        return True
+    if re.search(r"(?:\u8981\u6c42|\u6280\u80fd|\u638c\u63e1|\u6280\u672f\u6808|\u80fd\u529b|\u7ecf\u9a8c).*(?:\u54ea\u4e9b|\u4ec0\u4e48|\u76f8\u5bf9\u8f83\u4f4e|\u5207\u5165\u53e3)", q):
+        return True
+    if re.search(r"\u54ea.*(?:\u6280\u672f|\u6280\u80fd)", q):
+        return True
+    if re.search(r"\u66f4\u5bb9\u6613.*\u5207\u5165\u53e3", q):
+        return True
+    if re.search(r".*\u4e4b\u95f4.*\u5173\u7cfb", q):
+        return True
+    return False
+
+
 def is_simple_retrieval_turn(question: str, event_name: str) -> bool:
     q = (question or "").strip()
     if not q:
+        return False
+    if looks_like_analytic_retrieval_question(q):
         return False
     if event_name in {"entity_lookup_followup", "result_set_followup", "result_set_expansion_followup"}:
         return True

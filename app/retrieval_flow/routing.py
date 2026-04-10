@@ -43,6 +43,7 @@ def resolve_route(question: str, event, ollama_api_url: str, ollama_model: str, 
             "last_route": getattr(state, "last_route", None),
             "last_user_question": getattr(state, "last_user_question", None),
             "last_answer_preview": getattr(state, "last_answer_preview", None),
+            "last_effective_search_query": getattr(state, "last_effective_search_query", None),
         }
 
     route_question_input = question
