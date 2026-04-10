@@ -270,6 +270,15 @@ def route_question(
         logger.info(f"🧭 [规则命中] repo_meta -> {question}")
         return {"route": "repo_meta"}
 
+    try:
+        from app.dialog.repo_meta_rules import is_repo_meta_request
+
+        if is_repo_meta_request(question):
+            logger.info(f"🧭 [规则命中] repo_meta(local) -> {question}")
+            return {"route": "repo_meta"}
+    except Exception:
+        pass
+
     if _is_definitely_out_of_scope(q):
         logger.info(f"🧭 [规则命中] out_of_scope -> {question}")
         return {"route": "out_of_scope"}

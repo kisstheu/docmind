@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from ai.capability_common import normalize_meta_question
+from ai.capability_common import CATEGORY_COUNT_KEYWORDS, CATEGORY_KEYWORDS, normalize_meta_question
 
 if TYPE_CHECKING:
     from app.dialog.state_machine import ConversationState
@@ -85,6 +85,9 @@ def is_repo_meta_request(question: str) -> bool:
         "文档分几类", "文件分几类",
     ]
     if any(p in q for p in patterns):
+        return True
+
+    if has_doc_word and any(x in q for x in CATEGORY_KEYWORDS + CATEGORY_COUNT_KEYWORDS):
         return True
 
     if has_doc_word and has_topic_overview_intent:

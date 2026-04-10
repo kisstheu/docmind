@@ -131,3 +131,5 @@ class IndexBuildContext:
     tag_concurrency: int = 1
     ollama_timeout_sec: float = 8.0
     ollama_max_retries: int = 0
+    ollama_keep_alive: str | None = "30m"
+    ollama_request_options: dict[str, Any] | None = None

@@ -400,10 +400,26 @@ def _parse_batch_tag_response(raw: str) -> dict[str, tuple[str, str]]:
     return results
 
 
+def _build_ollama_payload(context: IndexBuildContext, prompt: str) -> dict:
+    payload = {
+        "model": context.ollama_model,
+        "prompt": prompt,
+        "stream": False,
+    }
+    keep_alive = str(getattr(context, "ollama_keep_alive", "") or "").strip()
+    if keep_alive:
+        payload["keep_alive"] = keep_alive
+
+    request_options = getattr(context, "ollama_request_options", None) or {}
+    if request_options:
+        payload["options"] = dict(request_options)
+    return payload
+
+
 def _request_ollama_response(context: IndexBuildContext, prompt: str, path: str, purpose: str) -> str:
     max_attempts = max(1, int(getattr(context, "ollama_max_retries", 0) or 0) + 1)
     timeout_sec = float(getattr(context, "ollama_timeout_sec", 8.0) or 8.0)
-    payload = {"model": context.ollama_model, "prompt": prompt, "stream": False}
+    payload = _build_ollama_payload(context, prompt)
     last_error: Exception | None = None
 
     for attempt in range(1, max_attempts + 1):

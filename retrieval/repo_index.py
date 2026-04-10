@@ -42,6 +42,11 @@ def _coerce_int(raw, default: int, min_value: int, max_value: int) -> int:
     return max(min_value, min(max_value, value))
 
 
+def _coerce_str(raw, default: str) -> str:
+    value = str(raw or "").strip()
+    return value or default
+
+
 def _default_prepare_workers() -> int:
     cpu_count = os.cpu_count() or 1
     return max(1, min(4, cpu_count))
@@ -119,6 +124,32 @@ def load_or_build_embeddings(
         min_value=1,
         max_value=12,
     )
+    resolved_tag_ollama_model = _coerce_str(
+        os.getenv("DOCMIND_INDEX_TAG_OLLAMA_MODEL"),
+        default=ollama_model,
+    )
+    resolved_tag_ollama_keep_alive = _coerce_str(
+        os.getenv("DOCMIND_INDEX_TAG_OLLAMA_KEEP_ALIVE"),
+        default="30m",
+    )
+    resolved_tag_num_predict = _coerce_int(
+        os.getenv("DOCMIND_INDEX_TAG_OLLAMA_NUM_PREDICT"),
+        default=32,
+        min_value=8,
+        max_value=128,
+    )
+    resolved_tag_num_ctx = _coerce_int(
+        os.getenv("DOCMIND_INDEX_TAG_OLLAMA_NUM_CTX"),
+        default=2048,
+        min_value=256,
+        max_value=8192,
+    )
+    resolved_tag_temperature = _coerce_float(
+        os.getenv("DOCMIND_INDEX_TAG_OLLAMA_TEMPERATURE"),
+        default=0.0,
+        min_value=0.0,
+        max_value=1.0,
+    )
     resolved_tag_mode = (os.getenv("DOCMIND_INDEX_TAG_MODE") or "ollama").strip().lower()
     if resolved_tag_mode not in {"statistical", "ollama"}:
         resolved_tag_mode = "ollama"
@@ -166,15 +197,23 @@ def load_or_build_embeddings(
         model_emb=model_emb,
         logger=logger,
         ollama_api_url=ollama_api_url,
-        ollama_model=ollama_model,
+        ollama_model=resolved_tag_ollama_model,
         tag_mode=resolved_tag_mode,
         tag_concurrency=resolved_tag_concurrency,
         ollama_timeout_sec=effective_ollama_timeout,
         ollama_max_retries=resolved_ollama_retries,
+        ollama_keep_alive=resolved_tag_ollama_keep_alive,
+        ollama_request_options={
+            "temperature": resolved_tag_temperature,
+            "num_predict": resolved_tag_num_predict,
+            "num_ctx": resolved_tag_num_ctx,
+            "top_k": 20,
+            "top_p": 0.9,
+        },
     )
     if resolved_tag_mode == "ollama":
         logger.info(
-            f"⚙️ 建库标签提取: ollama (base_timeout={resolved_ollama_timeout:.1f}s, effective_timeout={effective_ollama_timeout:.1f}s, retries={resolved_ollama_retries}, batch_size={resolved_tag_batch_size}, concurrency={resolved_tag_concurrency})"
+            f"⚙️ 建库标签提取: ollama (model={resolved_tag_ollama_model}, base_timeout={resolved_ollama_timeout:.1f}s, effective_timeout={effective_ollama_timeout:.1f}s, retries={resolved_ollama_retries}, batch_size={resolved_tag_batch_size}, concurrency={resolved_tag_concurrency}, keep_alive={resolved_tag_ollama_keep_alive}, num_predict={resolved_tag_num_predict}, num_ctx={resolved_tag_num_ctx})"
         )
     else:
         logger.info("⚙️ 建库标签提取: statistical")
