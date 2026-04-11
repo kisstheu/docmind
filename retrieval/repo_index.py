@@ -19,6 +19,7 @@ from retrieval.repo_index_cache import (
     _safe_load_object,
     classify_manifest_diff,
     load_cache_snapshot,
+    reuse_added_entries_from_archive,
     reuse_unchanged_entries,
     save_incremental_cache,
 )
@@ -57,6 +58,29 @@ def _scale_ollama_timeout(timeout_sec: float, tag_concurrency: int) -> float:
     if concurrency <= 1:
         return timeout_sec
     return timeout_sec * (1.0 + 0.5 * (concurrency - 1))
+
+
+def _build_archived_cache(snapshot, current_paths: list[str], deleted_paths: list[str]) -> tuple[dict[str, str], dict[str, dict], dict[str, dict]]:
+    archived_manifest = dict(snapshot.archived_manifest)
+    archived_doc_cache = dict(snapshot.archived_doc_cache)
+    archived_chunk_cache = dict(snapshot.archived_chunk_cache)
+
+    for path in deleted_paths:
+        old_fingerprint = snapshot.manifest.get(path)
+        old_doc_entry = snapshot.doc_cache.get(path)
+        old_chunk_entry = snapshot.chunk_cache.get(path)
+        if old_fingerprint is None or old_doc_entry is None or old_chunk_entry is None:
+            continue
+        archived_manifest[path] = old_fingerprint
+        archived_doc_cache[path] = old_doc_entry
+        archived_chunk_cache[path] = old_chunk_entry
+
+    for path in current_paths:
+        archived_manifest.pop(path, None)
+        archived_doc_cache.pop(path, None)
+        archived_chunk_cache.pop(path, None)
+
+    return archived_manifest, archived_doc_cache, archived_chunk_cache
 
 
 __all__ = [
@@ -181,13 +205,26 @@ def load_or_build_embeddings(
         old_chunk_cache=snapshot.chunk_cache,
         path_to_fp=path_to_fp,
     )
+    archived_reuse_result = reuse_added_entries_from_archive(
+        added_paths=diff.added_paths,
+        archived_manifest=snapshot.archived_manifest,
+        archived_doc_cache=snapshot.archived_doc_cache,
+        archived_chunk_cache=snapshot.archived_chunk_cache,
+        path_to_fp=path_to_fp,
+    )
 
-    new_doc_cache = reuse_result.new_doc_cache
-    new_chunk_cache = reuse_result.new_chunk_cache
-    final_changed_paths = diff.added_paths + diff.modified_paths + reuse_result.promoted_modified_paths
+    new_doc_cache = reuse_result.new_doc_cache | archived_reuse_result.new_doc_cache
+    new_chunk_cache = reuse_result.new_chunk_cache | archived_reuse_result.new_chunk_cache
+    final_changed_paths = (
+        archived_reuse_result.remaining_added_paths
+        + diff.modified_paths
+        + reuse_result.promoted_modified_paths
+    )
 
     if reuse_result.reused_count:
         logger.info(f"♻️ 已复用 {reuse_result.reused_count} 个未变化文件的索引结果")
+    if archived_reuse_result.reused_count:
+        logger.info(f"♻️ 已复用 {archived_reuse_result.reused_count} 个暂离扫描后重新出现文件的索引结果")
 
     if final_changed_paths:
         logger.info("\n🧠 检测到新增或修改文件，开始增量建库...\n")
@@ -300,8 +337,22 @@ def load_or_build_embeddings(
         if sidecar_examples:
             logger.info(f"         例如: {', '.join(sidecar_examples)}")
 
+    archived_manifest, archived_doc_cache, archived_chunk_cache = _build_archived_cache(
+        snapshot,
+        current_paths=current_paths,
+        deleted_paths=diff.deleted_paths,
+    )
+
     repo_state = assemble_repo_state(scanned_repo, current_paths, new_doc_cache, new_chunk_cache)
-    save_incremental_cache(cache_file, current_manifest, new_doc_cache, new_chunk_cache)
+    save_incremental_cache(
+        cache_file,
+        current_manifest,
+        new_doc_cache,
+        new_chunk_cache,
+        archived_manifest,
+        archived_doc_cache,
+        archived_chunk_cache,
+    )
 
     if final_changed_paths or diff.deleted_paths:
         logger.info("✅ 增量索引更新完成")

@@ -34,6 +34,9 @@ def is_system_capability_request(question: str) -> bool:
 
 def is_repo_meta_request(question: str) -> bool:
     q = normalize_meta_question(question)
+    if _looks_like_doc_inventory_listing_request(q):
+        return True
+
     if _is_file_locator_query(q):
         return False
 
@@ -87,6 +90,9 @@ def is_repo_meta_request(question: str) -> bool:
     if any(p in q for p in patterns):
         return True
 
+    if has_doc_word and _looks_like_doc_inventory_listing_request(q):
+        return True
+
     if has_doc_word and any(x in q for x in CATEGORY_KEYWORDS + CATEGORY_COUNT_KEYWORDS):
         return True
 
@@ -106,9 +112,25 @@ def is_repo_meta_request(question: str) -> bool:
     return False
 
 
+def _looks_like_doc_inventory_listing_request(q: str) -> bool:
+    normalized = (q or "").strip()
+    if not normalized:
+        return False
+
+    return bool(
+        re.search(
+            r"(?:当前|目前|现在).{0,4}存(?:的是?|是|有)?(?:哪些|什么)(?:文件|文档|资料)",
+            normalized,
+        )
+    )
+
+
 def _is_file_locator_query(q: str) -> bool:
     merged = re.sub(r"\s+", "", (q or "").lower())
     if not merged:
+        return False
+
+    if _looks_like_doc_inventory_listing_request(merged):
         return False
 
     direct_patterns = [
@@ -308,5 +330,6 @@ def is_list_format_modifier(question: str) -> bool:
         "带日期", "加日期", "加上日期",
         "按时间排", "按时间排序", "按日期排", "按日期排序",
         "按大小排", "按大小排序",
+        "详细看下", "详细一点", "详细说说", "展开看下", "展开看看",
     ]
     return any(p in q for p in patterns)

@@ -89,6 +89,58 @@ _LOCAL_STATUS_TERMS = ("困", "累", "饿", "忙", "晚")
 _LOCAL_STATUS_MODALS = ("吗", "嘛", "呢", "了", "没", "不", "吧")
 
 
+def _normalize_smalltalk_phrase(phrase: str) -> str:
+    q = (phrase or "").strip()
+    q = re.sub(r"\.(txt|md|pdf|docx)$", "", q, flags=re.IGNORECASE).strip()
+    q = re.sub(r"[^\w\s\u4e00-\u9fa5]", " ", q)
+    q = re.sub(r"\s+", " ", q).strip()
+    return q.replace(" ", "").lower()
+
+
+_LOCAL_SMALLTALK_SHORT_PHRASE_NORMS = tuple(
+    dict.fromkeys(
+        norm
+        for norm in (_normalize_smalltalk_phrase(p) for p in _LOCAL_SMALLTALK_SHORT_PHRASES)
+        if len(norm) >= 2
+    )
+)
+
+_RETRIEVAL_REPHRASE_MARKERS = (
+    "\u67e5\u770b",
+    "\u67e5\u8be2",
+    "\u68c0\u7d22",
+    "\u641c",
+    "\u770b",
+    "\u67e5",
+)
+_RETRIEVAL_REPHRASE_PATTERNS = (
+    re.compile(
+        r"^(?:\u5982\u679c|\u90a3\u5982\u679c|\u8981\u662f|\u82e5\u662f|\u6539\u7528|\u6362\u6210|\u6362\u7528|\u7528)"
+        r".{1,24}(?:\u8fdb\u884c)?(?:\u67e5\u770b|\u67e5\u8be2|\u68c0\u7d22|\u641c|\u770b|\u67e5)"
+        r"(?:\u4e00\u4e0b)?(?:\u5462|\u5417)?(?:\?|？)?$"
+    ),
+    re.compile(
+        r"^(?:\u5982\u679c|\u90a3\u5982\u679c|\u8981\u662f|\u82e5\u662f)"
+        r".{1,24}(?:\u6765|\u53bb|\u91c7\u7528).{0,8}(?:\u67e5\u770b|\u67e5\u8be2|\u68c0\u7d22|\u641c|\u770b|\u67e5)"
+        r"(?:\u4e00\u4e0b)?(?:\u5462|\u5417)?(?:\?|？)?$"
+    ),
+)
+
+
+def looks_like_retrieval_rephrase_question(question: str) -> bool:
+    q = _sanitize_search_query(question).replace(" ", "").lower()
+    if not q or len(q) > 32:
+        return False
+
+    if any(term in q for term in ("\u4f60", "\u52a9\u624b", "docmind")):
+        return False
+
+    if not any(marker in q for marker in _RETRIEVAL_REPHRASE_MARKERS):
+        return False
+
+    return any(pattern.search(q) for pattern in _RETRIEVAL_REPHRASE_PATTERNS)
+
+
 def is_local_smalltalk_intent(question: str) -> bool:
     """
     轻量本地意图补判：用于在路由前拦截短句人格闲聊，避免误入检索链路。
@@ -97,7 +149,10 @@ def is_local_smalltalk_intent(question: str) -> bool:
     if not q:
         return False
 
-    if len(q) <= 16 and any(p in q for p in _LOCAL_SMALLTALK_SHORT_PHRASES):
+    if looks_like_retrieval_rephrase_question(question):
+        return False
+
+    if len(q) <= 16 and any(p in q for p in _LOCAL_SMALLTALK_SHORT_PHRASE_NORMS):
         if not any(p in q for p in _LOCAL_SMALLTALK_BLOCK_TERMS):
             return True
 
@@ -153,9 +208,9 @@ def _quick_rule_rewrite(question: str) -> str | None:
 def _sanitize_search_query(search_query: str) -> str:
     q = (search_query or "").strip()
 
-    q = re.sub(r'\.(txt|md|pdf|docx)$', '', q, flags=re.IGNORECASE).strip()
-    q = re.sub(r'[^\w\s\u4e00-\u9fa5]', ' ', q)
-    q = re.sub(r'\s+', ' ', q).strip()
+    q = re.sub(r"\.(txt|md|pdf|docx)$", "", q, flags=re.IGNORECASE).strip()
+    q = re.sub(r"[^\w\s\u4e00-\u9fa5]", " ", q)
+    q = re.sub(r"\s+", " ", q).strip()
 
     return q
 

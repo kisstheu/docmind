@@ -26,6 +26,10 @@ LIST_FORMAT_MODIFIERS = (
     "带时间", "加时间", "加上时间", "要时间", "显示时间",
     "带日期", "加日期", "加上日期",
 )
+LIST_DETAIL_MODIFIERS = (
+    "详细看下", "详细一点", "详细些", "详细说说",
+    "展开看下", "展开看看",
+)
 
 LIST_BY_TOPIC_PATTERNS = (
     r"列一个(.+?)的文件",
@@ -154,7 +158,20 @@ def is_list_files_request(question: str) -> bool:
     q = normalize_meta_question(clean_text(question))
     has_doc_word = any(x in q for x in ("文件", "文档", "资料"))
     has_list_intent = any(x in q for x in LIST_INTENT_KEYWORDS)
-    return has_doc_word and has_list_intent
+    return (has_doc_word and has_list_intent) or _looks_like_doc_inventory_listing_request(q)
+
+
+def _looks_like_doc_inventory_listing_request(q: str) -> bool:
+    normalized = (q or "").strip()
+    if not normalized:
+        return False
+
+    return bool(
+        re.search(
+            r"(?:当前|目前|现在).{0,4}存(?:的是?|是|有)?(?:哪些|什么)(?:文件|文档|资料)",
+            normalized,
+        )
+    )
 
 
 def is_category_drilldown_request(question: str, last_local_topic: str | None = None) -> bool:
@@ -193,6 +210,10 @@ def classify_repo_meta_question(
 
     if last_local_topic == "list_files" and any(x in q for x in LIST_FORMAT_MODIFIERS):
         print(f"[repo_meta分类] q={q} -> list_files_with_time")
+        return "list_files_with_time"
+
+    if last_local_topic == "list_files" and contains_any(q, LIST_DETAIL_MODIFIERS):
+        print(f"[repo_meta分类] q={q} -> list_files_with_time(detail)")
         return "list_files_with_time"
 
     if is_deeper_category_summary_request(question, last_local_topic=last_local_topic):

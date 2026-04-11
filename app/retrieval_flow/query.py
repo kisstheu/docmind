@@ -23,6 +23,21 @@ from app.retrieval_flow.query_followup import (
 )
 
 
+def _merge_query_terms(*parts: str) -> str:
+    merged_terms: list[str] = []
+    seen: set[str] = set()
+
+    for part in parts:
+        for token in (part or "").split():
+            term = token.strip()
+            if not term or term in seen:
+                continue
+            merged_terms.append(term)
+            seen.add(term)
+
+    return " ".join(merged_terms).strip()
+
+
 def build_search_query(
     *,
     question: str,
@@ -75,6 +90,17 @@ def build_search_query(
         )
         structured_uses_result_set = True
         logger.info(f"🔆 [结构化继承结果集] {base_query}")
+    elif event_name == "structured_request" and getattr(event, "merged_query", None):
+        merged_query = normalize_question_for_retrieval(event.merged_query) or str(event.merged_query).strip()
+        if should_keep_followup_anchor(question):
+            base_query = _merge_query_terms(
+                normalize_question_for_retrieval(last_effective_search_query or ""),
+                merged_query,
+            ) or merged_query or normalized_question or question
+            logger.info(f"[structured_request followup] {base_query}")
+        else:
+            base_query = merged_query or normalized_question or question
+            logger.info(f"[structured_request merged] {base_query}")
     else:
         if event_name in {"content_followup", "action_request", "judgment_request", "query_correction"}:
             if getattr(event, "merged_query", None) and should_keep_followup_anchor(question):
@@ -148,22 +174,11 @@ def build_search_query(
         logger.info(f"🛝 [强词保底后]：{search_query}")
         return search_query, context_anchor
 
-    if event_name in {"judgment_request", "content_followup", "action_request"} and should_keep_followup_anchor(question):
+    if event_name in {"judgment_request", "content_followup", "action_request", "structured_request"} and should_keep_followup_anchor(question):
         base_query_text = (base_query or "").strip()
         rewritten_text = (raw_search_query or "").strip()
 
-        search_query = base_query_text or rewritten_text
-        if base_query_text and rewritten_text:
-            base_terms = [t for t in base_query_text.split() if t.strip()]
-            merged_terms = list(base_terms)
-            seen = {t for t in base_terms}
-            for token in rewritten_text.split():
-                t = (token or "").strip()
-                if not t or t in seen:
-                    continue
-                merged_terms.append(t)
-                seen.add(t)
-            search_query = " ".join(merged_terms).strip()
+        search_query = _merge_query_terms(base_query_text, rewritten_text) or base_query_text or rewritten_text
 
         search_query = _force_company_name_anchor_for_followup(
             search_query=search_query,
@@ -208,4 +223,3 @@ def build_search_query(
     search_query = _force_append_anchor_terms(search_query, combined_anchors, logger=logger)
     logger.info(f"🛝 [强词保底后]：{search_query}")
     return search_query, context_anchor
-

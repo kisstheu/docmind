@@ -81,6 +81,9 @@ def _is_file_locator_query(q: str) -> bool:
     if not merged:
         return False
 
+    if _looks_like_doc_inventory_listing_request(merged):
+        return False
+
     direct_patterns = [
         "在哪个文件", "在那个文件", "是哪个文件", "是那个文件",
         "哪个文件", "哪些文件", "哪份文件", "文件里", "文件中",
@@ -89,6 +92,19 @@ def _is_file_locator_query(q: str) -> bool:
         "在哪个记录", "是哪个记录", "哪个记录", "哪些记录",
     ]
     return any(p in merged for p in direct_patterns)
+
+
+def _looks_like_doc_inventory_listing_request(q: str) -> bool:
+    normalized = (q or "").strip()
+    if not normalized:
+        return False
+
+    return bool(
+        re.search(
+            r"(?:当前|目前|现在).{0,4}存(?:的是?|是|有)?(?:哪些|什么)(?:文件|文档|资料)",
+            normalized,
+        )
+    )
 
 
 def _is_entity_lookup(q: str) -> bool:

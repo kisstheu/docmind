@@ -69,6 +69,9 @@ class CacheSnapshot:
     manifest: dict[str, str]
     doc_cache: dict[str, dict]
     chunk_cache: dict[str, dict]
+    archived_manifest: dict[str, str]
+    archived_doc_cache: dict[str, dict]
+    archived_chunk_cache: dict[str, dict]
     usable: bool
 
 
@@ -96,6 +99,14 @@ class ReuseResult:
     new_chunk_cache: dict[str, dict]
     reused_count: int
     promoted_modified_paths: List[str]
+
+
+@dataclass
+class ArchivedReuseResult:
+    new_doc_cache: dict[str, dict]
+    new_chunk_cache: dict[str, dict]
+    reused_count: int
+    remaining_added_paths: List[str]
 
 
 @dataclass
