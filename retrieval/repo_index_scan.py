@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import List
 
@@ -15,7 +16,12 @@ _EXCLUDED_PARTS = {
 }
 _MAX_FILE_BYTES = 500 * 1024
 _MAX_IMAGE_FILE_BYTES = 5 * 1024 * 1024
+_MAX_PDF_FILE_BYTES = 100 * 1024 * 1024
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+
+
+def _heavy_pdf_enabled() -> bool:
+    return (os.getenv("DOCMIND_ENABLE_HEAVY_PDF") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def collect_all_files(notes_dir: Path) -> List[Path]:
@@ -40,7 +46,13 @@ def _is_supported_file(file: Path) -> bool:
     stat = file.stat()
     if stat.st_size == 0:
         return False
-    size_limit = _MAX_IMAGE_FILE_BYTES if file.suffix.lower() in _IMAGE_EXTENSIONS else _MAX_FILE_BYTES
+    suffix = file.suffix.lower()
+    if suffix in _IMAGE_EXTENSIONS:
+        size_limit = _MAX_IMAGE_FILE_BYTES
+    elif suffix == ".pdf":
+        size_limit = _MAX_PDF_FILE_BYTES if _heavy_pdf_enabled() else _MAX_FILE_BYTES
+    else:
+        size_limit = _MAX_FILE_BYTES
     if stat.st_size > size_limit:
         return False
     return True
