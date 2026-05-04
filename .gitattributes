@@ -1,0 +1,14 @@
+* text=auto eol=lf
+
+# Keep common binary assets out of line-ending normalization.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.docx binary
+*.xlsx binary
+*.pptx binary
+*.zip binary
+*.db binary
+*.npz binary

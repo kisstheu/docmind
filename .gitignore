@@ -16,6 +16,7 @@ __pycache__/
 desktop.ini
 $RECYCLE.BIN/
 Thumbs.db
+*:Zone.Identifier
 
 # --- 运行时生成目录 ---
 .docmind_trash/
