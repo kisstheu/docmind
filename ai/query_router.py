@@ -99,12 +99,12 @@ def _looks_like_doc_inventory_listing_request(q: str) -> bool:
     if not normalized:
         return False
 
-    return bool(
-        re.search(
-            r"(?:当前|目前|现在).{0,4}存(?:的是?|是|有)?(?:哪些|什么)(?:文件|文档|资料)",
-            normalized,
-        )
+    patterns = (
+        r"(?:当前|目前|现在).{0,4}存(?:的是?|是|有)?(?:哪些|什么)(?:文件|文档|资料)",
+        r"^(?:有哪|有哪些|都有哪些)(?:文件|文档|资料)[？?]?$",
+        r"^(?:文件|文档|资料)(?:有哪|有哪些)[？?]?$",
     )
+    return any(re.search(pattern, normalized) for pattern in patterns)
 
 
 def _should_try_local_inventory_route(question: str, q: str) -> bool:
@@ -222,7 +222,7 @@ def _is_name_content_mismatch(q: str) -> bool:
 def _is_list_doc_query(q: str) -> bool:
     has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
     has_list_word = any(x in q for x in ["列出", "列一下", "列下", "列出来", "清单", "罗列", "展开"])
-    return has_doc_word and has_list_word
+    return (has_doc_word and has_list_word) or _looks_like_doc_inventory_listing_request(q)
 
 
 def _is_definitely_out_of_scope(q: str) -> bool:
