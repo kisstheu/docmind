@@ -8,6 +8,9 @@
 # --- 环境与编辑器 ---
 .venv/
 .vscode/
+.env
+.env.*
+!.env.example
 __pycache__/
 *.py[cod]
 

@@ -90,6 +90,15 @@ def _resolve_cache_file(notes_dir: Path, logger) -> Path:
     return cache_file
 
 
+def _resolve_embedding_local_only() -> bool:
+    raw = (os.getenv("DOCMIND_EMBEDDING_LOCAL_ONLY") or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return False
+
+
 def _resolve_change_log_file(cache_file: Path, logger) -> Path:
     change_log_file = cache_file.parent / "file_change_log.db"
     logger.info(f"🧾 文件变更日志库: {change_log_file}")
@@ -117,14 +126,23 @@ def main():
     else:
         device = "cpu"
 
+    embedding_local_only = _resolve_embedding_local_only()
     try:
-        model_emb = SentenceTransformer("BAAI/bge-large-zh-v1.5", device=device, local_files_only=True)
+        model_emb = SentenceTransformer(
+            "BAAI/bge-large-zh-v1.5",
+            device=device,
+            local_files_only=embedding_local_only,
+        )
     except Exception as e:
-        logger.error(f"⚠️ 本地嵌入模型加载失败：{e}")
-        logger.error("请确认该模型已经提前下载到本机缓存，或改为使用本地模型目录。")
+        mode_label = "本地缓存模式" if embedding_local_only else "在线下载模式"
+        logger.error(f"⚠️ 嵌入模型加载失败（{mode_label}）：{e}")
+        logger.error(
+            "请检查 Hugging Face 网络/代理，或预先下载模型后设置 DOCMIND_EMBEDDING_LOCAL_ONLY=1。"
+        )
         raise
 
     logger.info(f"⚙️ BGE 向量模型运行设备: {device.upper()}")
+    logger.info(f"🧩 嵌入模型加载模式: {'LOCAL_ONLY' if embedding_local_only else 'ONLINE_ALLOWED'}")
     logger.info(f"⏱️ 模型加载耗时: {time.time() - model_load_start:.2f}s")
 
     if not os.getenv("OPENAI_API_KEY"):
