@@ -89,6 +89,31 @@ def _has_buffered_console_input() -> bool:
         return False
 
 
+def _should_use_fresh_tty_input() -> bool:
+    return os.name == "posix" and bool(getattr(sys.stdin, "isatty", lambda: False)())
+
+
+def _flush_pending_tty_input_unix() -> bool:
+    if not _should_use_fresh_tty_input():
+        return False
+
+    try:
+        import termios
+
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        return True
+    except Exception:
+        return False
+
+
+def _read_fresh_tty_line(prompt: str = "\n问：") -> str:
+    try:
+        print(prompt, end="", flush=True)
+        return sys.stdin.readline()
+    except Exception:
+        return input(prompt)
+
+
 def _merge_user_question_lines(lines: list[str]) -> str:
     parts: list[str] = []
     for raw in lines:
@@ -102,12 +127,18 @@ def _read_user_question(
     prompt: str = "\n问：",
     *,
     input_func=input,
+    tty_input_func=_read_fresh_tty_line,
+    should_use_fresh_tty_input=_should_use_fresh_tty_input,
     has_buffered_input=_has_buffered_console_input,
     max_buffered_lines: int = 4,
     debounce_seconds: float = 0.12,
     sleep_func=time.sleep,
     monotonic_func=time.monotonic,
+    use_fresh_tty_input: bool = False,
 ) -> str:
+    if use_fresh_tty_input and should_use_fresh_tty_input():
+        return _merge_user_question_lines([tty_input_func(prompt)])
+
     lines = [input_func(prompt)]
     if max_buffered_lines <= 1:
         return _merge_user_question_lines(lines)
@@ -147,10 +178,15 @@ def run_chat_loop(
     memory_buffer: list[str] = []
     current_focus_file = None
     last_relevant_indices = []
+    is_first_turn = True
     print("=================================")
     print("🤖：你好！我是你的 DocMind 随身助理。你可以问我任何问题。")
     while True:
-        raw_question = _read_user_question()
+        if is_first_turn:
+            _flush_pending_tty_input_unix()
+        raw_question = _read_user_question(use_fresh_tty_input=is_first_turn)
+        if is_first_turn:
+            is_first_turn = False
         if raw_question.strip().lower() in ["q", "quit", "exit"]:
             break
         if not raw_question.strip():

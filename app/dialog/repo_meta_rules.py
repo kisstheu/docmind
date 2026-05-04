@@ -117,12 +117,12 @@ def _looks_like_doc_inventory_listing_request(q: str) -> bool:
     if not normalized:
         return False
 
-    return bool(
-        re.search(
-            r"(?:当前|目前|现在).{0,4}存(?:的是?|是|有)?(?:哪些|什么)(?:文件|文档|资料)",
-            normalized,
-        )
+    patterns = (
+        r"(?:当前|目前|现在).{0,4}存(?:的是?|是|有)?(?:哪些|什么)(?:文件|文档|资料)",
+        r"^(?:有哪|有哪些|都有哪些)(?:文件|文档|资料)[？?]?$",
+        r"^(?:文件|文档|资料)(?:有哪|有哪些)[？?]?$",
     )
+    return any(re.search(pattern, normalized) for pattern in patterns)
 
 
 def _is_file_locator_query(q: str) -> bool:

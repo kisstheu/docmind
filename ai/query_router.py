@@ -107,6 +107,85 @@ def _looks_like_doc_inventory_listing_request(q: str) -> bool:
     )
 
 
+def _should_try_local_inventory_route(question: str, q: str) -> bool:
+    if not q:
+        return False
+
+    has_doc_word = any(x in q for x in ("文件", "文档", "资料"))
+    has_list_hint = any(x in q for x in ("哪些", "有哪", "清单", "列出", "什么"))
+    if not (has_doc_word and has_list_hint):
+        return False
+
+    if len(q) > 24:
+        return False
+
+    return True
+
+
+def _passes_inventory_route_guard(q: str) -> bool:
+    content_markers = (
+        "里", "中",
+        "提到", "提及", "出现",
+        "内容", "正文",
+        "对应", "分别",
+        "是谁", "是什么", "叫什么",
+    )
+    return not any(marker in q for marker in content_markers)
+
+
+def _is_repo_meta_inventory_by_local_model(
+    question: str,
+    q: str,
+    ollama_api_url: str,
+    ollama_model: str,
+    logger,
+) -> bool:
+    if not _should_try_local_inventory_route(question, q):
+        return False
+
+    prompt = f"""
+你是一个中文问句分类器，只判断用户是不是在索要“知识库里的文档/文件清单”。
+请只输出 JSON，不要解释。
+
+判定为 true 的情况：
+- 用户想知道当前有哪些文档/文件/资料
+- 用户想看文档清单、文件列表、资料列表
+
+判定为 false 的情况：
+- 用户想在文档里查内容、实体、字段、结论
+- 用户在问“文档里有哪些公司/人物/甲方/问题”
+- 用户在定位某个内容在哪个文件
+
+用户问题：
+{question}
+
+输出：
+{{"inventory_listing": true}}
+""".strip()
+
+    try:
+        resp = requests.post(
+            ollama_api_url,
+            json={
+                "model": ollama_model,
+                "prompt": prompt,
+                "stream": False,
+            },
+            timeout=8,
+        )
+        resp.raise_for_status()
+        text = resp.json().get("response", "").strip()
+        result = json.loads(text)
+        is_inventory_listing = bool(result.get("inventory_listing"))
+        if is_inventory_listing and _passes_inventory_route_guard(q):
+            logger.info(f"🧭 [本地模型补判] inventory_listing -> {question}")
+            return True
+    except Exception as e:
+        logger.warning(f"[inventory补判失败] {e}")
+
+    return False
+
+
 def _is_entity_lookup(q: str) -> bool:
     has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
     if has_doc_word:
@@ -309,6 +388,9 @@ def route_question(
     if is_rule_smalltalk:
         logger.info(f"🧭 [规则命中] smalltalk -> {question}")
         return {"route": "smalltalk"}
+
+    if _is_repo_meta_inventory_by_local_model(question, q, ollama_api_url, ollama_model, logger):
+        return {"route": "repo_meta"}
 
     if _is_file_locator_query(q):
         logger.info(f"🧭 [规则命中] file_locator -> {question}")
