@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ai.query_rewriter import rewrite_search_query
-from app.chat_text_utils import (
+from app.chat_text.core import (
     is_related_record_listing_request,
     keep_only_allowed_terms,
     merge_rewritten_query_with_strong_terms,

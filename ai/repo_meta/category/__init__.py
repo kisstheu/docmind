@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+from ai.repo_meta.category.assignment import (
+    _CATEGORY_ASSIGNMENT_CACHE,
+    _assign_records_to_summary_labels_with_embeddings,
+    _assign_records_to_summary_labels_with_local_llm,
+    _build_category_assignment_cache_key,
+    _get_cached_category_assignment_map,
+    _normalize_embedding_matrix,
+    _parse_category_assignment_output,
+    answer_repo_content_category_count_breakdown_question,
+    answer_repo_content_category_label_count_question,
+    build_local_category_assignment_map,
+)
+from ai.repo_meta.category.confirmation import (
+    answer_repo_content_category_confirm_question,
+    expand_candidate_fragments,
+    extract_confirmation_candidates,
+    match_confirmation_candidates_to_topics,
+)
+from ai.repo_meta.category.overview import (
+    _build_dominant_topic_overview,
+    _build_scene_category_summary,
+    _count_total_docs,
+    _extract_scene_topics,
+    _format_weighted_topics,
+    _normalize_overview_sentence,
+    _pick_overview_topics,
+    _should_prefer_scene_topics_for_summary,
+    _summarize_category_overview_with_local_llm,
+    answer_repo_content_category_overview_question,
+)
+from ai.repo_meta.category.scope import (
+    _build_repo_state_subset,
+    _extract_last_category_focus_label,
+    answer_repo_content_category_label_drilldown_question,
+    answer_repo_content_category_label_list_question,
+    resolve_repo_content_category_scope,
+)
+from ai.repo_meta.category.shared import (
+    COUNT_TARGET_NOISE_PHRASES,
+    GENERIC_COUNT_TARGETS,
+    _build_record_category_embedding_text,
+    _build_record_category_hint,
+    _extract_count_target_topic,
+    _extract_summary_labels,
+    _match_category_label,
+    _match_category_label_with_local_llm,
+    _strip_code_fence,
+    _trim_topic_text,
+)
+from ai.repo_meta.category.summary import (
+    _build_excerpt_based_category_summary,
+    _build_keyword_based_excerpt_summary,
+    _build_tag_guided_category_summary,
+    _extract_tag_guided_topics,
+    _extract_thematic_excerpt,
+    _format_excerpt_summary_from_raw,
+    _is_meaningful_excerpt_candidate,
+    _iter_excerpt_keywords,
+    _iter_tag_summary_tokens,
+    _normalize_excerpt_candidate,
+    _normalize_summary_bullet_line,
+    _prune_redundant_excerpt_terms,
+    _score_excerpt_token,
+    _split_summary_tag_tokens,
+    answer_repo_content_category_question,
+    answer_repo_content_category_summary_question,
+)
+
+__all__ = [
+    "answer_repo_content_category_confirm_question",
+    "answer_repo_content_category_count_breakdown_question",
+    "answer_repo_content_category_label_count_question",
+    "answer_repo_content_category_label_drilldown_question",
+    "answer_repo_content_category_label_list_question",
+    "answer_repo_content_category_overview_question",
+    "answer_repo_content_category_question",
+    "answer_repo_content_category_summary_question",
+    "build_local_category_assignment_map",
+    "expand_candidate_fragments",
+    "extract_confirmation_candidates",
+    "match_confirmation_candidates_to_topics",
+    "resolve_repo_content_category_scope",
+]

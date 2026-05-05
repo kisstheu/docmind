@@ -1,0 +1,259 @@
+from __future__ import annotations
+
+import re
+
+from ai.query_rewriter import is_local_smalltalk_intent
+from app.context_anchor import is_context_dependent_question
+
+
+def _normalize(q: str) -> str:
+    q = q.strip().lower()
+    q = re.sub(r"[？?！!，,。\.、\s]+", "", q)
+    return q
+
+
+def _is_capability(q: str) -> bool:
+    patterns = [
+        "你是谁", "你是啥",
+        "你能做", "你可以做",
+        "能做啥", "干啥", "做啥",
+        "怎么用", "功能", "help",
+    ]
+    return any(p in q for p in patterns)
+
+
+def _is_file_locator_query(q: str) -> bool:
+    merged = re.sub(r"\s+", "", (q or "").lower())
+    if not merged:
+        return False
+
+    if _looks_like_doc_inventory_listing_request(merged):
+        return False
+
+    direct_patterns = [
+        "在哪个文件", "在那个文件", "是哪个文件", "是那个文件",
+        "哪个文件", "哪些文件", "哪份文件", "文件里", "文件中",
+        "在哪个文档", "在那个文档", "是哪个文档", "是那个文档",
+        "哪个文档", "哪些文档",
+        "在哪个记录", "是哪个记录", "哪个记录", "哪些记录",
+    ]
+    return any(p in merged for p in direct_patterns)
+
+
+def _looks_like_doc_inventory_listing_request(q: str) -> bool:
+    normalized = (q or "").strip()
+    if not normalized:
+        return False
+
+    patterns = (
+        r"(?:当前|目前|现在).{0,4}存(?:的是?|是|有)?(?:哪些|什么)(?:文件|文档|资料)",
+        r"^(?:有哪|有哪些|都有哪些)(?:文件|文档|资料)[？?]?$",
+        r"^(?:文件|文档|资料)(?:有哪|有哪些)[？?]?$",
+    )
+    return any(re.search(pattern, normalized) for pattern in patterns)
+
+
+def _should_try_local_inventory_route(question: str, q: str) -> bool:
+    if not q:
+        return False
+
+    has_doc_word = any(x in q for x in ("文件", "文档", "资料"))
+    has_list_hint = any(x in q for x in ("哪些", "有哪", "清单", "列出", "什么"))
+    if not (has_doc_word and has_list_hint):
+        return False
+
+    if len(q) > 24:
+        return False
+
+    return True
+
+
+def _passes_inventory_route_guard(q: str) -> bool:
+    content_markers = (
+        "里", "中",
+        "提到", "提及", "出现",
+        "内容", "正文",
+        "对应", "分别",
+        "是谁", "是什么", "叫什么",
+    )
+    return not any(marker in q for marker in content_markers)
+
+
+def _is_entity_lookup(q: str) -> bool:
+    has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
+    if has_doc_word:
+        return False
+
+    has_entity_word = any(x in q for x in [
+        "公司名", "公司名称", "公司", "企业",
+        "人名", "姓名", "人物",
+        "项目名", "项目名称", "项目",
+    ])
+    has_lookup_intent = any(x in q for x in [
+        "找", "查", "搜",
+        "提到", "提及",
+        "名字", "名称",
+        "哪些", "哪个", "哪位", "哪几个", "哪几家", "列出",
+        "对应", "分别", "关联", "匹配",
+    ])
+    has_repo_meta_intent = any(x in q for x in [
+        "多少", "数量", "格式", "分类", "清单",
+        "最新", "最早", "最晚", "最近更新", "最近修改",
+        "修改时间", "创建时间", "占多大", "总大小", "空间",
+    ])
+
+    return has_entity_word and has_lookup_intent and not has_repo_meta_intent
+
+
+def _is_name_content_mismatch(q: str) -> bool:
+    has_name_word = any(x in q for x in ["文件名", "标题", "题目", "名称", "名字"])
+    has_content_word = any(x in q for x in ["内容", "正文"])
+    has_mismatch_word = any(x in q for x in ["不符", "不一致", "不匹配", "对不上", "冲突", "矛盾"])
+    return has_name_word and has_content_word and has_mismatch_word
+
+
+def _is_list_doc_query(q: str) -> bool:
+    has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
+    has_list_word = any(x in q for x in ["列出", "列一下", "列下", "列出来", "清单", "罗列", "展开"])
+    return (has_doc_word and has_list_word) or _looks_like_doc_inventory_listing_request(q)
+
+
+def _is_repo_meta(q: str) -> bool:
+    if _is_file_locator_query(q):
+        return False
+
+    has_name_content_mismatch = _is_name_content_mismatch(q)
+    has_list_doc_query = _is_list_doc_query(q)
+    has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
+    has_meta_word = any(x in q for x in [
+        "多少", "数量", "格式", "分类", "清单",
+        "最新", "最早", "最晚", "最近更新", "最近修改",
+        "修改时间", "创建时间", "占多大", "总大小", "空间",
+    ])
+    return has_name_content_mismatch or has_list_doc_query or (has_doc_word and has_meta_word)
+
+
+def _has_explicit_repo_meta_signal(question: str, q: str) -> bool:
+    if _is_repo_meta(q):
+        return True
+    try:
+        from app.dialog.repo_meta_rules import is_repo_meta_request
+
+        return bool(is_repo_meta_request(question))
+    except Exception:
+        return False
+
+
+def _is_definitely_out_of_scope(q: str) -> bool:
+    if not q:
+        return False
+
+    in_scope_markers = (
+        "文件", "文档", "资料", "笔记", "记录", "截图",
+        "仓库", "目录", "索引", "缓存",
+        "公司", "企业", "项目", "人物", "人名", "姓名",
+        "内容", "正文", "标题", "文件名",
+        "提到", "提及", "出现", "在哪", "位置",
+        "整理", "梳理", "总结", "归纳", "分析", "统计", "分类",
+        "清单", "列出", "查", "找", "搜", "检索",
+        "最近", "最早", "最晚", "时间线", "多少", "数量",
+        "格式", "创建时间", "修改时间",
+    )
+    if any(t in q for t in in_scope_markers):
+        return False
+
+    assistant_target_markers = ("你", "你们", "助手", "机器人", "docmind")
+    if not any(t in q for t in assistant_target_markers):
+        return False
+
+    external_realtime_markers = (
+        "天气", "气温", "温度", "下雨", "空气质量",
+        "股价", "汇率", "油价", "新闻", "热搜", "比分", "彩票",
+    )
+    if any(t in q for t in external_realtime_markers):
+        return True
+
+    # 面向助手且不含文档意图的泛问题，若本地也不判为闲聊，则视为越界。
+    return not is_local_smalltalk_intent(q)
+
+
+def _should_preserve_contextual_retrieval(
+    question: str,
+    q: str,
+    state_hint: dict | None,
+    *,
+    is_rule_smalltalk: bool,
+) -> bool:
+    if not state_hint or is_rule_smalltalk:
+        return False
+    if _is_capability(q) or _is_file_locator_query(q) or _is_entity_lookup(q):
+        return False
+    if _has_explicit_repo_meta_signal(question, q):
+        return False
+    if any(t in q for t in ("你", "你们", "助手", "机器人", "docmind")):
+        return False
+
+    last_route = _normalize(str(state_hint.get("last_route") or ""))
+    if last_route != "normal_retrieval":
+        return False
+
+    last_query = str(
+        state_hint.get("last_effective_search_query")
+        or state_hint.get("last_user_question")
+        or ""
+    ).strip()
+    if not last_query:
+        return False
+
+    return is_context_dependent_question(question, last_query)
+
+
+def _should_try_local_rewrite_for_smalltalk(q: str) -> bool:
+    if not q or len(q) > 16:
+        return False
+
+    block_terms = (
+        "文件",
+        "文档",
+        "资料",
+        "公司",
+        "项目",
+        "他",
+        "她",
+        "对方",
+        "关于什么",
+        "什么内容",
+        "什么主题",
+        "主题",
+        "内容",
+    )
+    if any(t in q for t in block_terms):
+        return False
+
+    return True
+
+
+def _is_stateful_smalltalk_followup(q: str, state_hint: dict | None) -> bool:
+    if not state_hint:
+        return False
+
+    last_route = _normalize(str(state_hint.get("last_route") or ""))
+    if last_route != "smalltalk":
+        return False
+
+    if not q or len(q) > 12:
+        return False
+
+    retrieval_markers = (
+        "找", "查", "搜", "检索",
+        "文件", "文档", "资料", "记录",
+        "公司", "人物", "人名", "项目",
+        "时间", "日期", "最近", "最早", "最晚",
+        "多少", "哪些", "哪几个", "哪几家",
+        "列出", "清单", "提到", "提及", "在哪", "位置",
+        "帮我", "麻烦", "请你",
+    )
+    if any(t in q for t in retrieval_markers):
+        return False
+
+    return True

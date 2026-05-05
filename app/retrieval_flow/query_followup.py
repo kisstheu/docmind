@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from app.chat_text_utils import (
+from app.chat_text.core import (
     extract_strong_terms_from_question,
     is_result_expansion_followup,
     normalize_question_for_retrieval,

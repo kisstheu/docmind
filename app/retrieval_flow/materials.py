@@ -5,7 +5,7 @@ from app.retrieval_flow.query import (
     filter_reused_indices_for_question,
     should_reuse_previous_results,
 )
-from app.chat_text_utils import (
+from app.chat_text.core import (
     build_timeline_evidence_text,
     extract_timeline_evidence_from_chunks,
     needs_timeline_evidence,
