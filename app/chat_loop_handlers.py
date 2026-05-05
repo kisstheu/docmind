@@ -11,6 +11,7 @@ from ai.capabilities import (
     answer_system_capability_question,
 )
 from ai.repo_meta.category import answer_repo_content_category_summary_question
+from ai.structured_skill_summary import build_structured_skill_summary_materials
 from app.chat_loop_llm import _answer_out_of_scope_with_local_llm, _answer_smalltalk_with_local_llm
 from app.chat_retrieval_flow import build_topic_summarizer
 from app.chat_text_utils import maybe_build_direct_lookup_answer
@@ -199,7 +200,6 @@ def _looks_like_file_result_set_topic_summary_followup(question: str) -> bool:
         "是什么主题",
         "主要讲什么",
         "主要是什么",
-        "是关什么的",
     )
     return any(pattern == q for pattern in patterns)
 
@@ -226,6 +226,13 @@ def _build_repo_state_subset_by_paths(repo_state, selected_paths: list[str]):
         if idx < len(original_times)
     }
     subset_file_times = [time_by_path[path] for path in subset_paths if path in time_by_path]
+    original_docs = list(getattr(repo_state, "docs", []) or [])
+    doc_by_path = {
+        path: original_docs[idx]
+        for idx, path in enumerate(all_paths)
+        if idx < len(original_docs)
+    }
+    subset_docs = [doc_by_path[path] for path in subset_paths if path in doc_by_path]
     subset_records = [
         dict(record)
         for record in list(getattr(repo_state, "doc_records", []) or [])
@@ -234,6 +241,7 @@ def _build_repo_state_subset_by_paths(repo_state, selected_paths: list[str]):
 
     return SimpleNamespace(
         paths=subset_paths,
+        docs=subset_docs,
         all_files=all_files or list(subset_paths),
         file_times=subset_file_times,
         doc_records=subset_records,
@@ -275,6 +283,34 @@ def _try_answer_file_result_set_topic_summary(
     )
     if answer:
         logger.info("🛟 [结果集概括] 基于上一轮文件集合做本地主题概括")
+        return answer
+    return None
+
+
+def _try_answer_structured_skill_summary(
+    *,
+    event_name: str,
+    repo_state,
+    conversation_state: ConversationState | None,
+    logger,
+) -> str | None:
+    if event_name != "structured_skill_summary":
+        return None
+    if conversation_state is None:
+        return None
+    if conversation_state.last_result_set_entity_type != "文件":
+        return None
+
+    subset_state = _build_repo_state_subset_by_paths(
+        repo_state,
+        list(conversation_state.last_result_set_items or []),
+    )
+    if subset_state is None:
+        return "当前没有可继承的文件结果集，建议先列出文件或明确指定范围后再归纳。"
+
+    answer = build_structured_skill_summary_materials(subset_state)
+    if answer:
+        logger.info("🛟 [结构化能力归纳] 基于上一轮文件集合做本地统计归纳")
         return answer
     return None
 
@@ -425,6 +461,15 @@ def try_handle_retrieval_force_local_or_empty_context(
     ollama_model: str | None = None,
 ) -> str | None:
     if route == "normal_retrieval":
+        structured_skill_summary_answer = _try_answer_structured_skill_summary(
+            event_name=event_name,
+            repo_state=repo_state,
+            conversation_state=conversation_state,
+            logger=logger,
+        )
+        if structured_skill_summary_answer:
+            return structured_skill_summary_answer
+
         result_set_summary_answer = _try_answer_file_result_set_topic_summary(
             question=question,
             event_name=event_name,

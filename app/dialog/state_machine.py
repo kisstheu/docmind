@@ -9,12 +9,13 @@ from app.dialog.repo_meta_rules import (
     is_entity_lookup_request,
     is_list_format_modifier,
     is_repo_meta_request,
-    looks_like_repo_topic_question,
     is_structured_output_request,
+    looks_like_repo_topic_question,
     is_system_capability_request,
     looks_like_repo_size_consistency_followup,
     looks_like_repo_time_question,
 )
+from ai.structured_skill_summary import looks_like_structured_skill_summary_request
 from app.dialog.result_set import (
     build_result_set_followup_query,
     extract_result_set_from_answer,
@@ -205,6 +206,19 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
         return DialogEvent(name="relationship_analysis", route_hint="normal_retrieval")
 
     # === 3. 结构化请求
+    if (
+        state.last_result_set_entity_type == "文件"
+        and bool(state.last_result_set_items)
+        and looks_like_structured_skill_summary_request(question)
+    ):
+        if prev_route == "normal_retrieval" and prev_q:
+            return DialogEvent(
+                name="structured_skill_summary",
+                route_hint="normal_retrieval",
+                merged_query=f"{prev_q} {question}",
+            )
+        return DialogEvent(name="structured_skill_summary", route_hint="normal_retrieval")
+
     if is_structured_output_request(question):
         if prev_route == "normal_retrieval" and prev_q:
             return DialogEvent(

@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from ai.repo_meta.category import resolve_repo_content_category_scope
+from ai.structured_skill_summary import summarize_structured_skill_summary_with_remote
 from app.dialog_state_machine import (
     ConversationState,
     apply_event_to_state,
@@ -464,6 +465,14 @@ def run_chat_loop(
                 ollama_model=ollama_model,
             )
             if fallback_local_answer:
+                if event.name == "structured_skill_summary":
+                    fallback_local_answer = summarize_structured_skill_summary_with_remote(
+                        materials_markdown=fallback_local_answer,
+                        question=question,
+                        client=client,
+                        model_id=model_id,
+                        logger=logger,
+                    )
                 print_answer(fallback_local_answer, start_qa)
                 append_memory(memory_buffer, question, fallback_local_answer)
                 conversation_state = update_state_after_retrieval_answer(

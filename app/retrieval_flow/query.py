@@ -78,7 +78,7 @@ def build_search_query(
             last_result_set_entity_type=last_result_set_entity_type,
         )
         logger.info(f"🔆 [结果集追问拼接] {base_query}")
-    elif event_name == "structured_request" and last_result_set_items and last_result_set_entity_type:
+    elif event_name in {"structured_request", "structured_skill_summary"} and last_result_set_items and last_result_set_entity_type:
         from app.dialog.state_machine import build_result_set_followup_query
 
         base_query = build_result_set_followup_query(
@@ -159,7 +159,7 @@ def build_search_query(
         logger.info(f"🛝 [强词保底后]：{search_query}")
         return search_query, context_anchor
 
-    if event_name == "structured_request" and any(k in question for k in ["时间线", "按时间", "顺序"]):
+    if event_name in {"structured_request", "structured_skill_summary"} and any(k in question for k in ["时间线", "按时间", "顺序"]):
         search_query = raw_search_query.strip() or base_query.strip()
         search_query = _force_company_name_anchor_for_followup(
             search_query=search_query,
@@ -174,7 +174,7 @@ def build_search_query(
         logger.info(f"🛝 [强词保底后]：{search_query}")
         return search_query, context_anchor
 
-    if event_name in {"judgment_request", "content_followup", "action_request", "structured_request"} and should_keep_followup_anchor(question):
+    if event_name in {"judgment_request", "content_followup", "action_request", "structured_request", "structured_skill_summary"} and should_keep_followup_anchor(question):
         base_query_text = (base_query or "").strip()
         rewritten_text = (raw_search_query or "").strip()
 
