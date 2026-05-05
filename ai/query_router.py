@@ -13,12 +13,12 @@ from app.context_anchor import is_context_dependent_question
 def _get_smalltalk_rewrite_timeout_sec() -> float:
     raw = (os.getenv("DOCMIND_SMALLTALK_REWRITE_TIMEOUT") or "").strip()
     if not raw:
-        return 2.5
+        return 4.0
 
     try:
         value = float(raw)
     except ValueError:
-        return 2.5
+        return 4.0
 
     return min(max(value, 0.5), 10.0)
 

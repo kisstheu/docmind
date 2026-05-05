@@ -96,6 +96,13 @@ def _is_followup_turn(question: str, event_name: str | None = None) -> bool:
     return False
 
 
+def _looks_like_short_file_result_set_retry(question: str) -> bool:
+    q = re.sub(r"[，。！？\s]+", "", (question or ""))
+    if not q or len(q) > 16:
+        return False
+    return any(marker in q for marker in ("什么", "内容", "主题", "讲", "说"))
+
+
 def update_state_after_local_answer(
     state,
     question: str,
@@ -262,6 +269,12 @@ def update_state_after_retrieval_answer(
             and prev_result_set_entity_type in entity_to_answer_type
             and bool(prev_result_set_items)
         )
+        preserve_file_result_set_on_no_evidence_followup = (
+            prev_result_set_entity_type == "文件"
+            and bool(prev_result_set_items)
+            and (is_followup_turn or _looks_like_short_file_result_set_retry(question))
+            and _contains_no_new_signal(answer_text or "")
+        )
 
         if fallback_to_file_result_set:
             if prev_result_set_entity_type == "文件" and prev_result_set_items and is_followup_turn:
@@ -283,7 +296,7 @@ def update_state_after_retrieval_answer(
             state.last_answer_type = None
             logger.debug("🧪 [状态保留] 分析回答仅保留来源文件候选，不视为文件结果集")
             logger.debug(f"🧪 [候选集合提取] analytic_source_file_items={fallback_file_items}")
-        elif keep_result_set_context or preserve_result_set_on_result_set_followup:
+        elif keep_result_set_context or preserve_result_set_on_result_set_followup or preserve_file_result_set_on_no_evidence_followup:
             state.last_result_set_items = prev_result_set_items
             state.last_result_set_entity_type = prev_result_set_entity_type
             state.last_answer_type = prev_answer_type or entity_to_answer_type.get(prev_result_set_entity_type)
@@ -291,6 +304,8 @@ def update_state_after_retrieval_answer(
                 logger.debug(
                     f"🧪 [状态保留] 结果集追问回答未产出新集合，保留 entity={prev_result_set_entity_type}"
                 )
+            elif preserve_file_result_set_on_no_evidence_followup:
+                logger.debug("🧪 [状态保留] 文件短追问未拿到新证据，继续保留上一轮文件结果集")
             else:
                 logger.debug(
                     f"🧪 [状态保留] 扩展追问未新增，保留 entity={prev_result_set_entity_type}"

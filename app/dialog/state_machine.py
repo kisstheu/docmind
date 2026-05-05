@@ -82,6 +82,34 @@ def _looks_like_group_reference_result_set_followup(question: str) -> bool:
     return has_mapping_signal and has_target_signal
 
 
+def _looks_like_file_topic_result_set_followup(question: str, state: "ConversationState | None") -> bool:
+    if state is None:
+        return False
+    if state.last_result_set_entity_type != "文件":
+        return False
+    if state.last_answer_type != "enumeration_file":
+        return False
+
+    q = (question or "").strip()
+    if not q or len(q) > 16:
+        return False
+
+    normalized = re.sub(r"[，。！？,.!?\s]+", "", q)
+    if not normalized:
+        return False
+
+    patterns = (
+        r"^是关于什么的$",
+        r"^是讲什么的$",
+        r"^是在说什么的$",
+        r"^是什么内容$",
+        r"^是什么主题$",
+        r"^主要讲什么$",
+        r"^主要是什么$",
+    )
+    return any(re.search(pattern, normalized) for pattern in patterns)
+
+
 @dataclass
 class ConversationState:
     mode: str = "idle"
@@ -119,6 +147,9 @@ class DialogEvent:
 
 def detect_dialog_event(question: str, state: ConversationState, logger) -> DialogEvent:
     rs_match = looks_like_result_set_followup(question)
+    file_topic_result_set_followup = _looks_like_file_topic_result_set_followup(question, state)
+    if file_topic_result_set_followup:
+        rs_match = True
     has_state = state is not None
     last_answer_text = state.last_answer_text or state.last_answer_preview or ""
     has_last_answer = bool(last_answer_text)
@@ -136,6 +167,9 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
     prev_q = state.last_content_user_question
     prev_route = state.last_content_route
     last_topic = state.last_local_topic
+
+    if file_topic_result_set_followup:
+        return DialogEvent(name="result_set_followup", route_hint="normal_retrieval")
 
     if state.last_route == "repo_meta" and last_topic == "list_files" and is_list_format_modifier(question):
         return DialogEvent(name="repo_meta_request", route_hint="repo_meta")
