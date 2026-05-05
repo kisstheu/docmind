@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 
 from google.genai import types
 
@@ -9,6 +10,7 @@ from ai.capabilities import (
     answer_smalltalk,
     answer_system_capability_question,
 )
+from ai.repo_meta.category import answer_repo_content_category_summary_question
 from app.chat_loop_llm import _answer_out_of_scope_with_local_llm, _answer_smalltalk_with_local_llm
 from app.chat_retrieval_flow import build_topic_summarizer
 from app.chat_text_utils import maybe_build_direct_lookup_answer
@@ -185,6 +187,98 @@ def is_simple_retrieval_turn(question: str, event_name: str) -> bool:
     return False
 
 
+def _looks_like_file_result_set_topic_summary_followup(question: str) -> bool:
+    q = _normalize_for_guard(question)
+    if not q or len(q) > 16:
+        return False
+    patterns = (
+        "是关于什么的",
+        "是讲什么的",
+        "是在说什么的",
+        "是什么内容",
+        "是什么主题",
+        "主要讲什么",
+        "主要是什么",
+        "是关什么的",
+    )
+    return any(pattern == q for pattern in patterns)
+
+
+def _build_repo_state_subset_by_paths(repo_state, selected_paths: list[str]):
+    selected = {str(path or "").strip() for path in (selected_paths or []) if str(path or "").strip()}
+    if not selected:
+        return None
+
+    all_paths = [str(path or "").strip() for path in list(getattr(repo_state, "paths", []) or [])]
+    subset_paths = [path for path in all_paths if path in selected]
+    if not subset_paths:
+        return None
+
+    all_files = [
+        str(path or "").strip()
+        for path in list(getattr(repo_state, "all_files", []) or [])
+        if str(path or "").strip() in selected
+    ]
+    original_times = list(getattr(repo_state, "file_times", []) or [])
+    time_by_path = {
+        path: original_times[idx]
+        for idx, path in enumerate(all_paths)
+        if idx < len(original_times)
+    }
+    subset_file_times = [time_by_path[path] for path in subset_paths if path in time_by_path]
+    subset_records = [
+        dict(record)
+        for record in list(getattr(repo_state, "doc_records", []) or [])
+        if str(record.get("path", "") or "").strip() in selected
+    ]
+
+    return SimpleNamespace(
+        paths=subset_paths,
+        all_files=all_files or list(subset_paths),
+        file_times=subset_file_times,
+        doc_records=subset_records,
+    )
+
+
+def _try_answer_file_result_set_topic_summary(
+    *,
+    question: str,
+    event_name: str,
+    repo_state,
+    conversation_state: ConversationState | None,
+    model_emb,
+    logger,
+    ollama_api_url: str,
+    ollama_model: str,
+) -> str | None:
+    if event_name != "result_set_followup":
+        return None
+    if conversation_state is None:
+        return None
+    if conversation_state.last_result_set_entity_type != "文件":
+        return None
+    if conversation_state.last_answer_type != "enumeration_file":
+        return None
+    if not _looks_like_file_result_set_topic_summary_followup(question):
+        return None
+
+    subset_state = _build_repo_state_subset_by_paths(
+        repo_state,
+        list(conversation_state.last_result_set_items or []),
+    )
+    if subset_state is None:
+        return None
+
+    answer = answer_repo_content_category_summary_question(
+        subset_state,
+        topic_summarizer=build_topic_summarizer(logger, ollama_api_url, ollama_model),
+    )
+    if answer:
+        logger.info("🛟 [结果集概括] 基于上一轮文件集合做本地主题概括")
+        return answer
+    return None
+
+
 def try_handle_contextless_followup(question: str, state: ConversationState, event, logger) -> str | None:
     route_hint = getattr(event, "route_hint", None)
     if route_hint in {"repo_meta", "smalltalk", "system_capability"}:
@@ -324,8 +418,26 @@ def try_handle_retrieval_force_local_or_empty_context(
     relevant_indices,
     repo_state,
     materials: dict,
+    conversation_state: ConversationState | None = None,
+    model_emb=None,
     logger,
+    ollama_api_url: str | None = None,
+    ollama_model: str | None = None,
 ) -> str | None:
+    if route == "normal_retrieval":
+        result_set_summary_answer = _try_answer_file_result_set_topic_summary(
+            question=question,
+            event_name=event_name,
+            repo_state=repo_state,
+            conversation_state=conversation_state,
+            model_emb=model_emb,
+            logger=logger,
+            ollama_api_url=ollama_api_url or "",
+            ollama_model=ollama_model or "",
+        )
+        if result_set_summary_answer:
+            return result_set_summary_answer
+
     if route == "normal_retrieval" and is_simple_retrieval_turn(question, event_name):
         forced_local_answer = maybe_build_direct_lookup_answer(
             question=question,

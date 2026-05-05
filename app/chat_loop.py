@@ -457,7 +457,11 @@ def run_chat_loop(
                 relevant_indices=last_relevant_indices,
                 repo_state=repo_state,
                 materials=materials,
+                conversation_state=conversation_state,
+                model_emb=model_emb,
                 logger=logger,
+                ollama_api_url=ollama_api_url,
+                ollama_model=ollama_model,
             )
             if fallback_local_answer:
                 print_answer(fallback_local_answer, start_qa)

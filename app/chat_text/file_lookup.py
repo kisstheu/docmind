@@ -14,6 +14,16 @@ _ANALYTIC_FILE_LOOKUP_BLOCK_PATTERNS = (
     re.compile(r"\u66f4\u5bb9\u6613.*\u5207\u5165\u53e3"),
 )
 
+_TOPIC_SUMMARY_FOLLOWUP_PATTERNS = (
+    re.compile(r"^是关于什么的$"),
+    re.compile(r"^是讲什么的$"),
+    re.compile(r"^是在说什么的$"),
+    re.compile(r"^是什么内容$"),
+    re.compile(r"^是什么主题$"),
+    re.compile(r"^主要讲什么$"),
+    re.compile(r"^主要是什么$"),
+)
+
 def _normalize_lookup_token(text: str) -> str:
     return re.sub(r"[^a-z0-9\u4e00-\u9fa5]+", "", (text or "").lower())
 
@@ -27,6 +37,13 @@ def _looks_like_analytic_followup_question(question: str) -> bool:
     ):
         return False
     return any(pattern.search(q) for pattern in _ANALYTIC_FILE_LOOKUP_BLOCK_PATTERNS)
+
+
+def _looks_like_topic_summary_followup(question: str) -> bool:
+    q = re.sub(r"[\s，。！？,.!?]+", "", (question or ""))
+    if not q:
+        return False
+    return any(pattern.search(q) for pattern in _TOPIC_SUMMARY_FOLLOWUP_PATTERNS)
 
 
 def _strip_file_lookup_prefix(question: str) -> str:
@@ -149,6 +166,8 @@ def maybe_build_file_location_answer(
     from retrieval.search_intent import is_file_location_lookup_query
 
     if not relevant_indices:
+        return None
+    if _looks_like_topic_summary_followup(question):
         return None
 
     is_direct_lookup = is_file_location_lookup_query(question, search_query)
