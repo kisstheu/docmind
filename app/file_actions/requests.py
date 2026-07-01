@@ -133,7 +133,7 @@ def _handle_result_item_image_open(
     opened, open_err = open_image_with_system_viewer(shadow_path)
     if not opened:
         answer = (
-            "已生成影子图片，但自动打开失败。\n"
+            "影子副本已生成，但未能唤起查看器。\n"
             f"- 原文件：{target_rel}\n"
             f"- 影子副本：{shadow_path}\n"
             f"- 错误：{open_err or 'unknown'}"
@@ -234,7 +234,7 @@ def _handle_image_view(
     opened, open_err = open_image_with_system_viewer(shadow_path)
     if not opened:
         answer = (
-            "已生成影子图片，但自动打开失败。\n"
+            "影子副本已生成，但未能唤起查看器。\n"
             f"- 原文件：{target_rel}\n"
             f"- 影子副本：{shadow_path}\n"
             f"- 错误：{open_err or 'unknown'}"

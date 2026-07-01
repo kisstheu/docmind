@@ -39,11 +39,37 @@ FOLLOWUP_PATTERNS = [
     "列出来",
 ]
 
+SUMMARY_FOLLOWUP_REQUESTS = {
+    "是关于什么的",
+    "是讲什么的",
+    "是在说什么的",
+    "是什么内容",
+    "是什么主题",
+    "主要讲什么",
+    "主要是什么",
+    "概括下",
+    "概括一下",
+    "再概括下",
+    "再概括一下",
+    "继续概括",
+    "总结下",
+    "总结一下",
+    "再总结下",
+    "再总结一下",
+    "归纳下",
+    "归纳一下",
+}
+
 
 def normalize_text(text: str) -> str:
     text = (text or "").strip().lower()
     text = re.sub(r"[，。！？、,.!?；;：:\s]+", "", text)
     return text
+
+
+def is_summary_followup_request(question: str) -> bool:
+    q = normalize_text(question)
+    return bool(q) and q in SUMMARY_FOLLOWUP_REQUESTS
 
 
 def is_followup_question(question: str) -> bool:

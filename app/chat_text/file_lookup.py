@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from app.dialog_utils import is_summary_followup_request
+
 from app.chat_text.lookup_answer_main import (
     FILE_LOOKUP_FOLLOWUP_PRONOUNS,
     FILE_LOOKUP_GENERIC_TERMS,
@@ -14,15 +16,6 @@ _ANALYTIC_FILE_LOOKUP_BLOCK_PATTERNS = (
     re.compile(r"\u66f4\u5bb9\u6613.*\u5207\u5165\u53e3"),
 )
 
-_TOPIC_SUMMARY_FOLLOWUP_PATTERNS = (
-    re.compile(r"^是关于什么的$"),
-    re.compile(r"^是讲什么的$"),
-    re.compile(r"^是在说什么的$"),
-    re.compile(r"^是什么内容$"),
-    re.compile(r"^是什么主题$"),
-    re.compile(r"^主要讲什么$"),
-    re.compile(r"^主要是什么$"),
-)
 
 def _normalize_lookup_token(text: str) -> str:
     return re.sub(r"[^a-z0-9\u4e00-\u9fa5]+", "", (text or "").lower())
@@ -40,10 +33,7 @@ def _looks_like_analytic_followup_question(question: str) -> bool:
 
 
 def _looks_like_topic_summary_followup(question: str) -> bool:
-    q = re.sub(r"[\s，。！？,.!?]+", "", (question or ""))
-    if not q:
-        return False
-    return any(pattern.search(q) for pattern in _TOPIC_SUMMARY_FOLLOWUP_PATTERNS)
+    return is_summary_followup_request(question)
 
 
 def _strip_file_lookup_prefix(question: str) -> str:

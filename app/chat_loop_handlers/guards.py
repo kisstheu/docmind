@@ -4,7 +4,7 @@ import re
 
 from app.context_anchor import is_context_dependent_question
 from app.dialog.state_machine import ConversationState
-from app.dialog_utils import is_followup_question
+from app.dialog_utils import is_followup_question, is_summary_followup_request
 
 CONTEXTLESS_FOLLOWUP_REPLY = (
     "这个问题缺少明确主语或上下文，我先不调用远程模型。"
@@ -124,6 +124,8 @@ def looks_like_analytic_retrieval_question(question: str) -> bool:
     q = _normalize_for_guard(question)
     if not q:
         return False
+    if is_summary_followup_request(question):
+        return True
     if any(word in q for word in ("\u6587\u4ef6", "\u6587\u6863", "\u8bb0\u5f55")) and re.search(
         r"(?:\u54ea\u4e2a|\u54ea\u4efd|\u54ea\u7bc7|\u5728\u54ea)",
         q,

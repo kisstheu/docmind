@@ -190,6 +190,27 @@ def run_chat_loop(
             runtime.conversation_state.last_user_question = question
             runtime.conversation_state.last_route = "normal_retrieval"
             runtime.conversation_state.last_local_topic = None
+            result_set_summary_answer = _loop_handlers._try_answer_file_result_set_topic_summary(
+                question=question,
+                event_name=event.name,
+                repo_state=repo_state,
+                conversation_state=runtime.conversation_state,
+                model_emb=model_emb,
+                logger=logger,
+                ollama_api_url=ollama_api_url,
+                ollama_model=ollama_model,
+            )
+            if result_set_summary_answer:
+                print_answer(result_set_summary_answer, start_qa)
+                append_memory(memory_buffer, question, result_set_summary_answer)
+                runtime.conversation_state = update_state_after_retrieval_answer(
+                    runtime.conversation_state,
+                    question,
+                    result_set_summary_answer,
+                    logger,
+                    event_name=event.name,
+                )
+                continue
             flags = determine_query_flags(question)
             analytic_retrieval = _loop_handlers.looks_like_analytic_retrieval_question(question)
             category_scope_label = None

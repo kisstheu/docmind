@@ -53,6 +53,7 @@ from ai.repo_meta.category.summary import (
     _build_excerpt_based_category_summary,
     _build_keyword_based_excerpt_summary,
     _build_tag_guided_category_summary,
+    _collect_body_excerpts,
     _extract_tag_guided_topics,
     _extract_thematic_excerpt,
     _format_excerpt_summary_from_raw,
@@ -61,11 +62,13 @@ from ai.repo_meta.category.summary import (
     _iter_tag_summary_tokens,
     _normalize_excerpt_candidate,
     _normalize_summary_bullet_line,
+    _normalize_type_theme_summary,
     _prune_redundant_excerpt_terms,
     _score_excerpt_token,
     _split_summary_tag_tokens,
     answer_repo_content_category_question,
     answer_repo_content_category_summary_question,
+    answer_repo_content_type_theme_summary_question,
 )
 
 __all__ = [
@@ -77,6 +80,7 @@ __all__ = [
     "answer_repo_content_category_overview_question",
     "answer_repo_content_category_question",
     "answer_repo_content_category_summary_question",
+    "answer_repo_content_type_theme_summary_question",
     "build_local_category_assignment_map",
     "expand_candidate_fragments",
     "extract_confirmation_candidates",

@@ -32,6 +32,7 @@ from app.dialog_utils import (
     is_query_correction,
     is_relationship_analysis_request,
     is_repo_meta_confirmation,
+    is_summary_followup_request,
 )
 
 
@@ -88,27 +89,9 @@ def _looks_like_file_topic_result_set_followup(question: str, state: "Conversati
         return False
     if state.last_result_set_entity_type != "文件":
         return False
-    if state.last_answer_type != "enumeration_file":
+    if not state.last_result_set_items:
         return False
-
-    q = (question or "").strip()
-    if not q or len(q) > 16:
-        return False
-
-    normalized = re.sub(r"[，。！？,.!?\s]+", "", q)
-    if not normalized:
-        return False
-
-    patterns = (
-        r"^是关于什么的$",
-        r"^是讲什么的$",
-        r"^是在说什么的$",
-        r"^是什么内容$",
-        r"^是什么主题$",
-        r"^主要讲什么$",
-        r"^主要是什么$",
-    )
-    return any(re.search(pattern, normalized) for pattern in patterns)
+    return is_summary_followup_request(question)
 
 
 @dataclass
@@ -130,6 +113,8 @@ class ConversationState:
     last_result_set_query: str | None = None
     last_result_set_items: list[str] | None = None
     last_result_set_entity_type: str | None = None
+    last_result_set_summary_text: str | None = None
+    last_result_set_summary_level: int = 0
 
     pending_action_type: str | None = None
     pending_action_source_path: str | None = None
@@ -319,6 +304,8 @@ def apply_event_to_state(state: ConversationState, event: DialogEvent) -> Conver
 
         last_result_set_items=state.last_result_set_items,
         last_result_set_entity_type=state.last_result_set_entity_type,
+        last_result_set_summary_text=state.last_result_set_summary_text,
+        last_result_set_summary_level=state.last_result_set_summary_level,
 
         pending_action_type=state.pending_action_type,
         pending_action_source_path=state.pending_action_source_path,

@@ -14,6 +14,100 @@ def answer_repo_content_category_question(repo_state) -> str:
     return "按内容标签粗略来看，当前知识库主要集中在这些方面：\n" + "\n".join(lines) + "\n\n这是基于影子标签自动归纳出来的。"
 
 
+def answer_repo_content_type_theme_summary_question(repo_state, topic_summarizer) -> str | None:
+    if not topic_summarizer:
+        return None
+
+    body_excerpts = _collect_body_excerpts(repo_state, limit=8, excerpt_limit=220)
+    if len(body_excerpts) < 2:
+        return None
+
+    prompt = (
+        "下面是一组待归纳材料的内容片段。\n"
+        "请根据这些内容，归纳它们整体的“材料类型或用途 + 共同主题”。\n"
+        "必须遵守：\n"
+        "1. 先识别这些材料在现实中的类型、用途或场景，再概括反复出现的主题\n"
+        "2. 只能依据所给内容，不得依据文件名、索引标签或预设领域猜测\n"
+        "3. 只输出一到两句自然中文，不要列表、标题、解释或逐项复述\n"
+        "4. 若内容不足以判断具体类型，应保守描述，不得编造\n\n"
+        "内容样本：\n"
+        + "\n".join(
+            f"[样本 {idx}] {excerpt}"
+            for idx, excerpt in enumerate(body_excerpts, start=1)
+        )
+    )
+
+    try:
+        raw = topic_summarizer(prompt)
+    except Exception:
+        return None
+    return _normalize_type_theme_summary(raw)
+
+
+def _collect_body_excerpts(repo_state, *, limit: int, excerpt_limit: int) -> list[str]:
+    repo_paths = [str(path or "").strip() for path in list(getattr(repo_state, "paths", []) or [])]
+    repo_docs = list(getattr(repo_state, "docs", []) or [])
+    body_by_path = {
+        path: str(repo_docs[idx] or "")
+        for idx, path in enumerate(repo_paths)
+        if path and idx < len(repo_docs)
+    }
+    for record in list(getattr(repo_state, "doc_records", []) or []):
+        path = str(record.get("path", "") or "").strip()
+        body = str(record.get("doc", "") or "").strip()
+        if path and body:
+            body_by_path[path] = body
+
+    bodies = [body_by_path[path] for path in repo_paths if body_by_path.get(path)]
+    if not bodies:
+        bodies = [
+            str(record.get("doc", "") or "").strip()
+            for record in list(getattr(repo_state, "doc_records", []) or [])
+            if str(record.get("doc", "") or "").strip()
+        ]
+    if not bodies:
+        return []
+
+    if len(bodies) <= limit:
+        selected = bodies
+    elif limit <= 1:
+        selected = [bodies[0]]
+    else:
+        last_index = len(bodies) - 1
+        selected_indices = sorted({round(i * last_index / float(limit - 1)) for i in range(limit)})
+        selected = [bodies[idx] for idx in selected_indices]
+
+    excerpts: list[str] = []
+    for body in selected:
+        excerpt = re.sub(r"\s+", " ", str(body or "")).strip(" ，,。；;")
+        if len(excerpt) < 12:
+            continue
+        excerpts.append(excerpt[:excerpt_limit].strip(" ，,。；;"))
+    return excerpts
+
+
+def _normalize_type_theme_summary(raw_text: str) -> str | None:
+    lines: list[str] = []
+    for line in str(raw_text or "").splitlines():
+        text = line.strip()
+        if not text or text.startswith("```"):
+            continue
+        text = re.sub(r"^(?:[-*•]|\d+[.、])\s*", "", text).strip()
+        text = re.sub(r"^(?:文档类型|材料类型|共同主题|总体|整体)\s*[:：]\s*", "", text).strip()
+        if text:
+            lines.append(text)
+        if len(lines) >= 2:
+            break
+    if not lines:
+        return None
+
+    summary = "，".join(lines)
+    summary = re.sub(r"\s+", " ", summary).strip(" ，,。；;")
+    if not summary:
+        return None
+    return summary if summary.endswith(("。", "！", "？")) else f"{summary}。"
+
+
 def answer_repo_content_category_summary_question(repo_state, topic_summarizer) -> str:
     tag_guided_summary = _build_tag_guided_category_summary(
         repo_state,

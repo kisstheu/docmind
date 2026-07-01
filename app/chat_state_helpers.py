@@ -17,6 +17,7 @@ from app.chat_state_company_utils import (
     looks_like_real_company_name,
     normalize_company_item,
 )
+from app.dialog_utils import is_summary_followup_request
 
 FOLLOWUP_EVENT_NAMES = {
     "content_followup",
@@ -131,6 +132,8 @@ def update_state_after_local_answer(
         file_items = extract_file_items(answer)
         state.last_result_set_items = file_items
         state.last_result_set_entity_type = "文件"
+        state.last_result_set_summary_text = None
+        state.last_result_set_summary_level = 0
 
     return state
 
@@ -145,6 +148,8 @@ def update_state_after_retrieval_answer(
     prev_result_set_items = list(state.last_result_set_items) if state.last_result_set_items else None
     prev_result_set_entity_type = state.last_result_set_entity_type
     prev_answer_type = state.last_answer_type
+    prev_result_set_summary_text = state.last_result_set_summary_text
+    prev_result_set_summary_level = state.last_result_set_summary_level
     is_followup_turn = _is_followup_turn(question, event_name=event_name)
 
     state.last_user_question = question
@@ -219,6 +224,8 @@ def update_state_after_retrieval_answer(
 
         state.last_result_set_items = file_items
         state.last_result_set_entity_type = "文件"
+        state.last_result_set_summary_text = None
+        state.last_result_set_summary_level = 0
 
         logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
         logger.debug(f"🧪 [候选集合提取] file_items={file_items}")
@@ -269,6 +276,11 @@ def update_state_after_retrieval_answer(
             and prev_result_set_entity_type in entity_to_answer_type
             and bool(prev_result_set_items)
         )
+        preserve_file_result_set_on_summary_followup = (
+            prev_result_set_entity_type == "文件"
+            and bool(prev_result_set_items)
+            and is_summary_followup_request(question)
+        )
         preserve_file_result_set_on_no_evidence_followup = (
             prev_result_set_entity_type == "文件"
             and bool(prev_result_set_items)
@@ -284,6 +296,8 @@ def update_state_after_retrieval_answer(
             state.last_result_set_items = fallback_file_items
             state.last_result_set_entity_type = "文件"
             state.last_answer_type = "enumeration_file"
+            state.last_result_set_summary_text = None
+            state.last_result_set_summary_level = 0
             logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={state.last_answer_type}")
             logger.debug(f"🧪 [候选集合提取] file_items={fallback_file_items}")
         elif preserve_source_file_refs:
@@ -296,25 +310,45 @@ def update_state_after_retrieval_answer(
             state.last_answer_type = None
             logger.debug("🧪 [状态保留] 分析回答仅保留来源文件候选，不视为文件结果集")
             logger.debug(f"🧪 [候选集合提取] analytic_source_file_items={fallback_file_items}")
-        elif keep_result_set_context or preserve_result_set_on_result_set_followup or preserve_file_result_set_on_no_evidence_followup:
+        elif (
+            keep_result_set_context
+            or preserve_result_set_on_result_set_followup
+            or preserve_file_result_set_on_summary_followup
+            or preserve_file_result_set_on_no_evidence_followup
+        ):
             state.last_result_set_items = prev_result_set_items
             state.last_result_set_entity_type = prev_result_set_entity_type
-            state.last_answer_type = prev_answer_type or entity_to_answer_type.get(prev_result_set_entity_type)
-            if preserve_result_set_on_result_set_followup:
-                logger.debug(
-                    f"🧪 [状态保留] 结果集追问回答未产出新集合，保留 entity={prev_result_set_entity_type}"
+            if preserve_file_result_set_on_summary_followup:
+                state.last_answer_type = answer_type
+                state.last_result_set_summary_text = answer_text.strip()
+                state.last_result_set_summary_level = (
+                    max(1, prev_result_set_summary_level + 1)
+                    if prev_result_set_summary_text
+                    else 1
                 )
-            elif preserve_file_result_set_on_no_evidence_followup:
-                logger.debug("🧪 [状态保留] 文件短追问未拿到新证据，继续保留上一轮文件结果集")
+                logger.debug("🧪 [状态保留] 文件结果集概括未产出新集合，保留候选文件但清除枚举回答类型")
             else:
-                logger.debug(
-                    f"🧪 [状态保留] 扩展追问未新增，保留 entity={prev_result_set_entity_type}"
-                )
+                state.last_answer_type = prev_answer_type or entity_to_answer_type.get(prev_result_set_entity_type)
+            if not preserve_file_result_set_on_summary_followup:
+                if preserve_result_set_on_result_set_followup:
+                    logger.debug(
+                        f"🧪 [状态保留] 结果集追问回答未产出新集合，保留 entity={prev_result_set_entity_type}"
+                    )
+                elif preserve_file_result_set_on_no_evidence_followup:
+                    logger.debug("🧪 [状态保留] 文件短追问未拿到新证据，继续保留上一轮文件结果集")
+                else:
+                    logger.debug(
+                        f"🧪 [状态保留] 扩展追问未新增，保留 entity={prev_result_set_entity_type}"
+                    )
             logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={state.last_answer_type}")
         else:
             state.last_result_set_items = None
             state.last_result_set_entity_type = None
             logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
+
+    if state.last_result_set_entity_type != "文件":
+        state.last_result_set_summary_text = None
+        state.last_result_set_summary_level = 0
 
     logger.debug(
         f"🧠 [状态写回] "

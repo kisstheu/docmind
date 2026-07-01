@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import datetime
 import os
 import re
@@ -69,6 +70,28 @@ def _extract_explicit_image_filename(question: str) -> str | None:
     raw = re.sub(r"\s+", " ", m.group(1).strip())
     raw = raw.strip("，。！？；:!?;[]【】()（）")
     return raw or None
+
+
+def _strip_image_view_command_prefix(ref: str) -> str:
+    value = (ref or "").strip()
+    prefixes = (
+        "帮我打开",
+        "帮我查看",
+        "请打开",
+        "请查看",
+        "打开",
+        "查看",
+        "预览",
+        "展示",
+        "显示",
+        "看下",
+        "看看",
+        "看",
+    )
+    for prefix in prefixes:
+        if value.startswith(prefix):
+            return value[len(prefix):].strip(" ，,：:")
+    return value
 
 
 _CN_NUM_MAP = {
@@ -203,6 +226,17 @@ def resolve_image_from_result_set(
     repo_paths: list[str],
     preferred_rel_path: str | None = None,
 ) -> tuple[str | None, str | None]:
+    explicit = _extract_explicit_image_filename(question)
+    explicit_path: str | None = None
+    if explicit:
+        explicit_path = _match_repo_path(explicit, repo_paths)
+        if not explicit_path:
+            explicit_path = _match_repo_path(_strip_image_view_command_prefix(explicit), repo_paths)
+        if not last_result_set_items:
+            if explicit_path and _is_image_path(explicit_path):
+                return explicit_path, None
+            return None, "没有在当前知识库中找到你指定的图片文件。"
+
     if not last_result_set_items:
         return None, "当前还没有可用的文件结果集。请先让我定位到目标文件，再说“打开这张图”。"
 
@@ -223,9 +257,7 @@ def resolve_image_from_result_set(
         return None, "当前结果集中没有图片文件，暂时无法执行看图。"
     image_keys = {_normalize_path_key(x) for x in image_items}
 
-    explicit = _extract_explicit_image_filename(question)
     if explicit:
-        explicit_path = _match_repo_path(explicit, repo_paths)
         if explicit_path and _normalize_path_key(explicit_path) in image_keys:
             return explicit_path, None
         return None, "你指定的图片不在当前结果集中。请先把它查出来，或改用“打开第N张图”。"
@@ -293,8 +325,77 @@ def create_shadow_image_copy(
     return shadow_path, None
 
 
+def _is_wsl_environment() -> bool:
+    if os.environ.get("WSL_INTEROP") or os.environ.get("WSL_DISTRO_NAME"):
+        return True
+    try:
+        version = Path("/proc/version").read_text(encoding="utf-8", errors="ignore").lower()
+    except OSError:
+        return False
+    return "microsoft" in version or "wsl" in version
+
+
+def _convert_wsl_path_to_windows(path: Path) -> tuple[str | None, str | None]:
+    try:
+        result = subprocess.run(
+            ["wslpath", "-w", str(path.resolve())],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
+    except Exception as e:
+        return None, f"WSL 路径转换失败：{e}"
+    windows_path = (result.stdout or "").strip()
+    if result.returncode != 0 or not windows_path:
+        detail = (result.stderr or "").strip() or f"wslpath 返回码 {result.returncode}"
+        return None, f"WSL 路径转换失败：{detail}"
+    return windows_path, None
+
+
+def _open_image_with_windows_viewer_from_wsl(path: Path) -> tuple[bool, str | None]:
+    windows_path, convert_err = _convert_wsl_path_to_windows(path)
+    if not windows_path:
+        return False, convert_err
+    escaped_path = windows_path.replace("'", "''")
+    powershell_script = (
+        "$OutputEncoding=[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new();"
+        f"Start-Process -FilePath '{escaped_path}'"
+    )
+    encoded_script = base64.b64encode(powershell_script.encode("utf-16le")).decode("ascii")
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-EncodedCommand",
+                encoded_script,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+    except Exception as e:
+        return False, f"Windows 查看器启动失败：{e}"
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip() or f"PowerShell 返回码 {result.returncode}"
+        return False, f"Windows 查看器启动失败：{detail}"
+    return True, None
+
+
 def open_image_with_system_viewer(path: Path) -> tuple[bool, str | None]:
     try:
+        if _is_wsl_environment():
+            return _open_image_with_windows_viewer_from_wsl(path)
+
         if hasattr(os, "startfile"):
             os.startfile(str(path))  # type: ignore[attr-defined]
             return True, None
