@@ -20,6 +20,7 @@ from app.chat_state_helpers import (
 )
 from app.chat_text.core import normalize_colloquial_question
 from app.chat_text.file_lookup import maybe_build_file_location_answer
+from app.chat_text.file_lookup import looks_like_focused_file_content_question
 from app.chat_text.lookup_answer_main import maybe_build_direct_lookup_answer
 from app.chat_text.related_records import maybe_build_related_records_answer
 from app.file_actions.loop import handle_file_action_turn
@@ -261,6 +262,9 @@ def run_chat_loop(
             )
             current_focus_file = materials["current_focus_file"]
             last_relevant_indices = materials["relevant_indices"]
+            focused_file_content_followup = bool(
+                current_focus_file and looks_like_focused_file_content_question(question)
+            )
             related_records_answer = maybe_build_related_records_answer(
                 question=question,
                 relevant_indices=last_relevant_indices,
@@ -278,7 +282,7 @@ def run_chat_loop(
                     event_name=event.name,
                 )
                 continue
-            local_file_locator_answer = None if analytic_retrieval else maybe_build_file_location_answer(
+            local_file_locator_answer = None if (analytic_retrieval or focused_file_content_followup) else maybe_build_file_location_answer(
                 question=question,
                 search_query=search_query,
                 relevant_indices=last_relevant_indices,
@@ -301,7 +305,7 @@ def run_chat_loop(
                     event_name=event.name,
                 )
                 continue
-            local_entity_mapping_answer = None if analytic_retrieval else maybe_build_direct_lookup_answer(
+            local_entity_mapping_answer = None if (analytic_retrieval or focused_file_content_followup) else maybe_build_direct_lookup_answer(
                 question=question,
                 search_query=search_query,
                 relevant_indices=last_relevant_indices,
@@ -352,6 +356,7 @@ def run_chat_loop(
                 logger=logger,
                 ollama_api_url=ollama_api_url,
                 ollama_model=ollama_model,
+                prefer_content_answer=focused_file_content_followup,
             )
             if fallback_local_answer:
                 if event.name == "structured_skill_summary":
@@ -370,6 +375,7 @@ def run_chat_loop(
                     fallback_local_answer,
                     logger,
                     event_name=event.name,
+                    focused_file=current_focus_file,
                 )
                 continue
             final_prompt = build_safe_final_prompt(
@@ -397,6 +403,7 @@ def run_chat_loop(
                 answer_text,
                 logger,
                 event_name=event.name,
+                focused_file=current_focus_file,
             )
         except Exception as e:
             err = str(e)

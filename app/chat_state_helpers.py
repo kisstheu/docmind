@@ -19,7 +19,10 @@ from app.chat_state_company_utils import (
 )
 from app.dialog_utils import is_summary_followup_request
 from app.dialog.result_set import has_selectable_result_set
-from app.chat_text.file_lookup import looks_like_file_set_content_question
+from app.chat_text.file_lookup import (
+    looks_like_file_set_content_question,
+    looks_like_focused_file_content_question,
+)
 
 FOLLOWUP_EVENT_NAMES = {
     "content_followup",
@@ -147,6 +150,7 @@ def update_state_after_retrieval_answer(
     answer_text: str,
     logger,
     event_name: str | None = None,
+    focused_file: str | None = None,
 ):
     prev_result_set_items = list(state.last_result_set_items) if state.last_result_set_items else None
     prev_result_set_entity_type = state.last_result_set_entity_type
@@ -376,11 +380,22 @@ def update_state_after_retrieval_answer(
         state.last_result_set_summary_text = None
         state.last_result_set_summary_level = 0
 
+    if focused_file and looks_like_focused_file_content_question(question):
+        state.last_answer_type = None
+        state.last_result_set_items = None
+        state.last_result_set_entity_type = None
+        state.last_result_set_selectable = False
+        state.last_result_set_summary_text = None
+        state.last_result_set_summary_level = 0
+        logger.debug(f"🧪 [文件焦点状态] focus={focused_file} | 清除旧结果集，保留单文件内容语义")
+
     logger.debug(
         f"🧠 [状态写回] "
         f"last_user_question={state.last_user_question} | "
         f"last_content_route={state.last_content_route} | "
         f"last_answer_type={state.last_answer_type}"
+        f" | result_set_entity={state.last_result_set_entity_type}"
+        f" | result_set_items={state.last_result_set_items}"
     )
 
     return state

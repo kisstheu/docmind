@@ -24,6 +24,10 @@ _FILE_SET_CONTENT_TERMS = (
     "讲了什么", "讲什么", "说了什么", "说什么", "记录了什么", "记录什么",
     "主要记录", "大致说", "主要涉及什么",
 )
+_FOCUSED_FILE_CONTENT_TERMS = (
+    "说了啥", "说了什么", "讲了啥", "讲了什么", "什么内容", "内容是什么",
+    "总结一下", "总结下", "概括一下", "概括下", "主要写了什么", "写了什么",
+)
 
 
 def looks_like_file_set_content_question(question: str) -> bool:
@@ -40,6 +44,15 @@ def looks_like_file_set_content_question(question: str) -> bool:
     if re.search(r"(?:来自|出自|位于|在).*(?:哪个|哪些|哪张|哪份)", q):
         return False
     return True
+
+
+def looks_like_focused_file_content_question(question: str) -> bool:
+    q = re.sub(r"[，。！？?.!?\s]+", "", (question or ""))
+    if not q:
+        return False
+    if re.search(r"(?:哪些|哪个|哪几|哪张|哪份).*(?:文件|文档|截图|资料|记录)", q):
+        return False
+    return any(term in q for term in _FOCUSED_FILE_CONTENT_TERMS)
 
 
 def _normalize_lookup_token(text: str) -> str:

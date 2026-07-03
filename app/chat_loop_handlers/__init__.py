@@ -182,6 +182,7 @@ def try_handle_retrieval_force_local_or_empty_context(
     logger,
     ollama_api_url: str | None = None,
     ollama_model: str | None = None,
+    prefer_content_answer: bool = False,
 ) -> str | None:
     if route == "normal_retrieval":
         structured_skill_summary_answer = _try_answer_structured_skill_summary(
@@ -206,7 +207,7 @@ def try_handle_retrieval_force_local_or_empty_context(
         if result_set_summary_answer:
             return result_set_summary_answer
 
-    if route == "normal_retrieval" and is_simple_retrieval_turn(question, event_name):
+    if route == "normal_retrieval" and not prefer_content_answer and is_simple_retrieval_turn(question, event_name):
         forced_local_answer = maybe_build_direct_lookup_answer(
             question=question,
             search_query=search_query,

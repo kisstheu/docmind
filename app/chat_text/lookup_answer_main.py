@@ -170,7 +170,7 @@ def maybe_build_direct_lookup_answer(
     )
     if not items:
         if force_local_evidence:
-            return "根据当前检索片段，暂未提取到稳定的可核对条目。可继续说“看下1/看下2”查看来源文件。"
+            return "根据当前检索片段，暂未提取到稳定的可核对内容。请补充更具体的问题后重试。"
         if allow_followup_inference and focus_terms:
             focus_tip = "、".join(focus_terms[:3])
             return f"当前检索片段未直接命中“{focus_tip}”相关证据，先不给出推断；可补充更完整关键词后再查。"
