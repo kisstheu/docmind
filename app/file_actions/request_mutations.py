@@ -15,7 +15,9 @@ from app.file_flows.organize import (
 )
 from app.file_flows.rename import (
     build_rename_preview,
+    build_content_based_name_candidate,
     extract_new_name_candidate,
+    is_content_based_rename_request,
     is_rename_request,
     normalize_target_filename,
     resolve_source_file,
@@ -141,6 +143,7 @@ def handle_rename_request_action(
     state: ConversationState,
     memory_buffer: list[str],
     current_focus_file: str | None,
+    repo_state,
     repo_paths: list[str],
     notes_dir: Path,
 ) -> tuple[bool, ConversationState, str | None]:
@@ -167,6 +170,26 @@ def handle_rename_request_action(
             is_content_answer=False,
         )
         return True, state, current_focus_file
+
+    if not new_name_candidate and is_content_based_rename_request(question):
+        content_text = ""
+        tag_text = ""
+        try:
+            source_index = list(getattr(repo_state, "paths", []) or []).index(source_rel)
+            docs = list(getattr(repo_state, "docs", []) or [])
+            if source_index < len(docs):
+                content_text = str(docs[source_index] or "")
+        except (ValueError, TypeError):
+            pass
+        for record in list(getattr(repo_state, "doc_records", []) or []):
+            if isinstance(record, dict) and record.get("path") == source_rel:
+                tag_text = str(record.get("shadow_tags") or record.get("scene_tags") or "")
+                break
+        new_name_candidate = build_content_based_name_candidate(
+            source_rel_path=source_rel,
+            content_text=content_text,
+            tag_text=tag_text,
+        )
 
     if not new_name_candidate:
         tip = f"我识别到目标文件 `{source_rel}`，但没识别到新名称。请明确说“改成 xxx”。"
@@ -236,7 +259,7 @@ def handle_rename_request_action(
         state=state,
         memory_buffer=memory_buffer,
         question=question,
-        answer=preview_text,
+        answer=(f"建议重命名为：\n{Path(target_rel).name}\n\n{preview_text}"),
         start_qa=start_qa,
         local_topic="rename_preview",
         is_content_answer=False,

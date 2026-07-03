@@ -375,6 +375,7 @@ def handle_requested_file_action(
         state=state,
         memory_buffer=memory_buffer,
         current_focus_file=current_focus_file,
+        repo_state=repo_state,
         repo_paths=repo_paths,
         notes_dir=notes_dir,
     )

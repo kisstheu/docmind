@@ -11,6 +11,7 @@ SUPPORTED_EXT = {
     ".png", ".jpg", ".jpeg", ".bmp", ".webp",
 }
 INVALID_FILENAME_CHARS = r'<>:"/\\|?*'
+MAX_SUGGESTED_STEM_LENGTH = 72
 
 
 def _normalize_intent_text(text: str) -> str:
@@ -51,6 +52,19 @@ def _is_rename_name_suggestion_query(question: str) -> bool:
     return any(re.search(p, q) for p in patterns)
 
 
+def is_content_based_rename_request(question: str) -> bool:
+    q = _normalize_intent_text(question)
+    if not q:
+        return False
+    patterns = (
+        r"(?:这个|当前|它|该).*(?:图片|文件|文档|截图)?.*(?:命名|改名|重命名)",
+        r"(?:给|把).*(?:这个|当前|它|该).*(?:图片|文件|文档|截图)?.*(?:命名|改名|重命名|换个.*名字)",
+        r"根据内容.*(?:命名|改名|起名|取名)",
+        r"(?:文件名|名字).*(?:不直观|看不懂|不好懂).*(?:改|换)",
+    )
+    return any(re.search(pattern, q) for pattern in patterns)
+
+
 def is_rename_history_query(question: str) -> bool:
     return _is_rename_history_query(question)
 
@@ -63,8 +77,11 @@ def is_rename_request(question: str) -> bool:
     if _is_rename_history_query(q):
         return False
 
-    if _is_rename_name_suggestion_query(q):
+    if _is_rename_name_suggestion_query(q) and not is_content_based_rename_request(q):
         return False
+
+    if is_content_based_rename_request(q):
+        return True
 
     patterns = [
         "重命名", "改名", "改一下", "改下", "改成", "命名为",
@@ -180,6 +197,38 @@ def normalize_target_filename(candidate: str, source_rel_path: str) -> str | Non
     if target_filename == source.name:
         return source.as_posix()
     return (parent / target_filename).as_posix()
+
+
+def build_content_based_name_candidate(
+    *,
+    source_rel_path: str,
+    content_text: str = "",
+    tag_text: str = "",
+) -> str | None:
+    source_ext = Path(source_rel_path).suffix.lower()
+    raw = ""
+    for line in (content_text or "").splitlines():
+        candidate = line.strip()
+        if len(candidate) < 4 or not re.search(r"[A-Za-z0-9\u4e00-\u9fa5]", candidate):
+            continue
+        if re.search(r"(?:联系人|联系电话|手机号|手机|微信|工作地址|详细地址|@)", candidate):
+            continue
+        if re.search(r"1[3-9]\d{9}", candidate):
+            continue
+        raw = candidate
+        break
+    if not raw:
+        raw = (tag_text or "").strip()
+    if not raw:
+        return None
+
+    stem = re.sub(rf"[{re.escape(INVALID_FILENAME_CHARS)}\x00-\x1f]", "_", raw)
+    stem = re.sub(r"[\s,，。；;（）()【】\[\]]+", "_", stem)
+    stem = re.sub(r"_+", "_", stem).strip(" ._")
+    if not stem:
+        return None
+    stem = stem[:MAX_SUGGESTED_STEM_LENGTH].rstrip(" ._")
+    return f"{stem}{source_ext}"
 
 
 def resolve_source_file(
