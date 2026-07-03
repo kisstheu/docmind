@@ -16,6 +16,31 @@ _ANALYTIC_FILE_LOOKUP_BLOCK_PATTERNS = (
     re.compile(r"\u66f4\u5bb9\u6613.*\u5207\u5165\u53e3"),
 )
 
+_FILE_SET_REFERENCE_TERMS = (
+    "这些", "上述", "它们", "这几份", "这几个", "这批", "前面", "上面",
+)
+_FILE_SET_CONTENT_TERMS = (
+    "主要内容", "内容是什么", "什么内容", "主题", "概括", "总结",
+    "讲了什么", "讲什么", "说了什么", "说什么", "记录了什么", "记录什么",
+    "主要记录", "大致说", "主要涉及什么",
+)
+
+
+def looks_like_file_set_content_question(question: str) -> bool:
+    """Distinguish asking about a known file set's contents from locating files."""
+    q = re.sub(r"[，。！？?.!?\s]+", "", (question or ""))
+    if not q:
+        return False
+    if not any(term in q for term in _FILE_SET_REFERENCE_TERMS):
+        return False
+    if not any(term in q for term in _FILE_SET_CONTENT_TERMS):
+        return False
+    if re.search(r"(?:哪些|哪个|哪几|哪张|哪份).*(?:文件|文档|截图|资料|记录)", q):
+        return False
+    if re.search(r"(?:来自|出自|位于|在).*(?:哪个|哪些|哪张|哪份)", q):
+        return False
+    return True
+
 
 def _normalize_lookup_token(text: str) -> str:
     return re.sub(r"[^a-z0-9\u4e00-\u9fa5]+", "", (text or "").lower())
@@ -157,7 +182,7 @@ def maybe_build_file_location_answer(
 
     if not relevant_indices:
         return None
-    if _looks_like_topic_summary_followup(question):
+    if _looks_like_topic_summary_followup(question) or looks_like_file_set_content_question(question):
         return None
 
     is_direct_lookup = is_file_location_lookup_query(question, search_query)

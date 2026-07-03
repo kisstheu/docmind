@@ -124,6 +124,26 @@ def looks_like_result_set_followup(question: str) -> bool:
     )
 
 
+def has_selectable_result_set(
+    items: list[str] | None,
+    entity_type: str | None,
+    answer_text: str | None,
+    selectable: bool | None = None,
+) -> bool:
+    """Return whether the user was actually shown a non-empty numbered set."""
+    if not items or not (entity_type or "").strip():
+        return False
+    if selectable is not None:
+        return selectable
+
+    numbered_items = []
+    for line in (answer_text or "").splitlines():
+        match = re.match(r"^\s*\d+[.、。)]\s*(.+?)\s*$", line)
+        if match:
+            numbered_items.append(match.group(1).strip())
+    return bool(numbered_items)
+
+
 def looks_like_result_set_continuation_followup(question: str) -> bool:
     q = (question or "").strip()
     if not q:
@@ -295,7 +315,12 @@ def build_result_set_followup_query(
         entity_type = (last_result_set_entity_type or "项").strip()
         candidate_items = list(last_result_set_items)
         if entity_type == "文件":
-            candidate_items = _narrow_result_set_files_by_question(candidate_items, q)
+            from app.chat_text.file_lookup import looks_like_file_set_content_question
+
+            if looks_like_file_set_content_question(q):
+                candidate_items = list(last_result_set_items)
+            else:
+                candidate_items = _narrow_result_set_files_by_question(candidate_items, q)
         item_text = "；".join(candidate_items[:20])
 
         if looks_like_result_set_continuation_followup(q):

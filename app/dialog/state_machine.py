@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.context_anchor import is_context_dependent_question
+from app.chat_text.file_lookup import looks_like_file_set_content_question
 from app.dialog.repo_meta_rules import (
     is_entity_lookup_request,
     is_list_format_modifier,
@@ -19,6 +20,7 @@ from ai.structured_skill_summary import looks_like_structured_skill_summary_requ
 from app.dialog.result_set import (
     build_result_set_followup_query,
     extract_result_set_from_answer,
+    has_selectable_result_set,
     last_turn_looks_like_enumeration,
     looks_like_result_set_continuation_followup,
     looks_like_result_set_comparison_followup,
@@ -87,11 +89,16 @@ def _looks_like_group_reference_result_set_followup(question: str) -> bool:
 def _looks_like_file_topic_result_set_followup(question: str, state: "ConversationState | None") -> bool:
     if state is None:
         return False
-    if state.last_result_set_entity_type != "文件":
+    if state.last_result_set_entity_type != "文件" or not has_selectable_result_set(
+        state.last_result_set_items,
+        state.last_result_set_entity_type,
+        state.last_answer_text or state.last_answer_preview,
+        state.last_result_set_selectable,
+    ):
         return False
-    if not state.last_result_set_items:
-        return False
-    return is_summary_followup_request(question)
+    if is_summary_followup_request(question):
+        return True
+    return looks_like_file_set_content_question(question)
 
 
 @dataclass
@@ -115,6 +122,7 @@ class ConversationState:
     last_result_set_entity_type: str | None = None
     last_result_set_summary_text: str | None = None
     last_result_set_summary_level: int = 0
+    last_result_set_selectable: bool | None = None
 
     pending_action_type: str | None = None
     pending_action_source_path: str | None = None
@@ -254,9 +262,12 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
             return DialogEvent(name="repo_followup", route_hint="repo_meta")
 
     # === 7. 结果集追问（窄继承）
-    is_result_set_answer = (
-        state.last_answer_type in {"enumeration_company", "enumeration_file", "enumeration_person"}
-    ) or enum_like or bool(state.last_result_set_items and state.last_result_set_entity_type)
+    is_result_set_answer = has_selectable_result_set(
+        state.last_result_set_items,
+        state.last_result_set_entity_type,
+        last_answer_text,
+        state.last_result_set_selectable,
+    )
 
     if state.last_result_set_items and any(term in question.lower() for term in ["内容", "一样", "相同", "一致"]) and "文件" in question.lower():
         rs_match = True  # 强制设置匹配
@@ -306,6 +317,7 @@ def apply_event_to_state(state: ConversationState, event: DialogEvent) -> Conver
         last_result_set_entity_type=state.last_result_set_entity_type,
         last_result_set_summary_text=state.last_result_set_summary_text,
         last_result_set_summary_level=state.last_result_set_summary_level,
+        last_result_set_selectable=state.last_result_set_selectable,
 
         pending_action_type=state.pending_action_type,
         pending_action_source_path=state.pending_action_source_path,

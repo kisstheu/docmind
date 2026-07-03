@@ -5,6 +5,7 @@ import re
 from app.context_anchor import is_context_dependent_question
 from app.dialog.state_machine import ConversationState
 from app.dialog_utils import is_followup_question, is_summary_followup_request
+from app.chat_text.file_lookup import looks_like_file_set_content_question
 
 CONTEXTLESS_FOLLOWUP_REPLY = (
     "这个问题缺少明确主语或上下文，我先不调用远程模型。"
@@ -77,6 +78,9 @@ _ANALYTIC_RETRIEVAL_MARKERS = (
     "哪一类",
     "哪类",
     "需求最多",
+    "最频繁",
+    "出现频率",
+    "高频",
     "数量",
     "占比",
     "按数量",
@@ -126,8 +130,12 @@ def looks_like_analytic_retrieval_question(question: str) -> bool:
         return False
     if is_summary_followup_request(question):
         return True
-    if any(word in q for word in ("\u6587\u4ef6", "\u6587\u6863", "\u8bb0\u5f55")) and re.search(
-        r"(?:\u54ea\u4e2a|\u54ea\u4efd|\u54ea\u7bc7|\u5728\u54ea)",
+    if looks_like_file_set_content_question(question):
+        return True
+    if re.search(
+        r"(?:(?:\u54ea\u4e9b|\u54ea\u51e0(?:\u4e2a|\u4efd|\u5f20)?)(?:\u6587\u4ef6|\u6587\u6863|\u8bb0\u5f55|\u622a\u56fe)"
+        r"|(?:\u54ea\u4e2a|\u54ea\u4efd|\u54ea\u7bc7|\u54ea\u5f20)(?:\u6587\u4ef6|\u6587\u6863|\u8bb0\u5f55|\u622a\u56fe)?"
+        r"|\u5728\u54ea(?:\u4e2a|\u4efd|\u7bc7|\u5f20)?(?:\u6587\u4ef6|\u6587\u6863|\u8bb0\u5f55|\u622a\u56fe))",
         q,
     ):
         return False

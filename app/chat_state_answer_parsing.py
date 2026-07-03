@@ -21,7 +21,7 @@ NO_NEW_PATTERNS = [
 
 _COMPANY_WORD = "\u516c\u53f8"
 _NAME_WORD = "\u540d\u79f0"
-_FILE_WORDS = ("\u6587\u4ef6", "\u6587\u6863", "\u8bb0\u5f55")
+_FILE_WORDS = ("\u6587\u4ef6", "\u6587\u6863", "\u8bb0\u5f55", "\u622a\u56fe", "\u8d44\u6599")
 _PERSON_WORDS = ("\u4eba\u7269", "\u4eba\u5458", "\u4eba\u540d", "\u59d3\u540d")
 _FILE_FOLLOWUP_HINTS = (
     "\u54ea\u4e2a",
@@ -57,6 +57,13 @@ _ANALYTIC_QUESTION_MARKERS = (
     "\u7ecf\u9a8c\u8981\u6c42",
     "\u5207\u5165\u53e3",
     "\u95e8\u69db",
+    "\u4e3b\u8981\u5185\u5bb9",
+    "\u4ec0\u4e48\u5185\u5bb9",
+    "\u8bb2\u4e86\u4ec0\u4e48",
+    "\u8bf4\u4e86\u4ec0\u4e48",
+    "\u8bb0\u5f55\u4e86\u4ec0\u4e48",
+    "\u4e3b\u8981\u8bb0\u5f55",
+    "\u4e3b\u8981\u6d89\u53ca\u4ec0\u4e48",
 )
 _SOURCE_EVIDENCE_MARKERS = (
     "\u6765\u6e90",
@@ -159,6 +166,9 @@ def infer_answer_type(user_question: str, answer_text: str) -> str | None:
     a = (answer_text or "").strip()
     numbered_lines = re.findall(r"(?:^|\n)\s*(?:\d+[.\u3001]|[-*•])\s*", a)
 
+    if _looks_like_analytic_content_question(q):
+        return None
+
     if any(x in q for x in ("\u516c\u53f8\u540d", "\u516c\u53f8\u540d\u79f0", "\u4f01\u4e1a\u540d\u79f0", "\u5355\u4f4d\u540d\u79f0", "\u7ec4\u7ec7\u540d\u79f0")):
         if len(numbered_lines) >= 2:
             return "enumeration_company"
@@ -258,6 +268,7 @@ def extract_file_items(answer_text: str) -> list[str]:
         if not m:
             return ""
         candidate = m.group(1).strip()
+        candidate = re.sub(r"^\d+[.\u3001\u3002)]\s*", "", candidate)
         candidate = re.sub(r"\s+", " ", candidate).strip()
         candidate = candidate.strip("\"'[]\u3010\u3011\uff08\uff09() \u3002\uff1b;,\uff0c")
         return candidate

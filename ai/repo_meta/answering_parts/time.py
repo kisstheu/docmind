@@ -197,11 +197,11 @@ def _answer_time(question: str, paths, file_times) -> tuple[str, str]:
 
 def _answer_list_files(paths: list[str]) -> tuple[str, str]:
     show_n = min(50, len(paths))
-    preview = "\n".join(f"- {path}" for path in paths[:show_n])
+    preview = "\n".join(f"{index}. {path}" for index, path in enumerate(paths[:show_n], 1))
     if len(paths) > show_n:
         answer = (
             f"当前知识库里共有 {len(paths)} 个文件，先列出前 {show_n} 个：\n"
-            f"{preview}\n- ...(其余 {len(paths) - show_n} 个未展开)"
+            f"{preview}\n...（其余 {len(paths) - show_n} 个未展开）"
         )
     else:
         answer = f"当前知识库里的文件如下：\n{preview}"
@@ -216,14 +216,14 @@ def _answer_list_files_with_time(paths: list[str], file_times) -> tuple[str, str
 
     show_n = min(50, len(pairs_sorted))
     lines = []
-    for path, dt in pairs_sorted[:show_n]:
-        lines.append(f"- {path}（{dt.strftime('%Y-%m-%d %H:%M:%S')}）")
+    for index, (path, dt) in enumerate(pairs_sorted[:show_n], 1):
+        lines.append(f"{index}. {path}（{dt.strftime('%Y-%m-%d %H:%M:%S')}）")
 
     preview = "\n".join(lines)
     if len(paths) > show_n:
         answer = (
             f"当前知识库里共有 {len(paths)} 个文件（按时间倒序），先列出前 {show_n} 个：\n"
-            f"{preview}\n- ...(其余 {len(paths) - show_n} 个未展开)"
+            f"{preview}\n...（其余 {len(paths) - show_n} 个未展开）"
         )
     else:
         answer = f"当前知识库里的文件如下（按时间倒序）：\n{preview}"

@@ -314,6 +314,15 @@ def perform_retrieval(
         relevant_indices = ranked_candidate_indices[:top_k] if ranked_candidate_indices else rescue_entity_lookup_indices(scores, top_k=top_k)
         logger.info(f"   🛟 [实体检索保底] 触发低阈值候选兜底，补入 {len(relevant_indices)} 个片段")
 
+    if current_focus_file:
+        focus_indices = [
+            idx for idx in ranked_candidate_indices
+            if chunk_paths[idx] == current_focus_file
+        ]
+        if focus_indices:
+            relevant_indices = focus_indices + [idx for idx in relevant_indices if idx not in focus_indices]
+            logger.info(f"   📌 [文件焦点召回] 纳入 {len(focus_indices)} 个目标文件片段")
+
     is_file_lookup = is_file_location_lookup_query(question, search_query)
     if (is_file_lookup or is_compare_request) and body_term_hits:
         eligible_terms = []
