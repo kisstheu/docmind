@@ -7,6 +7,18 @@ import uuid
 from pathlib import Path
 
 
+def interpret_file_event_type(event_type: str, *, reason: str = "", after_path: str = "") -> str:
+    normalized = (event_type or "").strip().lower()
+    if normalized == "soft_delete":
+        return "soft_delete"
+    normalized_after_path = (after_path or "").replace("\\", "/")
+    is_legacy_soft_delete = normalized == "delete" and (
+        (reason or "").strip() == "user_confirmed_soft_delete"
+        or ".docmind_trash" in normalized_after_path.split("/")
+    )
+    return "soft_delete" if is_legacy_soft_delete else normalized
+
+
 def collect_file_snapshot(abs_path: Path, notes_dir: Path) -> dict:
     abs_path_resolved = abs_path.resolve()
     notes_dir_resolved = notes_dir.resolve()
@@ -282,7 +294,7 @@ class FileChangeStore:
         confirmed_text: str = "",
     ) -> int:
         return self._record_file_event(
-            event_type="delete",
+            event_type="soft_delete",
             notes_dir=notes_dir,
             before=before,
             after=after,
@@ -352,7 +364,11 @@ class FileChangeStore:
         return [
             {
                 "event_id": int(row[0]),
-                "event_type": row[1],
+                "event_type": interpret_file_event_type(
+                    row[1],
+                    reason=row[6] or "",
+                    after_path=row[3],
+                ),
                 "before_path": row[2],
                 "after_path": row[3],
                 "before_sha256": row[4],

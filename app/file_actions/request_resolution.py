@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from infra.file_change_store import interpret_file_event_type
+
 from app.file_actions.common import find_repo_path_by_reference
 
 _NUMBERED_RESULT_LINE_PATTERN = re.compile(r"^\s*(\d{1,3})[.。\)]\s*(.+?)\s*$")
@@ -177,12 +179,18 @@ def format_change_history_answer(events: list[dict]) -> str:
 
     action_map = {
         "rename": "重命名",
-        "delete": "删除(软删除)",
+        "soft_delete": "删除(软删除)",
+        "delete": "删除",
     }
     lines = [f"最近 {len(events)} 条文件变更记录（按时间倒序）："]
     for i, evt in enumerate(events, start=1):
         created_at = str(evt.get("created_at", "")).replace("T", " ").replace("+00:00", "Z")
-        event_type = action_map.get(evt.get("event_type", ""), evt.get("event_type", "unknown"))
+        interpreted_type = interpret_file_event_type(
+            str(evt.get("event_type", "")),
+            reason=str(evt.get("reason", "")),
+            after_path=str(evt.get("after_path", "")),
+        )
+        event_type = action_map.get(interpreted_type, interpreted_type or "unknown")
         lines.append(
             f"{i}. [{evt['event_id']}] {event_type}: "
             f"{evt['before_path']} -> {evt['after_path']} "
