@@ -6,6 +6,25 @@ from pathlib import Path
 from ai.capability_common import format_bytes
 
 
+FORMAT_LABELS = {
+    ".png": "PNG 图片",
+    ".jpg": "JPG 图片",
+    ".jpeg": "JPEG 图片",
+    ".webp": "WEBP 图片",
+    ".bmp": "BMP 图片",
+    ".pdf": "PDF 文档",
+    ".doc": "DOC 文档",
+    ".docx": "DOCX 文档",
+    ".txt": "TXT 文本",
+    ".md": "Markdown 文档",
+    ".csv": "CSV 表格",
+    ".xls": "XLS 表格",
+    ".xlsx": "XLSX 表格",
+    ".ppt": "PPT 演示文稿",
+    ".pptx": "PPTX 演示文稿",
+}
+
+
 def calc_repo_total_bytes(repo_state) -> int:
     doc_records = getattr(repo_state, "doc_records", None) or []
     if not doc_records:
@@ -22,6 +41,14 @@ def calc_repo_total_bytes(repo_state) -> int:
 
 def _answer_count(paths: list[str]) -> tuple[str, str]:
     return f"当前知识库共有 {len(paths)} 个文件。", "count"
+
+
+def _answer_count_with_format(paths: list[str], all_files) -> tuple[str, str]:
+    format_lines = _build_format_stat_lines(all_files or paths)
+    answer = f"当前知识库共有 {len(paths)} 个文件。"
+    if format_lines:
+        answer += "\n按格式统计：\n" + "\n".join(format_lines)
+    return answer, "count_with_format"
 
 
 def _answer_total_size(repo_state) -> tuple[str, str]:
@@ -226,7 +253,28 @@ def _answer_size_consistency(question: str, repo_state, last_user_question: str 
     return answer, "size_consistency"
 
 
+def _file_suffix(file) -> str:
+    suffix = Path(str(file)).suffix.lower()
+    return suffix or "[无后缀]"
+
+
+def _format_label(suffix: str) -> str:
+    if suffix == "[无后缀]":
+        return "无后缀文件"
+    return FORMAT_LABELS.get(suffix, f"{suffix.lstrip('.').upper()} 文件")
+
+
+def _build_format_stat_lines(all_files) -> list[str]:
+    counts: dict[str, int] = {}
+    for file in all_files:
+        suffix = _file_suffix(file)
+        counts[suffix] = counts.get(suffix, 0) + 1
+
+    sorted_items = sorted(counts.items(), key=lambda item: (-item[1], _format_label(item[0])))
+    return [f"- {_format_label(suffix)}：{count} 个" for suffix, count in sorted_items]
+
+
 def _answer_format(all_files) -> tuple[str, str]:
-    suffixes = sorted({file.suffix.lower() or "[无后缀]" for file in all_files})
-    answer = "当前知识库中的文件格式有：\n" + "\n".join(f"- {suffix}" for suffix in suffixes)
+    lines = _build_format_stat_lines(all_files)
+    answer = "当前知识库中的文件格式有：\n" + "\n".join(lines)
     return answer, "format"

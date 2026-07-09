@@ -119,6 +119,15 @@ def is_category_confirmation_request(question: str) -> bool:
     return contains_any(question, CATEGORY_CONFIRM_KEYWORDS)
 
 
+def is_count_with_format_request(question: str) -> bool:
+    q = normalize_meta_question(clean_text(question))
+    has_global_scope = contains_any(
+        q,
+        ("知识库", "当前", "目前", "现在", "这些资料", "这些文档", "这些文件"),
+    ) or q.startswith(("有多少", "多少", "总共有多少"))
+    return has_global_scope and contains_any(q, COUNT_KEYWORDS) and ("格式" in q or contains_any(q, FORMAT_KEYWORDS))
+
+
 def is_followup_from_file_list(last_question: str | None, current_question: str) -> bool:
     return contains_any(last_question, LIST_FILE_KEYWORDS) and contains_any(current_question, CATEGORY_FOLLOWUP_KEYWORDS)
 
@@ -238,6 +247,10 @@ def classify_repo_meta_question(
     if topic_candidate_valid:
         print(f"[repo_meta分类] q={q} -> list_files_by_topic")
         return "list_files_by_topic"
+
+    if is_count_with_format_request(q):
+        print(f"[repo_meta分类] q={q} -> count_with_format")
+        return "count_with_format"
 
     if is_list_files_request(q):
         print(f"[repo_meta分类] q={q} -> list_files")

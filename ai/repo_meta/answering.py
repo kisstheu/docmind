@@ -3,6 +3,7 @@ from __future__ import annotations
 from ai.repo_meta.answering_parts.naming import _answer_name_content_mismatch
 from ai.repo_meta.answering_parts.size import (
     _answer_count,
+    _answer_count_with_format,
     _answer_format,
     _answer_size_consistency,
     _answer_total_size,
@@ -95,6 +96,8 @@ def answer_repo_meta_question(
         if category_count_answer:
             return category_count_answer, "count"
         return _answer_count(paths)
+    if topic == "count_with_format":
+        return _answer_count_with_format(paths, all_files)
     if topic == "total_size":
         return _answer_total_size(repo_state)
     if topic == "size_consistency":
