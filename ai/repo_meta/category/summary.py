@@ -15,7 +15,19 @@ def answer_repo_content_category_question(repo_state) -> str:
 
 
 def answer_repo_content_type_theme_summary_question(repo_state, topic_summarizer) -> str | None:
-    if not topic_summarizer:
+    return answer_repo_content_type_theme_summary_question_with_fallback(
+        repo_state,
+        topic_summarizer=topic_summarizer,
+        fallback_topic_summarizer=None,
+    )
+
+
+def answer_repo_content_type_theme_summary_question_with_fallback(
+    repo_state,
+    topic_summarizer,
+    fallback_topic_summarizer=None,
+) -> str | None:
+    if not topic_summarizer and not fallback_topic_summarizer:
         return None
 
     body_excerpts = _collect_body_excerpts(repo_state, limit=8, excerpt_limit=220)
@@ -37,11 +49,24 @@ def answer_repo_content_type_theme_summary_question(repo_state, topic_summarizer
         )
     )
 
+    if topic_summarizer:
+        try:
+            raw = topic_summarizer(prompt)
+        except Exception:
+            raw = ""
+
+        normalized = _normalize_type_theme_summary(raw)
+        if normalized:
+            return normalized
+
+    if not fallback_topic_summarizer:
+        return None
+
     try:
-        raw = topic_summarizer(prompt)
+        fallback_raw = fallback_topic_summarizer(prompt)
     except Exception:
         return None
-    return _normalize_type_theme_summary(raw)
+    return _normalize_type_theme_summary(fallback_raw)
 
 
 def _collect_body_excerpts(repo_state, *, limit: int, excerpt_limit: int) -> list[str]:
@@ -105,10 +130,20 @@ def _normalize_type_theme_summary(raw_text: str) -> str | None:
     summary = re.sub(r"\s+", " ", summary).strip(" ，,。；;")
     if not summary:
         return None
+    if not any(marker in summary for marker in ("文件", "文档", "资料", "材料", "整体", "主要", "用途", "类型", "场景", "信息")):
+        return None
     return summary if summary.endswith(("。", "！", "？")) else f"{summary}。"
 
 
-def answer_repo_content_category_summary_question(repo_state, topic_summarizer) -> str:
+def answer_repo_content_category_summary_question(repo_state, topic_summarizer, fallback_topic_summarizer=None) -> str:
+    type_theme_summary = answer_repo_content_type_theme_summary_question_with_fallback(
+        repo_state,
+        topic_summarizer=topic_summarizer,
+        fallback_topic_summarizer=fallback_topic_summarizer,
+    )
+    if type_theme_summary:
+        return type_theme_summary
+
     tag_guided_summary = _build_tag_guided_category_summary(
         repo_state,
         topic_summarizer=topic_summarizer,

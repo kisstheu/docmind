@@ -69,6 +69,7 @@ from ai.repo_meta.category.summary import (
     answer_repo_content_category_question,
     answer_repo_content_category_summary_question,
     answer_repo_content_type_theme_summary_question,
+    answer_repo_content_type_theme_summary_question_with_fallback,
 )
 
 __all__ = [
@@ -81,6 +82,7 @@ __all__ = [
     "answer_repo_content_category_question",
     "answer_repo_content_category_summary_question",
     "answer_repo_content_type_theme_summary_question",
+    "answer_repo_content_type_theme_summary_question_with_fallback",
     "build_local_category_assignment_map",
     "expand_candidate_fragments",
     "extract_confirmation_candidates",

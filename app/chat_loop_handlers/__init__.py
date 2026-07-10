@@ -8,7 +8,11 @@ from ai.capabilities import (
     answer_system_capability_question,
 )
 from app.chat_loop_llm import _answer_out_of_scope_with_local_llm, _answer_smalltalk_with_local_llm
-from app.chat_retrieval_flow import build_topic_summarizer
+from app.chat_retrieval_flow import (
+    build_remote_topic_summarizer,
+    build_topic_summarizer,
+    build_topic_summarizer_with_remote_fallback,
+)
 from app.chat_text.lookup_answer_main import maybe_build_direct_lookup_answer
 from app.context_anchor import is_context_dependent_question
 from app.dialog.state_machine import ConversationState, extract_result_set_from_answer
@@ -70,11 +74,29 @@ def try_handle_repo_meta(
     ollama_api_url: str,
     ollama_model: str,
     conversation_state: ConversationState,
+    client=None,
+    model_id: str | None = None,
 ):
     if route != "repo_meta":
         return None, None
 
     logger.info("📷 命中 repo_meta，准备本地回答")
+    remote_topic_summarizer = (
+        build_remote_topic_summarizer(logger, client, model_id)
+        if client is not None and model_id
+        else None
+    )
+    topic_summarizer = (
+        build_topic_summarizer_with_remote_fallback(
+            logger,
+            ollama_api_url,
+            ollama_model,
+            client,
+            model_id,
+        )
+        if remote_topic_summarizer is not None
+        else build_topic_summarizer(logger, ollama_api_url, ollama_model)
+    )
     local_answer, local_topic = answer_repo_meta_question(
         question,
         repo_state,
@@ -83,7 +105,8 @@ def try_handle_repo_meta(
         last_local_topic=conversation_state.last_local_topic,
         last_local_answer=(conversation_state.last_answer_text or conversation_state.last_answer_preview),
         category_context_answer=getattr(conversation_state, "last_category_context_answer", None),
-        topic_summarizer=build_topic_summarizer(logger, ollama_api_url, ollama_model),
+        topic_summarizer=topic_summarizer,
+        fallback_topic_summarizer=remote_topic_summarizer,
     )
     logger.info(f"📷 repo_meta 返回值: {repr(local_answer)[:200]} | topic={local_topic}")
 

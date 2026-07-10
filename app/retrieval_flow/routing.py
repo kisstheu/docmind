@@ -29,6 +29,41 @@ def build_topic_summarizer(logger, ollama_api_url: str, ollama_model: str):
     return _summarizer
 
 
+def build_remote_topic_summarizer(logger, client, model_id: str):
+    def _summarizer(prompt: str) -> str:
+        if client is None:
+            raise RuntimeError("远程模型客户端不可用")
+        logger.info("   🛰️ 正在使用远程模型做大方面概括...")
+        response = client.models.generate_content(model=model_id, contents=prompt)
+        text = str(getattr(response, "text", "") or "").strip()
+        if not text:
+            raise RuntimeError("远程模型返回为空")
+        logger.info(f"      ✨ 远程模型概括输出：[{text[:120]}]")
+        return text
+
+    return _summarizer
+
+
+def build_topic_summarizer_with_remote_fallback(
+    logger,
+    ollama_api_url: str,
+    ollama_model: str,
+    client,
+    model_id: str,
+):
+    local_summarizer = build_topic_summarizer(logger, ollama_api_url, ollama_model)
+    remote_summarizer = build_remote_topic_summarizer(logger, client, model_id)
+
+    def _summarizer(prompt: str) -> str:
+        try:
+            return local_summarizer(prompt)
+        except Exception as exc:
+            logger.warning(f"⚠️ 本地模型概括失败，尝试远程模型概括: {exc}")
+            return remote_summarizer(prompt)
+
+    return _summarizer
+
+
 def resolve_route(question: str, event, ollama_api_url: str, ollama_model: str, logger, state=None) -> dict:
     if event.route_hint:
         route = event.route_hint

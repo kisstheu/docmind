@@ -23,6 +23,7 @@ from ai.repo_meta.category import (
     answer_repo_content_category_overview_question,
     answer_repo_content_category_question,
     answer_repo_content_category_summary_question,
+    answer_repo_content_type_theme_summary_question_with_fallback,
 )
 from ai.repo_meta.classifier import classify_repo_meta_question, extract_topic_from_list_request
 from ai.repo_meta.semantic import find_files_by_semantic_cluster
@@ -71,6 +72,7 @@ def answer_repo_meta_question(
     last_local_answer: str | None = None,
     category_context_answer: str | None = None,
     topic_summarizer=None,
+    fallback_topic_summarizer=None,
 ):
     paths = list(repo_state.paths)
     all_files = list(repo_state.all_files)
@@ -121,9 +123,20 @@ def answer_repo_meta_question(
     if topic == "list_files_with_time":
         return _answer_list_files_with_time(paths, file_times)
     if topic == "category":
+        type_theme_answer = answer_repo_content_type_theme_summary_question_with_fallback(
+            repo_state,
+            topic_summarizer=topic_summarizer,
+            fallback_topic_summarizer=fallback_topic_summarizer,
+        )
+        if type_theme_answer:
+            return type_theme_answer, topic
         return answer_repo_content_category_question(repo_state), topic
     if topic == "category_summary":
-        return answer_repo_content_category_summary_question(repo_state, topic_summarizer=topic_summarizer), topic
+        return answer_repo_content_category_summary_question(
+            repo_state,
+            topic_summarizer=topic_summarizer,
+            fallback_topic_summarizer=fallback_topic_summarizer,
+        ), topic
     if topic == "category_count_breakdown":
         return answer_repo_content_category_count_breakdown_question(
             repo_state,
@@ -145,6 +158,7 @@ def answer_repo_meta_question(
         return answer_repo_content_category_overview_question(
             repo_state,
             topic_summarizer=topic_summarizer,
+            fallback_topic_summarizer=fallback_topic_summarizer,
             previous_summary=last_local_answer,
         ), topic
     if topic == "category_confirm":

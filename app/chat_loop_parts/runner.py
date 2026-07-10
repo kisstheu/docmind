@@ -129,6 +129,8 @@ def run_chat_loop(
                 ollama_api_url,
                 ollama_model,
                 conversation_state=runtime.conversation_state,
+                client=client,
+                model_id=model_id,
             )
             if local_answer is not None:
                 print_answer(local_answer, start_qa)

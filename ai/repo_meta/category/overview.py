@@ -25,6 +25,122 @@ def _normalize_overview_sentence(raw_text: str) -> str:
     return f"整体看，这些文档主要围绕{normalized}。"
 
 
+def _extract_material_type_phrase(summary_text: str | None) -> str:
+    text = re.sub(r"\s+", "", str(summary_text or "")).strip()
+    if not text:
+        return ""
+
+    candidates: list[str] = []
+    for line in text.splitlines():
+        cleaned = re.sub(r"^[-*•\d.、]+", "", line).strip("，。；; ")
+        if cleaned:
+            candidates.append(cleaned)
+
+    candidates.extend(part.strip("，。；; ") for part in re.split(r"[。！？；;]", text) if part.strip())
+
+    for candidate in candidates:
+        phrase = _extract_material_type_from_summary_sentence(candidate)
+        if phrase:
+            return phrase
+
+    return ""
+
+
+def _extract_material_type_from_summary_sentence(sentence: str) -> str:
+    text = re.sub(r"\s+", "", str(sentence or "")).strip("，。；; ")
+    if not text:
+        return ""
+
+    tail = text
+    has_type_anchor = False
+    for marker in (
+        "整体类型和用途是",
+        "整体类型或用途是",
+        "类型和用途是",
+        "类型或用途是",
+        "整体属于",
+        "主要属于",
+        "属于",
+        "整体为",
+        "主要为",
+        "整体是",
+        "主要是",
+        "是",
+    ):
+        if marker in tail:
+            tail = tail.split(marker, 1)[1]
+            has_type_anchor = True
+            break
+
+    for delimiter in (
+        "，共同主题",
+        "共同主题",
+        "，主要涉及",
+        "主要涉及",
+        "，主要围绕",
+        "主要围绕",
+        "，并围绕",
+        "并围绕",
+        "，内容",
+        "内容",
+    ):
+        if delimiter in tail:
+            tail = tail.split(delimiter, 1)[0]
+            has_type_anchor = True
+            break
+
+    if not has_type_anchor:
+        return ""
+
+    tail = tail.strip("：:为是“”\"'`，。；; ")
+    tail = re.sub(r"^(?:一组|一批|这些|这批|当前|整体|主要)+", "", tail).strip("：:为是“”\"'`，。；; ")
+    if 2 <= len(tail) <= 36 and re.search(r"[\u4e00-\u9fffA-Za-z]", tail):
+        return tail
+    return ""
+
+
+def _overview_contains_material_type(overview: str, material_type: str) -> bool:
+    if not overview or not material_type:
+        return False
+    compact_overview = re.sub(r"\s+", "", overview)
+    compact_type = re.sub(r"\s+", "", material_type)
+    return compact_type in compact_overview
+
+
+def _compress_previous_summary_with_material_type(
+    previous_summary: str | None,
+    material_type: str,
+) -> str:
+    previous = re.sub(r"\s+", "", str(previous_summary or "")).strip()
+    if previous:
+        first_sentence = re.split(r"[。！？\n]", previous, maxsplit=1)[0].strip("，。；; ")
+        if first_sentence and material_type in first_sentence and len(first_sentence) <= 42:
+            return f"{first_sentence}。"
+
+        if "相关的" in previous and material_type in previous:
+            prefix = previous.split("相关的", 1)[0]
+            prefix = re.sub(r"^(?:整体看|总体看|这些文档|这些文件|这些资料|文档集合|这批资料|这批材料)*(?:主要是|整体是)?", "", prefix)
+            prefix = prefix.strip("，。；; ")
+            if 2 <= len(prefix) <= 24:
+                return f"整体看，这些文档主要是{prefix}相关的{material_type}。"
+
+    return f"整体看，这些文档主要是{material_type}。"
+
+
+def _preserve_previous_material_type(
+    overview: str | None,
+    previous_summary: str | None,
+) -> str | None:
+    if not overview:
+        return overview
+    material_type = _extract_material_type_phrase(previous_summary)
+    if not material_type:
+        return overview
+    if _overview_contains_material_type(overview, material_type):
+        return overview
+    return _compress_previous_summary_with_material_type(previous_summary, material_type)
+
+
 def _format_weighted_topics(fine_topics, limit: int = 12) -> str:
     lines = []
     for item in fine_topics[:limit]:
@@ -167,8 +283,9 @@ def _summarize_category_overview_with_local_llm(
     topic_summarizer: Callable[[str], str] | None,
     previous_summary: str | None = None,
     topic_source: str = "标签",
+    fallback_topic_summarizer: Callable[[str], str] | None = None,
 ) -> str | None:
-    if not topic_summarizer:
+    if not topic_summarizer and not fallback_topic_summarizer:
         return None
 
     weighted_topics = _format_weighted_topics(fine_topics, limit=12)
@@ -197,18 +314,25 @@ def _summarize_category_overview_with_local_llm(
         + weighted_topics
     )
 
-    try:
-        raw_text = topic_summarizer(prompt)
-    except Exception:
-        return None
+    for summarizer in (topic_summarizer, fallback_topic_summarizer):
+        if not summarizer:
+            continue
+        try:
+            raw_text = summarizer(prompt)
+        except Exception:
+            continue
 
-    normalized = _normalize_overview_sentence(raw_text)
-    return normalized or None
+        normalized = _normalize_overview_sentence(raw_text)
+        normalized = _preserve_previous_material_type(normalized, previous_summary)
+        if normalized:
+            return normalized
+    return None
 
 
 def answer_repo_content_category_overview_question(
     repo_state,
     topic_summarizer=None,
+    fallback_topic_summarizer=None,
     previous_summary: str | None = None,
 ) -> str:
     fine_topics, topic_source = _pick_overview_topics(repo_state)
@@ -224,11 +348,14 @@ def answer_repo_content_category_overview_question(
         topic_summarizer=topic_summarizer,
         previous_summary=previous_summary,
         topic_source=topic_source,
+        fallback_topic_summarizer=fallback_topic_summarizer,
     )
     if llm_overview:
         return llm_overview
 
     top_tags = [item["tag"] for item in fine_topics[:2]]
     if len(top_tags) == 1:
-        return f"整体看，这些文档主要围绕{top_tags[0]}。"
-    return f"整体看，这些文档主要围绕{top_tags[0]}和{top_tags[1]}。"
+        fallback = f"整体看，这些文档主要围绕{top_tags[0]}。"
+    else:
+        fallback = f"整体看，这些文档主要围绕{top_tags[0]}和{top_tags[1]}。"
+    return _preserve_previous_material_type(fallback, previous_summary) or fallback
