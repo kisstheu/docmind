@@ -32,6 +32,7 @@ def build_retrieval_materials(
     event=None,
     allowed_paths=None,
     scope_label: str | None = None,
+    selected_source_files: list[str] | None = None,
 ):
     inventory_candidates_text = (
         build_inventory_candidates_text(question, repo_state, flags["inventory_target_type"])
@@ -44,6 +45,18 @@ def build_retrieval_materials(
     relevant_indices = []
 
     if not flags["skip_retrieval"]:
+        event_name = getattr(event, "name", None)
+        effective_allowed_paths = allowed_paths
+        if event_name == "selected_candidate_followup" and selected_source_files:
+            selected_path_set = {str(path or "").strip() for path in selected_source_files if str(path or "").strip()}
+            if effective_allowed_paths is None:
+                effective_allowed_paths = selected_path_set
+            else:
+                effective_allowed_paths = selected_path_set.intersection(
+                    {str(path or "").strip() for path in effective_allowed_paths if str(path or "").strip()}
+                )
+            logger.info(f"🎯 [选择焦点范围] 限定为 {len(effective_allowed_paths)} 个来源文件")
+
         reuse_previous_results = should_reuse_previous_results(question, event, last_relevant_indices)
 
         if reuse_previous_results:
@@ -54,11 +67,11 @@ def build_retrieval_materials(
                 repo_state=repo_state,
                 logger=logger,
             )
-            if allowed_paths is not None:
+            if effective_allowed_paths is not None:
                 chunk_paths = list(getattr(repo_state, "chunk_paths", []) or [])
                 allowed_path_set = {
                     str(path or "").strip()
-                    for path in allowed_paths
+                    for path in effective_allowed_paths
                     if str(path or "").strip()
                 }
                 relevant_indices = [
@@ -75,8 +88,9 @@ def build_retrieval_materials(
                 logger,
                 current_focus_file,
                 context_anchor=context_anchor,
-                allowed_paths=allowed_paths,
+                allowed_paths=effective_allowed_paths,
                 scope_label=scope_label,
+                task_mode=getattr(event, "name", None),
             )
             current_focus_file = retrieval["current_focus_file"]
             relevant_indices = retrieval["relevant_indices"]
@@ -109,6 +123,8 @@ def build_safe_final_prompt(
     question: str,
     event_name: str | None = None,
     result_set_items: list[str] | None = None,
+    selected_candidate: str | None = None,
+    selected_source_files: list[str] | None = None,
 ) -> str:
     safe_memory_buffer = [redact_sensitive_text(x) for x in memory_buffer]
     safe_inventory_candidates_text = redact_sensitive_text(inventory_candidates_text)
@@ -160,4 +176,6 @@ def build_safe_final_prompt(
         question=safe_question,
         event_name=event_name,
         result_set_items=safe_result_set_items,
+        selected_candidate=redact_sensitive_text(selected_candidate or ""),
+        selected_source_files=[redact_sensitive_text(x) for x in (selected_source_files or [])],
     )

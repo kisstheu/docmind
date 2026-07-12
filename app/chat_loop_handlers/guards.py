@@ -6,6 +6,7 @@ from app.context_anchor import is_context_dependent_question
 from app.dialog.state_machine import ConversationState
 from app.dialog_utils import is_followup_question, is_summary_followup_request
 from app.chat_text.file_lookup import looks_like_file_set_content_question
+from app.dialog.task_semantics import classify_answer_mode, is_complex_answer_mode
 
 CONTEXTLESS_FOLLOWUP_REPLY = (
     "这个问题缺少明确主语或上下文，我先不调用远程模型。"
@@ -124,10 +125,22 @@ def _has_usable_followup_context(state: ConversationState) -> bool:
     return False
 
 
-def looks_like_analytic_retrieval_question(question: str) -> bool:
+def looks_like_analytic_retrieval_question(
+    question: str,
+    *,
+    has_collection_context: bool = False,
+    has_selected_candidate: bool = False,
+) -> bool:
     q = _normalize_for_guard(question)
     if not q:
         return False
+    answer_mode = classify_answer_mode(
+        question,
+        has_collection_context=has_collection_context,
+        has_selected_candidate=has_selected_candidate,
+    )
+    if is_complex_answer_mode(answer_mode):
+        return True
     if is_summary_followup_request(question):
         return True
     if looks_like_file_set_content_question(question):
@@ -161,6 +174,8 @@ def looks_like_analytic_retrieval_question(question: str) -> bool:
 def is_simple_retrieval_turn(question: str, event_name: str) -> bool:
     q = (question or "").strip()
     if not q:
+        return False
+    if event_name in {"synthesis_request", "decision_request", "selected_candidate_followup"}:
         return False
     if looks_like_analytic_retrieval_question(q):
         return False

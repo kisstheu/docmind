@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ai.repo_meta.category import resolve_repo_content_category_scope
 from ai.structured_skill_summary import summarize_structured_skill_summary_with_remote
+from ai.decision_result import parse_decision_result, render_decision_result
 from app.dialog_state_machine import apply_event_to_state, detect_dialog_event
 from app.chat_retrieval_flow import (
     build_retrieval_materials,
@@ -215,7 +216,11 @@ def run_chat_loop(
                 )
                 continue
             flags = determine_query_flags(question)
-            analytic_retrieval = _loop_handlers.looks_like_analytic_retrieval_question(question)
+            analytic_retrieval = _loop_handlers.looks_like_analytic_retrieval_question(
+                question,
+                has_collection_context=bool(runtime.conversation_state.last_result_set_items),
+                has_selected_candidate=bool(runtime.conversation_state.last_selected_candidate),
+            )
             category_scope_label = None
             category_scope_paths = None
             if runtime.conversation_state.last_category_context_answer:
@@ -241,6 +246,8 @@ def run_chat_loop(
                 last_answer_type=runtime.conversation_state.last_answer_type,
                 last_result_set_items=runtime.conversation_state.last_result_set_items,
                 last_result_set_entity_type=runtime.conversation_state.last_result_set_entity_type,
+                last_selected_candidate=runtime.conversation_state.last_selected_candidate,
+                last_selected_source_files=runtime.conversation_state.last_selected_source_files,
                 last_relevant_indices=last_relevant_indices,
                 logger=logger,
                 ollama_api_url=ollama_api_url,
@@ -261,6 +268,7 @@ def run_chat_loop(
                 event=event,
                 allowed_paths=category_scope_paths,
                 scope_label=category_scope_label,
+                selected_source_files=runtime.conversation_state.last_selected_source_files,
             )
             current_focus_file = materials["current_focus_file"]
             last_relevant_indices = materials["relevant_indices"]
@@ -389,6 +397,8 @@ def run_chat_loop(
                 question=question,
                 event_name=event.name,
                 result_set_items=runtime.conversation_state.last_result_set_items,
+                selected_candidate=runtime.conversation_state.last_selected_candidate,
+                selected_source_files=runtime.conversation_state.last_selected_source_files,
             )
             logger.info("🛰️ [远程模型生成] 进入生成阶段，开始调用远程大模型")
             response = client.models.generate_content(
@@ -397,6 +407,18 @@ def run_chat_loop(
                 config=chat_config,
             )
             answer_text = response.text or "这次我没有生成有效回答。"
+            decision_result = None
+            if event.name == "decision_request":
+                decision_result = parse_decision_result(answer_text, user_question=question)
+                if decision_result is not None:
+                    answer_text = render_decision_result(decision_result)
+                    logger.info(
+                        "🧭 [结构化决策结果] "
+                        f"candidate={decision_result.selected_candidate} | "
+                        f"sources={list(decision_result.source_files)}"
+                    )
+                else:
+                    logger.warning("⚠️ [结构化决策结果] 远程回答缺少可解析字段，不写入选择状态")
             print_answer(answer_text, start_qa)
             append_memory(memory_buffer, question, answer_text)
             runtime.conversation_state = update_state_after_retrieval_answer(
@@ -406,6 +428,7 @@ def run_chat_loop(
                 logger,
                 event_name=event.name,
                 focused_file=current_focus_file,
+                decision_result=decision_result,
             )
         except Exception as e:
             err = str(e)

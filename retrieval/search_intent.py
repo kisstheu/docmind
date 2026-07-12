@@ -5,6 +5,11 @@ import re
 import numpy as np
 
 from retrieval.query_utils import detect_inventory_target
+from app.dialog.task_semantics import (
+    is_collection_synthesis_request,
+    is_comparison_or_ranking_request,
+    is_recommendation_request,
+)
 
 
 def is_capability_like_query(question: str) -> bool:
@@ -162,6 +167,8 @@ def is_related_record_listing_query(question: str) -> bool:
 
 
 def is_compare_intent_query(question: str) -> bool:
+    if is_recommendation_request(question) or is_comparison_or_ranking_request(question):
+        return True
     q = (question or "").replace(" ", "")
     generic_compare_keywords = ["不同", "区别", "差异", "异同", "比较", "对比", "相同", "一样", "一致"]
     if any(kw in q for kw in generic_compare_keywords):
@@ -186,6 +193,10 @@ def is_compare_intent_query(question: str) -> bool:
         "是否同一个公司",
     ]
     return any(p in q for p in company_compare_patterns)
+
+
+def is_synthesis_intent_query(question: str) -> bool:
+    return is_collection_synthesis_request(question, has_collection_context=False)
 
 
 def is_file_location_lookup_query(question: str, search_query: str) -> bool:

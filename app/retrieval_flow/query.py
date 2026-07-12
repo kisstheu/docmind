@@ -49,6 +49,8 @@ def build_search_query(
     last_answer_type: str | None = None,
     last_result_set_items: list[str] | None = None,
     last_result_set_entity_type: str | None = None,
+    last_selected_candidate: str | None = None,
+    last_selected_source_files: list[str] | None = None,
     last_relevant_indices=None,
     logger,
     ollama_api_url: str,
@@ -67,7 +69,11 @@ def build_search_query(
     structured_uses_result_set = False
 
     event_name = getattr(event, "name", "")
-    if event_name in {"result_set_followup", "result_set_expansion_followup"}:
+    if event_name == "selected_candidate_followup" and last_selected_candidate:
+        source_text = "；".join(last_selected_source_files or [])
+        base_query = _merge_query_terms(last_selected_candidate, source_text, normalized_question or question)
+        logger.info(f"🎯 [选择焦点追问] {base_query}")
+    elif event_name in {"result_set_followup", "result_set_expansion_followup", "synthesis_request"} and last_result_set_items:
         from app.dialog.state_machine import build_result_set_followup_query
 
         base_query = build_result_set_followup_query(
@@ -121,9 +127,13 @@ def build_search_query(
     selector_anchors = _extract_selector_anchors(base_query)
     combined_anchors = list(dict.fromkeys([*explicit_file_anchors, *selector_anchors]))
 
-    if event_name in {"result_set_followup", "result_set_expansion_followup"} or structured_uses_result_set:
+    if event_name in {"result_set_followup", "result_set_expansion_followup", "synthesis_request", "selected_candidate_followup"} or structured_uses_result_set:
         search_query = _force_append_anchor_terms(base_query.strip(), combined_anchors, logger=logger)
-        if structured_uses_result_set:
+        if event_name == "selected_candidate_followup":
+            logger.info("🎯 [选择焦点追问] 跳过 rewrite，保留已选对象与来源文件")
+        elif event_name == "synthesis_request":
+            logger.info("🛝 [集合归纳] 跳过 rewrite，保留完整候选范围")
+        elif structured_uses_result_set:
             logger.info("🛝 [结构化结果集] 跳过 rewrite 与新增词过滤，直接使用候选集合查询")
         else:
             logger.info("🛝 [结果集追问] 跳过 rewrite 与新增词过滤，直接使用候选集合查询")

@@ -21,6 +21,7 @@ from retrieval.search_intent import (
     is_file_location_lookup_query,
     is_relation_mismatch_query,
     is_related_record_listing_query,
+    is_synthesis_intent_query,
     is_weak_query,
     rescue_entity_lookup_indices,
     should_enable_fallback,
@@ -45,6 +46,7 @@ def perform_retrieval(
     context_anchor: str = "",
     allowed_paths=None,
     scope_label: str | None = None,
+    task_mode: str | None = None,
 ):
     chunk_texts = list(getattr(repo_state, "chunk_texts", []) or [])
     chunk_paths = list(getattr(repo_state, "chunk_paths", []) or [])
@@ -128,6 +130,29 @@ def perform_retrieval(
         # 去重保序
         if t not in search_terms:
             search_terms.append(t)
+
+    if task_mode in {"synthesis_request", "decision_request"}:
+        expanded_terms: list[str] = []
+        corpus_text = "\n".join(chunk_texts)
+        for term in search_terms:
+            if not re.fullmatch(r"[\u4e00-\u9fa5]{4,12}", term):
+                continue
+            if term in corpus_text:
+                continue
+            candidates: list[str] = []
+            for width in range(min(len(term) - 1, 8), 1, -1):
+                for start in range(0, len(term) - width + 1):
+                    part = term[start:start + width]
+                    if part in corpus_text and part not in candidates:
+                        candidates.append(part)
+                if candidates:
+                    break
+            for part in candidates[:3]:
+                if part not in search_terms and part not in expanded_terms:
+                    expanded_terms.append(part)
+        if expanded_terms:
+            search_terms.extend(expanded_terms)
+            logger.info(f"   🧩 [复合词证据展开] 补入语料已出现子词: {expanded_terms}")
 
     # 关系/不一致类问题：强制补充关系词，避免只剩“内容 文件名”
     if is_relation_mismatch_query(question):
@@ -252,7 +277,6 @@ def perform_retrieval(
             current_focus_file = repo_state.paths[i]
             logger.info(f"   🎯 [精确拦截-全名] -> {repo_state.paths[i]}")
             break
-        import re
         pattern = rf"(?:^|[^a-zA-Z0-9_]){re.escape(base_name)}(?:[^a-zA-Z0-9_]|$)"
         if not base_name.isdigit() and re.search(pattern, temp_query):
             if temp_query.strip() == base_name or len(base_name) >= 4:
@@ -268,7 +292,7 @@ def perform_retrieval(
             if i in candidate_index_set and chunk_paths[i] == current_focus_file:
                 scores[i] += 0.18
 
-    is_macro_request = any(kw in question for kw in
+    is_macro_request = task_mode in {"synthesis_request", "decision_request"} or is_synthesis_intent_query(question) or any(kw in question for kw in
                            ["时间线", "经过", "梳理", "复盘", "总结", "详细", "过程", "所有", "表现", "评价", "对吗",
                                 "境遇", "怎么看", "经历", "待过"])
     is_compare_request = is_compare_intent_query(question)
@@ -313,6 +337,28 @@ def perform_retrieval(
     if not relevant_indices and is_entity_lookup:
         relevant_indices = ranked_candidate_indices[:top_k] if ranked_candidate_indices else rescue_entity_lookup_indices(scores, top_k=top_k)
         logger.info(f"   🛟 [实体检索保底] 触发低阈值候选兜底，补入 {len(relevant_indices)} 个片段")
+
+    if task_mode == "decision_request":
+        try:
+            min_decision_paths = int(os.getenv("DOCMIND_DECISION_MIN_PATHS", "8"))
+        except Exception:
+            min_decision_paths = 8
+        min_decision_paths = max(0, min(min_decision_paths, top_k))
+        selected_paths = {chunk_paths[idx] for idx in relevant_indices}
+        appended = 0
+        if len(selected_paths) < min_decision_paths:
+            for idx in ranked_candidate_indices:
+                if idx in relevant_indices or float(scores[idx]) <= 0.18:
+                    continue
+                relevant_indices.append(idx)
+                selected_paths.add(chunk_paths[idx])
+                appended += 1
+                if len(selected_paths) >= min_decision_paths or len(relevant_indices) >= top_k:
+                    break
+        if appended:
+            logger.info(
+                f"   ⚖️ [决策候选补全] 追加 {appended} 个语义候选，覆盖 {len(selected_paths)} 个来源"
+            )
 
     if current_focus_file:
         focus_indices = [

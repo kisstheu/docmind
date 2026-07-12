@@ -26,6 +26,7 @@ from app.dialog.result_set import (
     looks_like_result_set_comparison_followup,
     looks_like_result_set_followup,
 )
+from app.dialog.task_semantics import classify_answer_mode
 from app.dialog_utils import (
     is_action_request,
     is_smalltalk_message,
@@ -123,6 +124,8 @@ class ConversationState:
     last_result_set_summary_text: str | None = None
     last_result_set_summary_level: int = 0
     last_result_set_selectable: bool | None = None
+    last_selected_candidate: str | None = None
+    last_selected_source_files: list[str] | None = None
 
     pending_action_type: str | None = None
     pending_action_source_path: str | None = None
@@ -161,6 +164,17 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
     prev_q = state.last_content_user_question
     prev_route = state.last_content_route
     last_topic = state.last_local_topic
+
+    answer_mode = classify_answer_mode(
+        question,
+        has_collection_context=bool(state.last_result_set_items),
+        has_selected_candidate=bool(state.last_selected_candidate),
+    )
+
+    if answer_mode == "selected_detail":
+        return DialogEvent(name="selected_candidate_followup", route_hint="normal_retrieval")
+    if answer_mode == "decision":
+        return DialogEvent(name="decision_request", route_hint="normal_retrieval")
 
     if file_topic_result_set_followup:
         return DialogEvent(name="result_set_followup", route_hint="normal_retrieval")
@@ -220,6 +234,14 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
                 merged_query=f"{prev_q} {question}",
             )
         return DialogEvent(name="structured_request", route_hint="normal_retrieval")
+
+    if (
+        answer_mode == "synthesis"
+        and state.last_result_set_entity_type == "文件"
+        and bool(state.last_result_set_items)
+        and not is_summary_followup_request(question)
+    ):
+        return DialogEvent(name="synthesis_request", route_hint="normal_retrieval")
 
     # === 4. 动作请求
     if is_action_request(question):
@@ -318,6 +340,8 @@ def apply_event_to_state(state: ConversationState, event: DialogEvent) -> Conver
         last_result_set_summary_text=state.last_result_set_summary_text,
         last_result_set_summary_level=state.last_result_set_summary_level,
         last_result_set_selectable=state.last_result_set_selectable,
+        last_selected_candidate=state.last_selected_candidate,
+        last_selected_source_files=state.last_selected_source_files,
 
         pending_action_type=state.pending_action_type,
         pending_action_source_path=state.pending_action_source_path,

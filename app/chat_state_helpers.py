@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from ai.decision_result import parse_decision_result
 from app.chat_state_answer_parsing import (
     EXPANSION_MARKERS,
     _contains_no_new_signal,
@@ -31,7 +32,18 @@ FOLLOWUP_EVENT_NAMES = {
     "action_request",
     "judgment_request",
     "query_correction",
+    "synthesis_request",
+    "decision_request",
+    "selected_candidate_followup",
 }
+
+def _extract_selected_candidate(question: str, answer_text: str) -> str | None:
+    from app.dialog.task_semantics import is_recommendation_request
+
+    if not is_recommendation_request(question):
+        return None
+    result = parse_decision_result(answer_text, user_question=question)
+    return result.selected_candidate if result is not None else None
 
 FOLLOWUP_HINT_MARKERS = [
     "吗",
@@ -151,6 +163,7 @@ def update_state_after_retrieval_answer(
     logger,
     event_name: str | None = None,
     focused_file: str | None = None,
+    decision_result=None,
 ):
     prev_result_set_items = list(state.last_result_set_items) if state.last_result_set_items else None
     prev_result_set_entity_type = state.last_result_set_entity_type
@@ -170,6 +183,22 @@ def update_state_after_retrieval_answer(
 
     state.last_answer_text = answer_text
     state.last_answer_preview = answer_text[:200]
+
+    structured_decision = decision_result
+    if structured_decision is None and (event_name or "").strip() == "decision_request":
+        structured_decision = parse_decision_result(answer_text, user_question=question)
+    selected_candidate = getattr(structured_decision, "selected_candidate", None)
+    if selected_candidate:
+        selected_sources = list(getattr(structured_decision, "source_files", ()) or ())
+        state.last_selected_candidate = selected_candidate
+        state.last_selected_source_files = selected_sources or None
+        logger.debug(
+            f"🧪 [选择状态] candidate={selected_candidate} | sources={state.last_selected_source_files}"
+        )
+    elif (event_name or "").strip() == "decision_request":
+        state.last_selected_candidate = None
+        state.last_selected_source_files = None
+        logger.debug("🧪 [选择状态] 本轮未形成可靠选择，不写入推荐焦点")
 
     answer_type = infer_answer_type(question, answer_text)
     state.last_answer_type = answer_type
@@ -298,6 +327,11 @@ def update_state_after_retrieval_answer(
             and prev_result_set_entity_type == "文件"
             and looks_like_file_set_content_question(question)
         )
+        preserve_file_scope_on_synthesis = (
+            (event_name or "").strip() == "synthesis_request"
+            and prev_result_set_entity_type == "文件"
+            and bool(prev_result_set_items)
+        )
         preserve_file_result_set_on_summary_followup = (
             prev_result_set_entity_type == "文件"
             and bool(prev_result_set_items)
@@ -337,16 +371,17 @@ def update_state_after_retrieval_answer(
         elif (
             keep_result_set_context
             or preserve_result_set_on_result_set_followup
+            or preserve_file_scope_on_synthesis
             or preserve_file_result_set_on_summary_followup
             or preserve_file_result_set_on_no_evidence_followup
         ):
             state.last_result_set_items = prev_result_set_items
             state.last_result_set_entity_type = prev_result_set_entity_type
-            if preserve_file_scope_on_content_question:
+            if preserve_file_scope_on_content_question or preserve_file_scope_on_synthesis:
                 state.last_answer_type = None
                 state.last_result_set_summary_text = answer_text.strip()
                 state.last_result_set_summary_level = max(1, prev_result_set_summary_level + 1)
-                logger.debug("🧪 [状态保留] 文件集合内容回答保留原范围，但不写成文件枚举")
+                logger.debug("🧪 [状态保留] 文件集合综合回答保留原范围，但不写成文件枚举")
             elif preserve_file_result_set_on_summary_followup:
                 state.last_answer_type = answer_type
                 state.last_result_set_summary_text = answer_text.strip()
@@ -358,7 +393,7 @@ def update_state_after_retrieval_answer(
                 logger.debug("🧪 [状态保留] 文件结果集概括未产出新集合，保留候选文件但清除枚举回答类型")
             else:
                 state.last_answer_type = prev_answer_type or entity_to_answer_type.get(prev_result_set_entity_type)
-            if not preserve_file_result_set_on_summary_followup and not preserve_file_scope_on_content_question:
+            if not preserve_file_result_set_on_summary_followup and not preserve_file_scope_on_content_question and not preserve_file_scope_on_synthesis:
                 if preserve_result_set_on_result_set_followup:
                     logger.debug(
                         f"🧪 [状态保留] 结果集追问回答未产出新集合，保留 entity={prev_result_set_entity_type}"
