@@ -81,7 +81,12 @@ def run_chat_loop(
             if file_action_handled:
                 continue
             prev_content_user_question = runtime.conversation_state.last_content_user_question
-            event = detect_dialog_event(question, runtime.conversation_state,logger)
+            event = detect_dialog_event(
+                question,
+                runtime.conversation_state,
+                logger,
+                focused_file=current_focus_file,
+            )
             local_answer = runtime.try_handle_contextless_followup(
                 question=question,
                 state=runtime.conversation_state,

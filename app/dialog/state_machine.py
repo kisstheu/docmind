@@ -26,7 +26,10 @@ from app.dialog.result_set import (
     looks_like_result_set_comparison_followup,
     looks_like_result_set_followup,
 )
-from app.dialog.task_semantics import classify_answer_mode
+from app.dialog.task_semantics import (
+    classify_answer_mode,
+    is_selected_candidate_detail_request,
+)
 from app.dialog_utils import (
     is_action_request,
     is_smalltalk_message,
@@ -71,6 +74,32 @@ GROUP_TARGET_TERMS = (
     "人名",
     "姓名",
 )
+
+
+def _normalize_file_reference(path: str | None) -> str:
+    normalized = (path or "").strip().replace("\\", "/").lower()
+    return re.sub(r"/+", "/", normalized).strip("/")
+
+
+def _focused_file_matches_selected_sources(
+    focused_file: str | None,
+    selected_source_files: list[str] | None,
+) -> bool:
+    focused = _normalize_file_reference(focused_file)
+    if not focused:
+        return False
+
+    focused_name = focused.rsplit("/", 1)[-1]
+    for source_file in selected_source_files or []:
+        source = _normalize_file_reference(source_file)
+        if not source:
+            continue
+        if focused == source:
+            return True
+        if "/" not in focused or "/" not in source:
+            if focused_name == source.rsplit("/", 1)[-1]:
+                return True
+    return False
 
 
 def _looks_like_group_reference_result_set_followup(question: str) -> bool:
@@ -142,7 +171,13 @@ class DialogEvent:
     merged_query: Optional[str] = None
 
 
-def detect_dialog_event(question: str, state: ConversationState, logger) -> DialogEvent:
+def detect_dialog_event(
+    question: str,
+    state: ConversationState,
+    logger,
+    *,
+    focused_file: str | None = None,
+) -> DialogEvent:
     rs_match = looks_like_result_set_followup(question)
     file_topic_result_set_followup = _looks_like_file_topic_result_set_followup(question, state)
     if file_topic_result_set_followup:
@@ -165,12 +200,30 @@ def detect_dialog_event(question: str, state: ConversationState, logger) -> Dial
     prev_route = state.last_content_route
     last_topic = state.last_local_topic
 
+    selected_candidate_is_active = bool(state.last_selected_candidate)
+    file_focus_overrides_selection = False
+    if selected_candidate_is_active and focused_file:
+        selected_candidate_is_active = _focused_file_matches_selected_sources(
+            focused_file,
+            state.last_selected_source_files,
+        )
+        if not selected_candidate_is_active:
+            file_focus_overrides_selection = True
+            logger.debug(
+                f"🧪 [焦点优先级] 当前文件焦点={focused_file} 优先于旧选择焦点"
+            )
+
     answer_mode = classify_answer_mode(
         question,
         has_collection_context=bool(state.last_result_set_items),
-        has_selected_candidate=bool(state.last_selected_candidate),
+        has_selected_candidate=selected_candidate_is_active,
     )
 
+    if file_focus_overrides_selection and is_selected_candidate_detail_request(
+        question,
+        has_selected_candidate=True,
+    ):
+        return DialogEvent(name="content_followup", route_hint="normal_retrieval")
     if answer_mode == "selected_detail":
         return DialogEvent(name="selected_candidate_followup", route_hint="normal_retrieval")
     if answer_mode == "decision":

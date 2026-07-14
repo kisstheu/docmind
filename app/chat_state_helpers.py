@@ -172,6 +172,7 @@ def update_state_after_retrieval_answer(
     prev_result_set_summary_level = state.last_result_set_summary_level
     prev_result_set_selectable = state.last_result_set_selectable
     is_followup_turn = _is_followup_turn(question, event_name=event_name)
+    is_synthesis_answer = (event_name or "").strip() == "synthesis_request"
 
     state.last_user_question = question
     state.last_route = "normal_retrieval"
@@ -200,8 +201,13 @@ def update_state_after_retrieval_answer(
         state.last_selected_source_files = None
         logger.debug("🧪 [选择状态] 本轮未形成可靠选择，不写入推荐焦点")
 
-    answer_type = infer_answer_type(question, answer_text)
+    inferred_answer_type = infer_answer_type(question, answer_text)
+    answer_type = None if is_synthesis_answer else inferred_answer_type
     state.last_answer_type = answer_type
+    if is_synthesis_answer and inferred_answer_type is not None:
+        logger.debug(
+            f"🧪 [answer_type识别] 综合回答忽略文本外观类型={inferred_answer_type}，保持内容焦点"
+        )
 
     if answer_type == "enumeration_company":
         company_items: list[str] = []
@@ -301,11 +307,13 @@ def update_state_after_retrieval_answer(
         }
         fallback_file_items = extract_file_items(answer_text)
         preserve_source_file_refs = (
-            bool(fallback_file_items)
+            not is_synthesis_answer
+            and bool(fallback_file_items)
             and _looks_like_source_backed_analytic_answer(question, answer_text)
         )
         fallback_to_file_result_set = (
-            bool(fallback_file_items)
+            not is_synthesis_answer
+            and bool(fallback_file_items)
             and not preserve_source_file_refs
             and _looks_like_file_locator_answer(answer_text)
             and (is_followup_turn or "文件" in question or "文档" in question or "记录" in question)
@@ -328,7 +336,7 @@ def update_state_after_retrieval_answer(
             and looks_like_file_set_content_question(question)
         )
         preserve_file_scope_on_synthesis = (
-            (event_name or "").strip() == "synthesis_request"
+            is_synthesis_answer
             and prev_result_set_entity_type == "文件"
             and bool(prev_result_set_items)
         )
@@ -379,6 +387,8 @@ def update_state_after_retrieval_answer(
             state.last_result_set_entity_type = prev_result_set_entity_type
             if preserve_file_scope_on_content_question or preserve_file_scope_on_synthesis:
                 state.last_answer_type = None
+                if preserve_file_scope_on_synthesis:
+                    state.last_result_set_selectable = False
                 state.last_result_set_summary_text = answer_text.strip()
                 state.last_result_set_summary_level = max(1, prev_result_set_summary_level + 1)
                 logger.debug("🧪 [状态保留] 文件集合综合回答保留原范围，但不写成文件枚举")
