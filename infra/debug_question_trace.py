@@ -96,10 +96,11 @@ def build_debug_question_recorder(notes_dir: Path, logger=None) -> DebugQuestion
         return None
 
     root = _resolve_debug_root()
-    run_dir = root / "runs"
+    now = datetime.now()
+    run_dir = root / "runs" / now.strftime("%Y-%m")
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = now.strftime("%Y%m%d_%H%M%S")
     session_file = run_dir / f"questions_{stamp}_{_safe_slug(notes_dir.name)}.log"
     last_run_file = root / "last_run_questions.log"
 

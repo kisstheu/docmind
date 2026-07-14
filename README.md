@@ -116,6 +116,25 @@ python ask_notes.py
 
 说明：参数/环境变量名中的 `notes` 为历史兼容命名，实际可指向任意本地文档/资料目录。
 
+问句追踪开启后，最近一次运行仍写入
+`logs/debug_questions/last_run_questions.log`，各次运行日志按启动月份写入
+`logs/debug_questions/runs/YYYY-MM/`，文件名格式保持不变。查找历史运行日志时需递归
+`runs/` 目录，例如：
+
+```bash
+find logs/debug_questions/runs -type f -name 'questions_*.log'
+```
+
+停止正在写问句追踪日志的 DocMind 进程后，旧版平铺日志可先预演、确认数量后再迁移：
+
+```bash
+python -m infra.migrate_debug_question_runs
+python -m infra.migrate_debug_question_runs --apply
+```
+
+迁移月份只取文件名开头的运行时间，与后面的数据集名称无关；目标存在同名文件时会跳过，
+不会覆盖。该命令递归发现历史日志，但只移动仍平铺在 `runs/` 根目录的文件，可安全重复执行。
+
 👉 示例数据见：examples/demo_notes_public/
 
 ---
