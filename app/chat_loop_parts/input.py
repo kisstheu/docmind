@@ -1,8 +1,25 @@
 from __future__ import annotations
 
+import importlib
 import os
 import sys
 import time
+
+
+def _try_enable_posix_readline(*, os_name=None, import_module=None) -> bool:
+    current_os_name = os.name if os_name is None else os_name
+    if current_os_name != "posix":
+        return False
+
+    importer = importlib.import_module if import_module is None else import_module
+    try:
+        importer("readline")
+    except Exception:
+        return False
+    return True
+
+
+_POSIX_READLINE_ENABLED = _try_enable_posix_readline()
 
 
 def _has_buffered_console_input() -> bool:
@@ -37,12 +54,9 @@ def _flush_pending_tty_input_unix() -> bool:
         return False
 
 
-def _read_fresh_tty_line(prompt: str = "\n问：") -> str:
-    try:
-        print(prompt, end="", flush=True)
-        return sys.stdin.readline()
-    except Exception:
-        return input(prompt)
+def _read_fresh_tty_line(prompt: str = "\n问：", *, input_func=None) -> str:
+    read_input = input if input_func is None else input_func
+    return read_input(prompt)
 
 
 def _merge_user_question_lines(lines: list[str]) -> str:
@@ -57,8 +71,8 @@ def _merge_user_question_lines(lines: list[str]) -> str:
 def _read_user_question(
     prompt: str = "\n问：",
     *,
-    input_func=input,
-    tty_input_func=_read_fresh_tty_line,
+    input_func=None,
+    tty_input_func=None,
     should_use_fresh_tty_input=_should_use_fresh_tty_input,
     has_buffered_input=_has_buffered_console_input,
     max_buffered_lines: int = 4,
@@ -67,10 +81,15 @@ def _read_user_question(
     monotonic_func=time.monotonic,
     use_fresh_tty_input: bool = False,
 ) -> str:
+    read_input = input if input_func is None else input_func
     if use_fresh_tty_input and should_use_fresh_tty_input():
-        return _merge_user_question_lines([tty_input_func(prompt)])
+        if tty_input_func is None:
+            line = _read_fresh_tty_line(prompt, input_func=read_input)
+        else:
+            line = tty_input_func(prompt)
+        return _merge_user_question_lines([line])
 
-    lines = [input_func(prompt)]
+    lines = [read_input(prompt)]
     if max_buffered_lines <= 1:
         return _merge_user_question_lines(lines)
 
@@ -78,7 +97,7 @@ def _read_user_question(
     deadline = monotonic_func() + max(debounce_seconds, 0.0)
     while len(lines) < max_buffered_lines:
         if has_buffered_input():
-            lines.append(input_func(""))
+            lines.append(read_input(""))
             wait_for_more = not _merge_user_question_lines(lines)
             deadline = monotonic_func() + min(max(debounce_seconds, 0.0), 0.05)
             continue
