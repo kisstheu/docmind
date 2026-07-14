@@ -54,7 +54,7 @@ COUNT_KEYWORDS = (
 )
 
 FORMAT_KEYWORDS = (
-    "哪些格式", "文件格式", "文档格式", "支持格式",
+    "哪些格式", "都是什么格式", "分别是什么格式", "文件格式", "文档格式", "支持格式",
     "doc", "docx", "pdf", "txt", "md",
     "xls", "xlsx", "csv",
     "ppt", "pptx",

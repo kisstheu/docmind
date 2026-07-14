@@ -7,7 +7,7 @@ from typing import Optional
 from app.context_anchor import is_context_dependent_question
 from app.chat_text.file_lookup import looks_like_file_set_content_question
 from app.dialog.repo_meta_rules import (
-    is_entity_lookup_request,
+    extract_content_lookup_target,
     is_list_format_modifier,
     is_repo_meta_request,
     is_structured_output_request,
@@ -318,8 +318,17 @@ def detect_dialog_event(
 
     # === 6. repo_meta 继承
     if prev_route == "repo_meta":
-        if is_entity_lookup_request(question):
-            return DialogEvent(name="entity_lookup_followup", route_hint="normal_retrieval")
+        content_lookup_target = extract_content_lookup_target(question)
+        if content_lookup_target:
+            logger.debug(
+                f"🧪 [repo_meta继承守门] q={question} | "
+                f"content_target={content_lookup_target} | route=normal_retrieval"
+            )
+            return DialogEvent(
+                name="entity_lookup_followup",
+                route_hint="normal_retrieval",
+                merged_query=content_lookup_target,
+            )
 
         if is_followup_question(question):
             return DialogEvent(name="repo_followup", route_hint="repo_meta")

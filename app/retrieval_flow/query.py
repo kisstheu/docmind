@@ -73,6 +73,9 @@ def build_search_query(
         source_text = "；".join(last_selected_source_files or [])
         base_query = _merge_query_terms(last_selected_candidate, source_text, normalized_question or question)
         logger.info(f"🎯 [选择焦点追问] {base_query}")
+    elif event_name == "entity_lookup_followup" and getattr(event, "merged_query", None):
+        base_query = normalize_question_for_retrieval(event.merged_query) or normalized_question or question
+        logger.info(f"🔎 [内容目标检索] {base_query}")
     elif event_name in {"result_set_followup", "result_set_expansion_followup", "synthesis_request"} and last_result_set_items:
         from app.dialog.state_machine import build_result_set_followup_query
 

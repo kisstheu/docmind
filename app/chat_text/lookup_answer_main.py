@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.chat_text.lookup_common import (
     DIRECT_LOOKUP_GENERIC_ANCHOR_TERMS,
     _extract_selector_signatures,
@@ -21,6 +23,26 @@ from app.chat_text.lookup_answer_helpers import (
     _looks_like_direct_lookup_followup_question,
     _looks_like_direct_lookup_question,
 )
+
+
+def _extract_content_lookup_target(question: str) -> str:
+    from app.dialog.repo_meta_rules import extract_content_lookup_target
+
+    return extract_content_lookup_target(question)
+
+
+def _has_distinct_content_lookup_value(question: str, items: list[dict]) -> bool:
+    target = _normalize_lookup_token(_extract_content_lookup_target(question))
+    if not target:
+        return True
+
+    for item in items:
+        line = _normalize_lookup_token(str(item.get("line") or ""))
+        remainder = line.replace(target, "")
+        remainder = re.sub(r"^(?:第)?[一二两三四五六七八九十百千\d]+(?:个|条|项|种)?$", "", remainder)
+        if len(remainder) >= 3:
+            return True
+    return False
 
 def maybe_build_direct_lookup_answer(
     *,
@@ -168,8 +190,14 @@ def maybe_build_direct_lookup_answer(
         repo_state=repo_state,
         max_items=max_items,
     )
+    if items and not _has_distinct_content_lookup_value(question, items):
+        if logger:
+            logger.info("🛝 [内容目标本地降级] 命中项仅含目标标题，继续使用检索上下文生成")
+        items = []
     if not items:
         if force_local_evidence:
+            if _extract_content_lookup_target(question):
+                return None
             return "根据当前检索片段，暂未提取到稳定的可核对内容。请补充更具体的问题后重试。"
         if allow_followup_inference and focus_terms:
             focus_tip = "、".join(focus_terms[:3])

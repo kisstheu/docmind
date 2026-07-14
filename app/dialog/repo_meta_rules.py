@@ -69,7 +69,7 @@ def is_repo_meta_request(question: str) -> bool:
 
         "哪些类文档", "哪些类文件", "文档有哪些类", "文件有哪些类",
         "怎么分类", "如何分类", "分成哪些",
-        "哪些格式", "文件格式", "文档格式",
+        "哪些格式", "都是什么格式", "分别是什么格式", "文件格式", "文档格式",
 
         "最近更新", "最新文件", "最早文件",
         "最新文档", "最早文档",
@@ -144,37 +144,62 @@ def _is_file_locator_query(q: str) -> bool:
     return any(p in merged for p in direct_patterns)
 
 
-def is_entity_lookup_request(question: str) -> bool:
-    """
-    识别“实体查找”类问题（人物/公司/项目），用于避免被 repo_meta 追问继承误吸收。
-    """
+_CONTENT_LOOKUP_TARGET_PATTERNS = (
+    r"(?:有哪些|有哪(?:些|个|几|位|家|条|项|种)|哪些|哪几个|哪几家|哪几位|哪几条|哪几项|哪个|哪位)(.+)$",
+    r"(.+?)(?:有)?(?:哪些|哪几个|哪几家|哪几位|哪几条|哪几项)$",
+)
+
+_BARE_LOOKUP_TARGETS = {
+    "", "还", "还有", "都", "分别", "具体", "其他", "其它", "别", "别的", "更多",
+    "这", "那", "这个", "那个", "这些", "那些", "其中", "里面", "这里面",
+}
+
+
+def _is_repo_meta_lookup_target(target: str) -> bool:
+    cleaned = re.sub(r"^(?:是|为|叫|属于)", "", target)
+    cleaned = re.sub(r"(?:呢|吗|啊|呀|吧)$", "", cleaned)
+    if cleaned in _BARE_LOOKUP_TARGETS:
+        return True
+
+    return bool(
+        re.fullmatch(
+            r"(?:类|类别|分类|大类|板块|方面|方向|主题|内容)"
+            r"(?:最多|最少|数量|有多少|各有多少)?",
+            cleaned,
+        )
+    )
+
+
+def extract_content_lookup_target(question: str) -> str:
+    """从内容枚举问句中提取开放目标；仓库元数据目标返回空串。"""
     q = normalize_meta_question(question)
-    if not q:
-        return False
+    if not q or is_repo_meta_request(question):
+        return ""
 
-    has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
-    if has_doc_word:
-        return False
+    for pattern in _CONTENT_LOOKUP_TARGET_PATTERNS:
+        match = re.search(pattern, q)
+        if not match:
+            continue
+        target = match.group(1).strip()
+        if target and not _is_repo_meta_lookup_target(target):
+            return re.sub(r"(?:呢|吗|啊|呀|吧)$", "", target)
 
-    has_entity_word = any(x in q for x in [
-        "公司名", "公司名称", "公司", "企业",
-        "人名", "姓名", "人物", "人员", "谁",
-        "项目名", "项目名称", "项目",
-    ])
-    has_lookup_intent = any(x in q for x in [
-        "找", "查", "搜", "检索",
-        "提到", "提及", "出现",
-        "名字", "名称",
-        "有哪些", "有哪", "哪些", "哪个", "哪位", "哪几个", "哪几家", "列出",
-        "对应", "分别", "关联", "匹配",
-    ])
-    has_repo_meta_intent = any(x in q for x in [
-        "多少", "数量", "格式", "分类", "清单",
-        "最新", "最早", "最晚", "最近更新", "最近修改",
-        "修改时间", "创建时间", "占多大", "总大小", "空间",
-    ])
+    if (
+        q.endswith("谁")
+        and any(marker in q for marker in ("涉及", "包含", "包括", "提到", "提及", "记录", "出现"))
+    ):
+        return "谁"
+    return ""
 
-    return has_entity_word and has_lookup_intent and not has_repo_meta_intent
+
+def is_content_lookup_request(question: str) -> bool:
+    """识别带开放目标槽位的内容枚举，避免继承成仓库元数据追问。"""
+    return bool(extract_content_lookup_target(question))
+
+
+def is_entity_lookup_request(question: str) -> bool:
+    """兼容旧调用名；实体目标由问句结构提取，不依赖业务词表。"""
+    return is_content_lookup_request(question)
 
 
 def _has_explicit_date_reference(text: str) -> bool:
