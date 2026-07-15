@@ -2,6 +2,7 @@
 
 - 状态：Proposed
 - 日期：2026-07-14
+- 实施状态：协议 spike 与独立 Domain SDK protocol 1.0 已完成；空 Host 接入尚未开始
 - 决策范围：领域能力边界、Host、SDK、进程内适配与未来 MCP 适配
 - 非目标：本轮不迁移现有业务逻辑，不实现任何具体领域插件，不改变线上路由或回答行为
 
@@ -175,7 +176,11 @@ MCP endpoint 通过用户配置注册为一种 transport。配置只描述 `plug
 
 ## 8. 中立 DTO 与接口
 
-可运行草案位于 [`docs/spikes/domain_plugin_protocol/protocol.py`](../spikes/domain_plugin_protocol/protocol.py)。草案使用 Pydantic 的严格模型验证，但协议语义只依赖 JSON 数据类型。
+protocol 1.0 的权威 Python 实现位于
+[`packages/docmind-domain-sdk/src/docmind_domain_sdk/`](../../packages/docmind-domain-sdk/src/docmind_domain_sdk/)，
+可独立构建和安装。Draft 2020-12 单文件 Schema 位于
+[`protocol-1.0.schema.json`](../../packages/docmind-domain-sdk/src/docmind_domain_sdk/schemas/protocol-1.0.schema.json)。
+正式实现使用 Pydantic 严格模型验证，但协议语义只依赖 JSON 数据类型。
 
 ### 8.1 主要 DTO
 
@@ -365,10 +370,15 @@ docmind repository
 ├── packages/
 │   └── docmind-domain-sdk/          # separately publishable neutral package
 │       ├── pyproject.toml
+│       ├── scripts/                  # Schema、编码与 wheel 内容检查
+│       ├── tests/                    # SDK 自有契约测试
 │       └── src/docmind_domain_sdk/
 │           ├── dto.py
 │           ├── protocol.py
-│           └── errors.py
+│           ├── validation.py
+│           ├── errors.py
+│           ├── py.typed
+│           └── schemas/protocol-1.0.schema.json
 └── docs/
     ├── adr/
     └── spikes/domain_plugin_protocol/
@@ -449,9 +459,9 @@ independent plugin distribution
 
 ## 17. 迁移步骤与门槛
 
-1. **协议 spike（本轮）**：ADR、严格 DTO、JSON 往返、额外字段拒绝、Source 越界拒绝；不接生产逻辑。
-2. **独立 SDK**：把草案提取为可单独构建的 `docmind-domain-sdk`，发布协议 1.x 和 JSON Schema。
-3. **空 Host 接入**：只接发现、生命周期和熔断；没有插件时运行结果必须与当前通用路径一致。
+1. **协议 spike（已完成）**：ADR、严格 DTO、JSON 往返、额外字段拒绝、Source 越界拒绝；未接生产逻辑。
+2. **独立 SDK（已完成 protocol 1.0）**：草案已提取为可单独构建和安装的 `docmind-domain-sdk`，包含 protocol 1.0 JSON Schema；当前未发布到制品仓库。
+3. **空 Host 接入（尚未开始）**：只接发现、生命周期和熔断；没有插件时运行结果必须与当前通用路径一致。
 4. **Source 边界**：增加中立 `SourceCatalog/SourceSync` 适配器，确保插件只见 DTO；覆盖增量、删除、版本变化和权限裁剪。
 5. **不透明状态**：增加 `PluginInteractionState` 和通用序号解析；先影子写入，不删除旧状态。
 6. **中立契约插件**：用合成数据验证发现、同步、claim、execute、失败、超时、卸载和降级，不加入领域字段。
@@ -472,7 +482,12 @@ independent plugin distribution
 
 ## 18. 最小协议验证
 
-验证脚本位于 [`docs/spikes/domain_plugin_protocol/verify_protocol.py`](../spikes/domain_plugin_protocol/verify_protocol.py)，使用完全中立的合成插件，不实现任何领域能力。它验证：
+完整契约测试位于
+[`packages/docmind-domain-sdk/tests/`](../../packages/docmind-domain-sdk/tests/)，覆盖 DTO、
+边界校验、Schema、公开 API 和分发内容。原 spike 验证脚本已瘦身为
+[`verify_protocol.py`](../spikes/domain_plugin_protocol/verify_protocol.py)，只依赖 SDK
+顶层公开 API，使用完全中立的合成插件执行最小 smoke，不实现任何领域能力。
+验证范围包括：
 
 - manifest、生命周期、Source 同步、probe 和 execute 的 JSON 往返；
 - describe/start/stop 请求与响应的 `request_id`、`plugin_id` 关联校验；
@@ -483,7 +498,8 @@ independent plugin distribution
 - `SourceSyncResult` 返回越界 ID 或 accepted/rejected 交叉 ID 时会被拒绝；
 - 进程内实现满足与未来 transport 共用的 `DomainPlugin` 端口。
 
-该 spike 不被生产代码 import，也不改变当前行为。
+SDK 与薄 smoke 均未接入生产代码，不改变当前行为。仓库中不再保留第二份
+可执行协议定义。
 
 ## 19. 风险与待后续决策
 

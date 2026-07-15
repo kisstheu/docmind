@@ -1,0 +1,934 @@
+{
+  "$defs": {
+    "DomainRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "deadline_ms": {
+          "default": 10000,
+          "maximum": 300000,
+          "minimum": 50,
+          "title": "Deadline Ms",
+          "type": "integer"
+        },
+        "focus": {
+          "$ref": "#/$defs/FocusContext",
+          "default": {
+            "collection": [],
+            "selected": null
+          }
+        },
+        "locale": {
+          "default": "und",
+          "maxLength": 32,
+          "minLength": 2,
+          "title": "Locale",
+          "type": "string"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "query": {
+          "maxLength": 16000,
+          "minLength": 1,
+          "title": "Query",
+          "type": "string"
+        },
+        "request_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "source_scope": {
+          "items": {
+            "$ref": "#/$defs/SourceRef"
+          },
+          "title": "Source Scope",
+          "type": "array"
+        }
+      },
+      "required": [
+        "request_id",
+        "query",
+        "source_scope"
+      ],
+      "title": "DomainRequest",
+      "type": "object"
+    },
+    "DomainResult": {
+      "additionalProperties": false,
+      "properties": {
+        "answer_markdown": {
+          "default": "",
+          "maxLength": 50000,
+          "title": "Answer Markdown",
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PluginError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "evidence": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "focus_update": {
+          "$ref": "#/$defs/FocusUpdate",
+          "default": {
+            "items": [],
+            "mode": "preserve",
+            "selected": null
+          }
+        },
+        "plugin_id": {
+          "maxLength": 128,
+          "minLength": 3,
+          "title": "Plugin Id",
+          "type": "string"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "request_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "handled",
+            "abstain",
+            "retryable_error",
+            "fatal_error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "warnings": {
+          "default": [],
+          "items": {
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "request_id",
+        "plugin_id",
+        "status"
+      ],
+      "title": "DomainResult",
+      "type": "object"
+    },
+    "EvidenceLocator": {
+      "additionalProperties": false,
+      "description": "Locate evidence in one exact source revision.\n\n``text_span`` uses zero-based Unicode scalar-value offsets. The interval is\nleft-closed and right-open: ``[start, end)``.",
+      "properties": {
+        "end": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End"
+        },
+        "kind": {
+          "enum": [
+            "text_span",
+            "page",
+            "section",
+            "opaque"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "opaque_locator": {
+          "anyOf": [
+            {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Opaque Locator"
+        },
+        "page": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Page"
+        },
+        "section_label": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Section Label"
+        },
+        "start": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "EvidenceLocator",
+      "type": "object"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence"
+        },
+        "evidence_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "excerpt": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Excerpt"
+        },
+        "locator": {
+          "$ref": "#/$defs/EvidenceLocator"
+        },
+        "source_ref": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "source_revision": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Source Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "source_ref",
+        "source_revision",
+        "locator"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "FocusContext": {
+      "additionalProperties": false,
+      "properties": {
+        "collection": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/OpaqueFocus"
+          },
+          "title": "Collection",
+          "type": "array"
+        },
+        "selected": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueFocus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "FocusContext",
+      "type": "object"
+    },
+    "FocusUpdate": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/OpaqueFocus"
+          },
+          "title": "Items",
+          "type": "array"
+        },
+        "mode": {
+          "default": "preserve",
+          "enum": [
+            "preserve",
+            "replace_collection",
+            "clear"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "selected": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpaqueFocus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "FocusUpdate",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "LifecycleResult": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PluginError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "plugin_id": {
+          "maxLength": 128,
+          "minLength": 3,
+          "title": "Plugin Id",
+          "type": "string"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "request_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "retryable_error",
+            "fatal_error"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "plugin_id",
+        "status"
+      ],
+      "title": "LifecycleResult",
+      "type": "object"
+    },
+    "OpaqueFocus": {
+      "additionalProperties": false,
+      "properties": {
+        "display_label": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Display Label",
+          "type": "string"
+        },
+        "opaque_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Opaque Id",
+          "type": "string"
+        },
+        "plugin_id": {
+          "maxLength": 128,
+          "minLength": 3,
+          "title": "Plugin Id",
+          "type": "string"
+        },
+        "source_refs": {
+          "default": [],
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "plugin_id",
+        "opaque_id",
+        "display_label"
+      ],
+      "title": "OpaqueFocus",
+      "type": "object"
+    },
+    "PluginDescribeRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "request_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "title": "PluginDescribeRequest",
+      "type": "object"
+    },
+    "PluginError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9_.-]+$",
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "title": "PluginError",
+      "type": "object"
+    },
+    "PluginManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Display Name",
+          "type": "string"
+        },
+        "permissions": {
+          "default": [],
+          "items": {
+            "enum": [
+              "source_content",
+              "persistent_storage",
+              "network",
+              "model_access"
+            ],
+            "type": "string"
+          },
+          "title": "Permissions",
+          "type": "array"
+        },
+        "plugin_id": {
+          "maxLength": 128,
+          "minLength": 3,
+          "title": "Plugin Id",
+          "type": "string"
+        },
+        "plugin_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Plugin Version",
+          "type": "string"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "request_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "transport_modes": {
+          "items": {
+            "enum": [
+              "in_process",
+              "mcp"
+            ],
+            "type": "string"
+          },
+          "title": "Transport Modes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "request_id",
+        "plugin_id",
+        "plugin_version",
+        "schema_version",
+        "display_name",
+        "transport_modes"
+      ],
+      "title": "PluginManifest",
+      "type": "object"
+    },
+    "PluginStartRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Config",
+          "type": "object"
+        },
+        "host_instance_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Host Instance Id",
+          "type": "string"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "request_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "storage_uri": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Storage Uri"
+        }
+      },
+      "required": [
+        "request_id",
+        "host_instance_id"
+      ],
+      "title": "PluginStartRequest",
+      "type": "object"
+    },
+    "PluginStopRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "host_instance_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Host Instance Id",
+          "type": "string"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "request_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "host_instance_id"
+      ],
+      "title": "PluginStopRequest",
+      "type": "object"
+    },
+    "ProbeResult": {
+      "additionalProperties": false,
+      "properties": {
+        "disposition": {
+          "enum": [
+            "claim",
+            "abstain"
+          ],
+          "title": "Disposition",
+          "type": "string"
+        },
+        "evidence_source_refs": {
+          "default": [],
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Source Refs",
+          "type": "array"
+        },
+        "plugin_id": {
+          "maxLength": 128,
+          "minLength": 3,
+          "title": "Plugin Id",
+          "type": "string"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "pattern": "^[a-z0-9_.-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "request_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "score": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Score",
+          "type": "number"
+        }
+      },
+      "required": [
+        "request_id",
+        "plugin_id",
+        "disposition",
+        "score"
+      ],
+      "title": "ProbeResult",
+      "type": "object"
+    },
+    "SourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "display_label": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Display Label",
+          "type": "string"
+        },
+        "media_type": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "revision": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Revision",
+          "type": "string"
+        },
+        "source_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "revision",
+        "display_label",
+        "media_type"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "SourceSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "description": "SHA-256 of exact inline UTF-8 bytes, or of the actual raw bytes fetched for URI-backed content.",
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "inline_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Exact decoded text; no trimming, newline conversion, or Unicode normalization is permitted.",
+          "title": "Inline Text"
+        },
+        "resource_uri": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resource Uri"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        }
+      },
+      "required": [
+        "source",
+        "content_sha256"
+      ],
+      "title": "SourceSnapshot",
+      "type": "object"
+    },
+    "SourceSyncRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "protocol_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "removed_source_ids": {
+          "default": [],
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Removed Source Ids",
+          "type": "array"
+        },
+        "request_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "upserts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SourceSnapshot"
+          },
+          "title": "Upserts",
+          "type": "array"
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "title": "SourceSyncRequest",
+      "type": "object"
+    },
+    "SourceSyncResult": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_source_ids": {
+          "default": [],
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Accepted Source Ids",
+          "type": "array"
+        },
+        "cache_revision": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cache Revision"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PluginError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "plugin_id": {
+          "maxLength": 128,
+          "minLength": 3,
+          "title": "Plugin Id",
+          "type": "string"
+        },
+        "protocol_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "rejected_source_ids": {
+          "default": [],
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Rejected Source Ids",
+          "type": "array"
+        },
+        "request_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "retryable_error",
+            "fatal_error"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "plugin_id",
+        "status"
+      ],
+      "title": "SourceSyncResult",
+      "type": "object"
+    }
+  },
+  "$id": "urn:docmind:domain-plugin-protocol:1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Neutral wire DTO definitions for protocol 1.0.",
+  "title": "DocMind Domain Plugin Protocol 1.0",
+  "x-protocol-version": "1.0"
+}

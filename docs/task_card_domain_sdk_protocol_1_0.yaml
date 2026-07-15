@@ -1,0 +1,435 @@
+version: 1
+
+task_goal: >-
+  在 packages/docmind-domain-sdk/ 下交付可独立构建、可独立安装、
+  不依赖 DocMind Core、严格遵循 protocol 1.0，并包含 JSON Schema、
+  py.typed 与契约测试的中立 Python Domain SDK；迁移 spike 中可进入正式
+  契约的内容，确保仓库中只有一份权威可执行协议实现，且不改变现有问答行为。
+
+non_goals:
+  - DomainDispatchPort
+  - Host
+  - 插件发现与生命周期编排
+  - SourceCatalog
+  - Core、runner 或 composition root 接入
+  - ask_notes.py 或 app/** 修改
+  - 具体领域插件、具体领域字段、词表或业务结论
+  - MCP transport
+  - protocol 1.1 及未来兼容矩阵
+  - 公共或私有制品仓库发布
+  - 制品签名、发布所有权、发布权限或完整许可证治理
+
+communication_preference:
+  tone: professional_warm
+  verbosity: standard
+
+inputs:
+  notes_dir: ""
+  cache_dir: ""
+  change_request: ""
+  embedding_model: ""
+  llm_model: ""
+  repository_root: /home/kissyu/projects/docmind
+  shell: bash
+  python_interpreter: .venv/bin/python
+  python_version: "3.12"
+  expected_branch: arch/domain-plugin-spike
+  expected_head: 2cfd46778e6181f2320e1447f8da3bfd6f6ee6e6
+  adr_path: docs/adr/0001-domain-plugin-boundary-and-future-mcp-adapter.md
+  spike_protocol_path: docs/spikes/domain_plugin_protocol/protocol.py
+  spike_verify_path: docs/spikes/domain_plugin_protocol/verify_protocol.py
+  task_card_path: docs/task_card_domain_sdk_protocol_1_0.yaml
+
+privacy_guard:
+  enabled: true
+  use_synthetic_examples: true
+  forbid_real_personal_or_company_sensitive_data: true
+  tracked_text_scan_only: true
+
+contract_decisions:
+  distribution_name: docmind-domain-sdk
+  import_name: docmind_domain_sdk
+  sdk_package_version: 0.1.0
+  protocol_version: "1.0"
+  package_and_protocol_versions_evolve_independently: true
+  requires_python: ">=3.12"
+  pydantic_dependency: ">=2.7,<3"
+  domain_plugin_interface: async
+  json_schema_draft: "2020-12"
+  json_schema_bundle: protocol-1.0.schema.json
+  json_schema_id: urn:docmind:domain-plugin-protocol:1.0
+  wheel_required_data:
+    - docmind_domain_sdk/py.typed
+    - docmind_domain_sdk/schemas/protocol-1.0.schema.json
+  public_api:
+    dto:
+      - SourceRef
+      - SourceSnapshot
+      - EvidenceLocator
+      - EvidenceRef
+      - OpaqueFocus
+      - FocusContext
+      - DomainRequest
+      - ProbeResult
+      - FocusUpdate
+      - PluginError
+      - DomainResult
+      - SourceSyncRequest
+      - SourceSyncResult
+      - PluginDescribeRequest
+      - PluginManifest
+      - PluginStartRequest
+      - PluginStopRequest
+      - LifecycleResult
+    port:
+      - DomainPlugin
+    constants:
+      - PROTOCOL_VERSION
+    errors:
+      - ProtocolViolationError
+    boundary_validation:
+      - validate_manifest_boundary
+      - validate_lifecycle_boundary
+      - validate_sync_boundary
+      - validate_probe_boundary
+      - validate_result_boundary
+  private_api:
+    - WireModel
+    - PluginId
+    - OpaqueId
+    - SourceId
+    - 其他类型别名
+    - 私有校验 helper
+    - 测试 fixture
+    - Schema 生成内部实现
+  protocol_violation_error:
+    name: ProtocolViolationError
+    base: ValueError
+    hierarchy: single
+  string_handling:
+    global_str_strip_whitespace: false
+    inline_text:
+      preserve_exact_characters: true
+      strip: false
+      normalize_newlines: false
+      unicode_normalization: false
+      sha256_input: exact_utf8_bytes
+    identifiers:
+      reject_leading_or_trailing_whitespace: true
+      silently_trim: false
+  uri:
+    validation:
+      - non_empty
+      - maximum_length
+    scheme_allowlist: false
+    content_sha256_semantics: sha256_of_actual_fetched_raw_bytes
+  plugin_start_config:
+    json_serializable: true
+    deeply_immutable: false
+
+mechanism_constraints:
+  independent_pyproject: true
+  src_layout: true
+  depends_on_docmind_core: false
+  one_authoritative_executable_protocol_implementation: true
+  do_not_add_host_dispatch_or_production_wiring: true
+  no_behavior_change_to_current_qa_path: true
+  no_domain_specific_fields_or_vocabulary: true
+  no_artifact_repository_publication: true
+
+spike_migration:
+  docs/spikes/domain_plugin_protocol/protocol.py:
+    action: delete
+    reason: >-
+      正式 SDK 建立后不得继续维护第二份可执行协议定义；可迁移类型、
+      async 端口与协议不变量进入 SDK 后删除该文件。
+  docs/spikes/domain_plugin_protocol/verify_protocol.py:
+    action: slim
+    requirements:
+      - 仅依赖 docmind_domain_sdk 顶层公开 API
+      - 仅保留薄 smoke，不复制正式协议实现
+      - 完整契约断言迁移为 SDK 自有 pytest
+  docs/adr/0001-domain-plugin-boundary-and-future-mcp-adapter.md:
+    action: update
+    requirements:
+      - 更新正式 SDK、Schema、测试与 smoke 路径
+      - 更新独立 SDK 已实施、空 Host 尚未实施的当前状态
+      - 不声称 Host、dispatch 或生产接线已经存在
+  single_source_of_truth: packages/docmind-domain-sdk/src/docmind_domain_sdk
+
+expected_structure:
+  - packages/docmind-domain-sdk/pyproject.toml
+  - packages/docmind-domain-sdk/README.md
+  - packages/docmind-domain-sdk/src/docmind_domain_sdk/__init__.py
+  - packages/docmind-domain-sdk/src/docmind_domain_sdk/_version.py
+  - packages/docmind-domain-sdk/src/docmind_domain_sdk/dto.py
+  - packages/docmind-domain-sdk/src/docmind_domain_sdk/protocol.py
+  - packages/docmind-domain-sdk/src/docmind_domain_sdk/errors.py
+  - packages/docmind-domain-sdk/src/docmind_domain_sdk/validation.py
+  - packages/docmind-domain-sdk/src/docmind_domain_sdk/py.typed
+  - packages/docmind-domain-sdk/src/docmind_domain_sdk/schemas/protocol-1.0.schema.json
+  - packages/docmind-domain-sdk/scripts/generate_json_schema.py
+  - packages/docmind-domain-sdk/scripts/check_text_encoding.py
+  - packages/docmind-domain-sdk/scripts/check_wheel_contents.py
+  - packages/docmind-domain-sdk/tests/fixtures.py
+  - packages/docmind-domain-sdk/tests/test_dto_contract.py
+  - packages/docmind-domain-sdk/tests/test_boundary_validation.py
+  - packages/docmind-domain-sdk/tests/test_schema_artifact.py
+  - packages/docmind-domain-sdk/tests/test_public_api.py
+  - packages/docmind-domain-sdk/tests/test_distribution.py
+
+editable_scope:
+  allow:
+    - packages/docmind-domain-sdk/**
+    - docs/adr/0001-domain-plugin-boundary-and-future-mcp-adapter.md
+    - docs/spikes/domain_plugin_protocol/protocol.py
+    - docs/spikes/domain_plugin_protocol/verify_protocol.py
+    - docs/task_card_domain_sdk_protocol_1_0.yaml
+  deny:
+    - ask_notes.py
+    - app/**
+    - ai/**
+    - retrieval/**
+    - infra/**
+    - bootstrap/**
+    - loaders/**
+    - scan_docs.py
+    - requirements.txt
+    - test_query_router_repo_meta.py
+    - tests/**
+    - examples/**
+    - cache/**
+    - logs/**
+    - .github/**
+    - .githooks/**
+    - docs/task_card_template.md
+    - docs/task_card_defaults.yaml
+    - docs/task_card_perf_optimization_template.yaml
+    - docs/task_card_quick_template.yaml
+    - docs/task_card_refactor_deflatten_template.yaml
+    - .git/info/exclude
+
+quality_gate:
+  environment_setup:
+    - test -x .venv/bin/python
+    - test "$(.venv/bin/python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" = "3.12"
+    - >-
+      SDK_VERIFY_ROOT="$(mktemp -d)";
+      export SDK_VERIFY_ROOT;
+      trap 'rm -rf "$SDK_VERIFY_ROOT"' EXIT
+  tests:
+    changed_python_py_compile: >-
+      mapfile -t changed_python_files < <(
+        git status --short |
+        awk '{print $2}' |
+        while IFS= read -r path; do
+          case "$path" in
+            *.py) printf '%s\n' "$path" ;;
+          esac
+        done
+      );
+      if ((${#changed_python_files[@]})); then
+        .venv/bin/python -m py_compile "${changed_python_files[@]}";
+      fi
+    sdk_pytest: >-
+      .venv/bin/python -m pytest -q packages/docmind-domain-sdk/tests
+    spike_smoke: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src
+      .venv/bin/python docs/spikes/domain_plugin_protocol/verify_protocol.py
+    tracked_pytest_baseline: >-
+      mapfile -d '' tracked_tests < <(
+        git ls-files -z -- '*.py' |
+        while IFS= read -r -d '' path; do
+          case "$(basename "$path")" in
+            test_*.py|*_test.py) printf '%s\0' "$path" ;;
+          esac
+        done
+      );
+      if ((${#tracked_tests[@]})); then
+        .venv/bin/python -m pytest -q "${tracked_tests[@]}";
+      fi
+  contract_tests:
+    - DTO 正反向序列化及 extra=forbid
+    - protocol 1.0 常量与 SDK 0.1.0 独立断言
+    - async DomainPlugin 端口签名
+    - inline_text 逐字符保留及精确 UTF-8 SHA-256
+    - inline_text 不 strip、不换行转换、不做 Unicode normalization
+    - 标识符首尾空白拒绝且不静默修剪
+    - URI 非空和长度校验且不冻结 scheme 白名单
+    - URI 摘要语义记录为实际获取原始字节 SHA-256
+    - PluginStartRequest.config 接受 JSON 可序列化值
+    - 五个跨消息边界校验函数成功与失败路径
+    - 所有跨消息失败统一抛出 ProtocolViolationError
+    - 顶层 __all__ 与正式公开 API 精确一致
+    - 顶层不泄漏 WireModel、类型别名、helper、fixture 或 Schema 内部实现
+    - Schema 元数据、公开 DTO 定义、确定性和制品无漂移
+    - wheel 包含 Schema 和 py.typed 且不包含测试、spike、构建脚本
+  encoding_guard:
+    files:
+      - packages/docmind-domain-sdk
+      - docs/task_card_domain_sdk_protocol_1_0.yaml
+      - docs/adr/0001-domain-plugin-boundary-and-future-mcp-adapter.md
+      - docs/spikes/domain_plugin_protocol/verify_protocol.py
+    rules:
+      - Python、YAML、Markdown 和 JSON 文件必须按 UTF-8 严格解码
+      - 不主动转换换行
+      - 不执行 Unicode normalization
+      - 发现无法按 UTF-8 解码的文件时报告并停止
+      - 检查 replacement character U+FFFD
+      - 检查除制表符、LF、CR 外的异常控制字符
+      - 不使用固定历史乱码字面量作为默认扫描模式
+    command: >-
+      .venv/bin/python
+      packages/docmind-domain-sdk/scripts/check_text_encoding.py
+      packages/docmind-domain-sdk
+      docs/task_card_domain_sdk_protocol_1_0.yaml
+      docs/adr/0001-domain-plugin-boundary-and-future-mcp-adapter.md
+      docs/spikes/domain_plugin_protocol/verify_protocol.py
+  shell_guard:
+    shell: bash
+    rules:
+      - 所有命令按 Bash 语法编写
+      - 路径和变量必须正确引用
+      - 临时目录使用 mktemp -d
+      - 需要清理临时资源时使用 trap
+      - Python 命令优先使用 .venv/bin/python
+      - 不假定系统全局 python 指向正确版本
+  static_checks:
+    core_import_scan: >-
+      ! rg -n
+      '(^|[[:space:]])(from|import)[[:space:]]+(app|ai|retrieval|infra|bootstrap|loaders)([.[:space:]]|$)'
+      packages/docmind-domain-sdk
+    internal_object_leak_scan: >-
+      ! rg -n
+      '(WireModel|PluginId|OpaqueId|SourceId|_generate|fixtures)'
+      packages/docmind-domain-sdk/src/docmind_domain_sdk/__init__.py
+    forbidden_production_symbols: >-
+      ! rg -n
+      '(DomainDispatchPort|DomainPluginHost|SourceCatalog|MCP)'
+      packages/docmind-domain-sdk/src
+  schema_checks:
+    generate: >-
+      .venv/bin/python packages/docmind-domain-sdk/scripts/generate_json_schema.py
+    no_drift: >-
+      .venv/bin/python
+      packages/docmind-domain-sdk/scripts/generate_json_schema.py
+      --check
+    draft_and_id: >-
+      .venv/bin/python -c
+      'import json, pathlib;
+      p=pathlib.Path("packages/docmind-domain-sdk/src/docmind_domain_sdk/schemas/protocol-1.0.schema.json");
+      d=json.loads(p.read_text(encoding="utf-8"));
+      assert d["$schema"] == "https://json-schema.org/draft/2020-12/schema";
+      assert d["$id"] == "urn:docmind:domain-plugin-protocol:1.0"'
+  package_checks:
+    build_wheel: >-
+      .venv/bin/python -m build
+      --wheel
+      --outdir "$SDK_VERIFY_ROOT/dist"
+      packages/docmind-domain-sdk
+    twine_check: >-
+      .venv/bin/python -m twine check "$SDK_VERIFY_ROOT"/dist/*.whl
+    wheel_contents: >-
+      .venv/bin/python
+      packages/docmind-domain-sdk/scripts/check_wheel_contents.py
+      "$SDK_VERIFY_ROOT"/dist/*.whl
+    clean_venv_install: >-
+      .venv/bin/python -m venv "$SDK_VERIFY_ROOT/venv";
+      "$SDK_VERIFY_ROOT/venv/bin/python" -m pip install
+      "$SDK_VERIFY_ROOT"/dist/*.whl
+    installed_public_api: >-
+      "$SDK_VERIFY_ROOT/venv/bin/python" -c
+      'from docmind_domain_sdk import
+      SourceRef, SourceSnapshot, EvidenceLocator, EvidenceRef,
+      OpaqueFocus, FocusContext, DomainRequest, ProbeResult,
+      FocusUpdate, PluginError, DomainResult, SourceSyncRequest,
+      SourceSyncResult, PluginDescribeRequest, PluginManifest,
+      PluginStartRequest, PluginStopRequest, LifecycleResult,
+      DomainPlugin, PROTOCOL_VERSION, ProtocolViolationError,
+      validate_manifest_boundary, validate_lifecycle_boundary,
+      validate_sync_boundary, validate_probe_boundary,
+      validate_result_boundary;
+      assert PROTOCOL_VERSION == "1.0"'
+  diff_checks:
+    editable_scope_only: >-
+      git status --short
+    production_qa_zero_diff: >-
+      test -z "$(git diff --name-only --
+      ask_notes.py app ai retrieval infra bootstrap loaders
+      scan_docs.py requirements.txt test_query_router_repo_meta.py)"
+    no_forbidden_artifacts: >-
+      test -z "$(find packages/docmind-domain-sdk
+      -type d \( -name dist -o -name build -o -name '*.egg-info'
+      -o -name '.venv' \) -print)"
+    no_duplicate_spike_protocol: >-
+      test ! -e docs/spikes/domain_plugin_protocol/protocol.py
+  performance:
+    required: false
+  logs:
+    remote_model_marker_required: false
+  validation_order:
+    - changed Python 文件 py_compile
+    - SDK pytest
+    - Schema 生成器 --check
+    - Core import 和内部对象泄漏扫描
+    - UTF-8 和异常字符通用检查
+    - wheel 构建
+    - twine check
+    - wheel 内容自动检查
+    - 临时干净 venv 安装
+    - 安装后的全部公开 API 导入
+    - DocMind Git tracked pytest 基线
+    - 生产问答链路 git diff 零差异
+    - 工作区构建与临时环境残留检查
+
+acceptance_dialog:
+  - SDK 可从自身 pyproject 独立构建为 wheel。
+  - wheel 可安装到 mktemp 下创建的干净 venv。
+  - 安装后可从顶层导入已确认的全部公开 API，且没有额外公开内部对象。
+  - protocol 1.0 Schema 是确定性的 Draft 2020-12 单文件 bundle，$id 精确匹配确认值。
+  - Schema 和 py.typed 随 wheel 打包。
+  - SDK 不 import DocMind Core 或生产问答链路模块。
+  - spike 不再保留第二份可执行协议定义，薄 smoke 仅依赖 SDK 公开 API。
+  - inline_text、标识符和摘要语义符合已确认契约。
+  - 五个边界校验函数的失败均为 ProtocolViolationError。
+  - ADR 路径和实施状态与仓库事实一致，且明确 Host 尚未接入。
+  - DocMind tracked pytest 基线通过，生产问答链路无差异。
+
+acceptance_min:
+  - packages/docmind-domain-sdk 是 Python >=3.12、Pydantic >=2.7,<3 的独立 src-layout 包。
+  - SDK 包版本为 0.1.0，PROTOCOL_VERSION 严格为 "1.0"，二者独立定义。
+  - 顶层公开 API 精确等于确认清单。
+  - protocol-1.0.schema.json 可确定性生成且 --check 通过。
+  - wheel 包含 Schema 与 py.typed，并通过 twine、内容检查和干净 venv 安装导入。
+  - SDK 自有 pytest、旧 spike 薄 smoke、DocMind tracked pytest 均通过。
+  - docs/spikes/domain_plugin_protocol/protocol.py 已删除。
+  - editable_scope 之外无改动，生产问答与检索链路零差异。
+  - 工作区无 wheel、sdist、egg-info、build 或临时 venv 残留。
+
+refactor_guard:
+  line_threshold: 405
+  deflatten_targets: []
+  import_compatibility_required: false
+
+perf_guard:
+  required: false
+  benchmark: ""
+  threshold: ""
+
+deliverables:
+  - 独立 Domain SDK 源码与包元数据
+  - protocol 1.0 JSON Schema bundle 与确定性生成器
+  - py.typed
+  - SDK 自有 pytest 契约测试
+  - UTF-8 通用检查脚本
+  - wheel 内容检查脚本
+  - 仅依赖公开 API 的 spike 薄 smoke
+  - 删除重复的 spike 协议实现
+  - 更新后的 ADR
+  - 全部质量门结果与最终 git status
+
+commit_message:
+  title: "feat(domain-sdk): 交付独立 protocol 1.0 SDK"
+  body:
+    - "目标: 建立可独立构建安装且不依赖 Core 的中立 Domain SDK。"
+    - "手段: 固化 DTO、异步端口、边界校验、Schema、类型标记与契约质量门。"
