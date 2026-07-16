@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from app.chat_loop import run_chat_loop
+from bootstrap.domain_composition import create_domain_host
 from bootstrap.env_setup import apply_environment_defaults
 from infra.debug_question_trace import build_debug_question_recorder
 from infra.logging_setup import build_logger
@@ -175,6 +176,7 @@ def main():
         ollama_api_url,
         ollama_model,
     )
+    domain_host = create_domain_host()
 
     logger.info(f"✅ 系统就绪！启动总耗时: {time.time() - start_init:.2f}s")
     run_chat_loop(
@@ -187,6 +189,7 @@ def main():
         logger,
         notes_dir=notes_dir,
         change_log_file=change_log_file,
+        domain_dispatch_port=domain_host,
         question_recorder=question_recorder,
     )
 

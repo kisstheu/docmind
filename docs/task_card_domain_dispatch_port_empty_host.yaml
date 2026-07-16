@@ -1,0 +1,1043 @@
+version: 1
+
+task_goal: >-
+  在不改变 DocMind 现有用户可观察行为的前提下，建立 Core 可依赖的中立
+  DomainDispatchPort，由现有 composition root 创建并注入一个不注册、不发现、
+  不调用任何领域插件的空 Domain Host；无插件时原问句、Source 范围、路由、
+  会话状态、回答、文件操作和检索链路保持零差异。
+
+non_goals:
+  - 招聘领域插件或任何具体领域插件
+  - 中立契约测试插件、fake plugin 或合成插件执行链
+  - 动态插件发现、静态插件注册表或 Python entry point 扫描
+  - 插件 describe、start、sync_sources、probe、execute、stop 生命周期调用
+  - SourceCatalog、SourceSync、SourceRef revision 生成或 Source 内容 DTO 转换
+  - PluginInteractionState、OpaqueFocus 写回或现有 ConversationState 字段迁移
+  - MCP Server、MCP Adapter、MCP transport 或远程 endpoint
+  - 超时、重试、熔断、并发、冲突仲裁和完整运行时治理
+  - 插件配置界面、权限界面或插件存储
+  - 消费 handled DomainResult、呈现插件回答或应用 FocusUpdate
+  - 重构整个 runner、状态机、路由、检索链路或文件操作链路
+  - 修改 SDK protocol 1.0 的公开 API、DTO、Schema 或校验函数
+  - 修改 ADR、README、演进记录或简历，并宣称“插件化已经完成”
+  - 把 SDK 发布到公共/私有制品仓库，或引入 requirements.txt 之外的第二套根依赖管理体系
+
+communication_preference:
+  tone: professional_warm
+  verbosity: standard
+
+inputs:
+  notes_dir: examples/demo_notes_public
+  cache_file: ""
+  change_log_file: ""
+  emb_model: BAAI/bge-large-zh-v1.5
+  llm_model: gemini-2.5-flash
+  repository_root: /home/kissyu/projects/docmind
+  shell: bash
+  python_interpreter: .venv/bin/python
+  expected_branch: arch/domain-plugin-spike
+  expected_head: 94c8a6f6a78e77d792078f4891bb164771e776e4
+  adr_path: docs/adr/0001-domain-plugin-boundary-and-future-mcp-adapter.md
+  sdk_task_card_path: docs/task_card_domain_sdk_protocol_1_0.yaml
+  sdk_package_path: packages/docmind-domain-sdk
+  root_dependency_file: requirements.txt
+  root_install_command: .venv/bin/python -m pip install -r requirements.txt
+  sdk_requirement_line: ./packages/docmind-domain-sdk
+  requirements_encoding: UTF-16LE with BOM and CRLF
+  task_card_path: docs/task_card_domain_dispatch_port_empty_host.yaml
+  production_cli: ask_notes.py
+
+exploration_decision:
+  additional_exploration_required: false
+  evidence:
+    - ADR 已确定 Core -> 中立端口、composition root -> 具体 Host、Host/SDK 不依赖具体领域实现的方向。
+    - 独立 SDK protocol 1.0 已完成，公开 DTO、DomainPlugin 和五个边界校验函数已有唯一权威实现。
+    - 根项目唯一 tracked 依赖入口为 requirements.txt，且当前 pip 已验证可从候选本地路径行解析 SDK。
+    - 当前分支已只读核对实际入口、runner、Source 约束、状态写回和相关测试，不需要用实现 spike 猜测接入点。
+  boundary: >-
+    本卡只完成“可注入但必定未处理”的影子接线；Source DTO 转换、插件调用、
+    handled 结果消费和插件状态写回均留到后续任务卡。
+
+scope_resolution:
+  adr_sequence_difference:
+    fact: >-
+      ADR 第 17 节第 3 步把“空 Host 接入”概括为同时接发现、生命周期和熔断；
+      本任务授权明确要求 Host 不注册、不发现、不调用插件，并把完整运行时治理列为非目标。
+    selected_option: >-
+      将 ADR 第 3 步保守拆为 3a“DomainDispatchPort + 空 Host 影子接线”和后续
+      3b“发现、生命周期与运行时治理”；本卡执行 3a，不修改 ADR。
+    reason: 最小、可回滚，且不会为满足文档概括而扩大本次授权范围。
+  sdk_runtime_availability:
+    fact: >-
+      当前 .venv 不能直接 import docmind_domain_sdk；SDK 位于独立 src-layout 包，
+      根目录不存在 pyproject.toml、Pipfile、Poetry、uv 或 Conda 依赖入口；README
+      唯一安装命令为 pip install -r requirements.txt，因此 requirements.txt 是当前
+      根项目权威 tracked 运行时依赖入口，但尚未声明该本地包。
+    verified_pip_behavior: >-
+      已用当前 pip 26.1 对完整现有 requirements 内容加候选行做 --dry-run 验证；
+      非 editable 行 ./packages/docmind-domain-sdk 可从仓库根目录解析
+      packages/docmind-domain-sdk/pyproject.toml，并计划安装 docmind-domain-sdk==0.1.0，
+      未修改 .venv，未在 SDK 源码树产生 build、dist、egg-info 或 __pycache__。
+    selected_option: >-
+      在 requirements.txt 末尾最小新增且仅新增一行 ./packages/docmind-domain-sdk，
+      保持现有 UTF-16LE BOM、CRLF 和其他依赖行逐字符不变；不使用 -e、绝对路径、
+      PYTHONPATH、手动 SDK 安装或当前 .venv 状态作为生产依赖方案。
+    installation_contract: >-
+      安装命令必须从仓库根目录执行 python -m pip install -r requirements.txt；
+      pip 由 tracked requirements 自动构建并非 editable 安装本地 SDK。
+      干净环境验收不得额外执行 pip install packages/docmind-domain-sdk。
+    adr_follow_up: >-
+      ADR 第 3 步拆为 3a/3b 继续作为后续文档任务，本卡不修改 ADR，且该文档更新
+      不是当前实施阻塞项。
+
+privacy_guard:
+  enabled: true
+  use_synthetic_examples_in_tests: true
+  allow_public_demo_notes_for_cli_regression: true
+  forbid_real_personal_or_company_sensitive_data: true
+  tracked_text_scan_only: true
+  rules:
+    - 新增测试仅使用某公司A、候选人X、name@example.com 等脱敏值或公开 demo 数据。
+    - 不把 test_notes、真实日志、完整联系方式、完整地址或本地绝对数据路径写入任务产物。
+    - test_notes/ 和 tests/ 保持本地隐私/回归目录，不进入暂存区。
+
+mechanism_constraints:
+  - 必须复用 SDK 顶层公开 DTO，不允许硬编码具体领域结论或复制协议模型。
+  - SDK 运行时依赖必须由 tracked requirements.txt 中的 ./packages/docmind-domain-sdk 可复现声明。
+  - 不得靠当前 .venv、PYTHONPATH、editable install 或单独手动安装 SDK 掩盖依赖缺失。
+  - 只增加一个同步中立端口、一个空实现和一条 composition-root 注入链。
+  - 空 Host 默认静默且只返回 None，不用配置、日志或伪结果模拟未来能力。
+  - 既有 Core 路由、Source 限定、状态机、检索和文件操作实现保持原样。
+  - 普通用户不可见调试能力；本卡不新增调试开关或可见提示。
+
+repository_facts:
+  existing_similar_boundary:
+    exists: false
+    verification: >-
+      全仓搜索仅在 ADR、SDK 任务卡和 SDK DomainPlugin 中命中相关术语；
+      生产代码不存在 DomainDispatchPort、DomainHost、DomainPluginHost、
+      domain_dispatch 或等价注入参数。
+  composition_root:
+    file: ask_notes.py
+    symbol: main
+    facts:
+      - main 在 scan_repository 与 load_or_build_embeddings 后得到 RepoState。
+      - main 是生产代码中唯一调用 app.chat_loop.run_chat_loop 的位置。
+      - app.chat_loop.run_chat_loop 仅以 *args/**kwargs 转发到 app.chat_loop_parts.runner.run_chat_loop。
+    approved_creation_point: >-
+      RepoState 构建完成后、输出“系统就绪”并调用 run_chat_loop 之前创建空 Host；
+      Host 构造不得接收 RepoState、模型 client、logger、数据库连接或 Source 内容。
+  core_dispatch_injection:
+    file: app/chat_loop_parts/runner.py
+    symbol: run_chat_loop
+    approved_point: >-
+      文件操作、contextless follow-up、system_capability、repo_meta、smalltalk、
+      out_of_scope 等既有守门均未处理，代码即将进入“# 5) normal retrieval”时；
+      必须位于现有 normal retrieval 状态赋值、query 构建和 build_retrieval_materials
+      之前，不得前移到通用守门之前。
+  source_scope:
+    facts:
+      - app/chat_loop_parts/runner.py 先解析 category_scope_paths，并原样传给 build_retrieval_materials 的 allowed_paths。
+      - app/retrieval_flow/materials.py 再把 selected_source_files 与 allowed_paths 交集为 effective_allowed_paths。
+      - 当前 RepoState、path 列表和 chunk 索引不是 SDK DTO，且尚无稳定 SourceRef revision 适配器。
+    approved_slice_behavior: >-
+      本卡创建的 DomainRequest.source_scope 固定为空元组，表示空 Host 未获任何 Source；
+      不把空元组解释为修改 Core 检索范围。既有 allowed_paths、selected_source_files、
+      current_focus_file、last_relevant_indices 和 perform_retrieval 参数必须逐值保持。
+  state_writeback:
+    files:
+      - app/dialog/state_machine.py
+      - app/chat_state_helpers.py
+      - app/chat_loop_parts/runner.py
+    facts:
+      - ConversationState 当前由 app.chat_loop 模块级 conversation_state 持有。
+      - 本地回答通过 update_state_after_local_answer 写回。
+      - 检索回答通过 update_state_after_retrieval_answer 写回。
+    approved_slice_behavior: >-
+      空 Host 不新增状态字段、不调用现有状态写回函数、不改变写回时序；
+      Host 调用前后的状态仅由后续原 Core 链路按现有语义变化。
+
+architecture_contract:
+  dependency_direction:
+    - app/chat_loop_parts/runner.py 只 import Core 可见的 app.domain_dispatch_port，不 import 具体 Host。
+    - app.domain_dispatch_port 只依赖 typing/标准库和 docmind_domain_sdk 顶层公开 API。
+    - bootstrap.domain_composition 可依赖具体空 Host，并由 ask_notes.py 调用。
+    - 具体空 Host 实现 DomainDispatchPort，可依赖 SDK 顶层公开 API，但不得依赖 ai、retrieval、infra 或具体领域包。
+    - Core、Host、SDK 均不得 import 招聘或其他具体领域实现、插件发现机制或 MCP transport。
+    - packages/docmind-domain-sdk 不得反向 import app、ai、retrieval、infra、bootstrap 或 loaders。
+  core_port:
+    owner: DocMind Core application boundary
+    file: app/domain_dispatch_port.py
+    name: DomainDispatchPort
+    shape:
+      kind: runtime_checkable Protocol
+      method: dispatch
+      execution: synchronous
+      input: docmind_domain_sdk.DomainRequest
+      output: docmind_domain_sdk.DomainResult | None
+    rationale: >-
+      当前 runner 是同步循环；本卡不得为了空 Host 把 runner 或状态机改为 async。
+      后续具体 Host 自行封装 async DomainPlugin 调用，不把 SDK DomainPlugin 直接暴露给 Core。
+  empty_host:
+    file: app/domain_host/host.py
+    name: EmptyDomainHost
+    behavior:
+      - 满足 DomainDispatchPort 结构契约。
+      - dispatch 对任意合法 DomainRequest 只返回 None。
+      - 不维护插件列表、不读取 entry point、不动态 import、不访问配置、不调用 DomainPlugin。
+      - 不生成 DomainResult、ProbeResult、PluginError、answer、evidence、focus 或伪 abstain DTO。
+      - 不打印、不记录新日志、不写状态、不写磁盘、不改变 request。
+  composition_factory:
+    file: bootstrap/domain_composition.py
+    name: create_domain_host
+    output: DomainDispatchPort
+    behavior: 只构造并返回 EmptyDomainHost，不接收或发现插件。
+  sdk_dto_ownership:
+    owner: packages/docmind-domain-sdk/src/docmind_domain_sdk
+    allowed_public_dto:
+      - DomainRequest
+      - DomainResult
+    rules:
+      - 不在 app、bootstrap 或测试中复制第二份 DomainRequest、DomainResult、SourceRef、FocusContext 或协议校验逻辑。
+      - 不修改 SDK DTO、DomainPlugin、JSON Schema、PROTOCOL_VERSION 或五个 boundary validator。
+      - Core 只从 docmind_domain_sdk 顶层公开 API 引用 DTO，不 import dto.py、validation.py 等私有模块路径。
+  conversion_boundary:
+    current_slice:
+      owner: app.domain_dispatch_port 的 Core 边界 helper
+      input: runner 已有的规范化 question；不得使用 route_question_input、search_query 或插件生成文本替代。
+      output: >-
+        新建 DomainRequest，query 逐字符等于当前 Core question，source_scope=()，
+        focus 使用 SDK 默认空值，request_id 为仅用于关联的中立随机 ID；
+        不向 SDK DTO 塞入 ChatState、RepoState、Path、chunk、模型 client 或 logger。
+    deferred:
+      - SourceRef/SourceSnapshot 的构造、revision 计算与权限裁剪由后续 Source 边界任务在 Host 侧适配。
+      - DomainResult 的完整 boundary validation 由后续存在真实/合成插件调用的 Host 任务复用 SDK validator。
+      - FocusUpdate 到未来 PluginInteractionState 的转换不在本卡实现。
+  fallback_boundary:
+    rules:
+      - DomainDispatchPort.dispatch 返回 None 时，无条件继续原 Core normal retrieval 链路。
+      - dispatch 抛出 Exception 时在端口调用局部捕获，丢弃异常侧产物并继续原 Core 链路；不得落入 runner 最外层导致本轮回答被吞掉。
+      - 返回值不是 SDK DomainResult、状态非法或本卡不消费的任何非空结果时，一律视为未处理并继续原 Core 链路。
+      - 本卡即使收到合法 handled DomainResult 也不得呈现、写状态或截断 Core；消费 handled 结果属于后续契约插件切片。
+      - 回落必须继续使用进入 dispatch 前的 question、既有 Source 约束和通用会话上下文。
+      - 回落不得混入 Host 的部分答案、改写 query、Evidence、FocusUpdate 或错误提示。
+    hard_acceptance_focus: 空 Host / 无插件只返回 None 的路径。
+    deferred_validation: >-
+      request_id/plugin_id、Evidence/Focus Source 越界、非法状态组合等完整非法插件结果验证，
+      必须在后续中立契约插件或 fake plugin 任务中复用 SDK validator 验证；不得为此扩大本卡。
+
+no_plugin_semantics:
+  - 原始 raw_question 仍只按现有 normalize_colloquial_question 规则得到 question；Host 不再改写或吞掉 question。
+  - route_info、route_question_input 和最终 route 的计算、守门顺序与选择结果不变。
+  - category_scope_paths、selected_source_files、effective_allowed_paths 和 relevant_indices 语义不变。
+  - ConversationState、current_focus_file、last_relevant_indices 和 memory_buffer 更新时序不变。
+  - 普通回答、repo meta、本地直答、检索、远程生成和文件操作仍由原 Core 处理。
+  - 空 Host 不返回伪结果，None 或异常不得覆盖已有/后续 Core 结果。
+  - 不增加用户提示、欢迎语、回答前缀、错误提示、stdout/stderr 行或默认日志行。
+  - 不增加 [远程模型生成] 标记；只有原 Core 实际调用远程模型时才保留原标记。
+  - 对正式卡选定的生产入口样本，接入前后规范化输出和关键状态快照必须零差异。
+
+implementation_plan:
+  - 最小修改 requirements.txt，在末尾新增 ./packages/docmind-domain-sdk，并保持 UTF-16LE BOM、CRLF 和其余内容不变。
+  - 新增 app/domain_dispatch_port.py，定义同步 Protocol 和局部安全回落 helper。
+  - 新增 app/domain_host/__init__.py 与 app/domain_host/host.py，仅实现 EmptyDomainHost。
+  - 新增 bootstrap/domain_composition.py，仅提供 create_domain_host。
+  - ask_notes.py::main 在 RepoState 完成后创建 Host，并以必填 keyword-only 参数传入 run_chat_loop。
+  - app/chat_loop_parts/runner.py::run_chat_loop 接收 DomainDispatchPort，在确认进入 normal_retrieval 后执行一次影子 dispatch，再无条件沿原链路继续。
+  - 新增根级 tracked pytest，覆盖端口、factory、注入、无插件回落与关键状态；不在被忽略的 tests/ 新增文件。
+  - 不修改 app/chat_loop.py 的 *args/**kwargs 兼容转发，除非实施事实证明无法转发；若必须修改则触发停止条件，不自行扩围。
+
+expected_structure:
+  - requirements.txt
+  - app/domain_dispatch_port.py
+  - app/domain_host/__init__.py
+  - app/domain_host/host.py
+  - bootstrap/domain_composition.py
+  - test_domain_dispatch_port_empty_host.py
+
+editable_scope:
+  allow:
+    - requirements.txt
+    - app/domain_dispatch_port.py
+    - app/domain_host/__init__.py
+    - app/domain_host/host.py
+    - bootstrap/domain_composition.py
+    - ask_notes.py
+    - app/chat_loop_parts/runner.py
+    - test_domain_dispatch_port_empty_host.py
+    - docs/task_card_domain_dispatch_port_empty_host.yaml
+  deny:
+    - packages/docmind-domain-sdk/**
+    - docs/adr/**
+    - docs/spikes/**
+    - docs/evolution.md
+    - README.md
+    - app/chat_loop.py
+    - app/dialog/**
+    - app/chat_state_helpers.py
+    - app/retrieval_flow/**
+    - app/file_actions/**
+    - ai/**
+    - retrieval/**
+    - infra/**
+    - loaders/**
+    - scan_docs.py
+    - test_query_router_repo_meta.py
+    - tests/**
+    - examples/**
+    - test_notes/**
+    - cache/**
+    - logs/**
+    - .github/**
+    - .githooks/**
+    - .git/info/exclude
+
+test_contract:
+  new_tracked_tests:
+    file: test_domain_dispatch_port_empty_host.py
+    cases:
+      - EmptyDomainHost 在 runtime_checkable 检查中满足 DomainDispatchPort，dispatch 为同步方法且返回 None。
+      - create_domain_host 返回具体 EmptyDomainHost，但返回类型/调用方只按 DomainDispatchPort 使用。
+      - composition root 确实创建 Host，并通过 domain_dispatch_port keyword 注入 run_chat_loop。
+      - 复用现有 pytest monkeypatch、captured dict/list、SimpleNamespace 和 fake client 模式，不为测试新增暴露 runner 内部的生产接口。
+      - normal_retrieval 的 spy port 恰好收到一次 DomainRequest，EmptyDomainHost.dispatch 同步返回 None。
+      - dispatch 前后的 normalized question 和 DomainRequest.query 逐字符一致，不修改也不替换原问题语义。
+      - Source 范围在 dispatch 前后完全一致；本卡尚未引入 Source DTO 转换，DomainRequest.source_scope 保持协议允许的空范围。
+      - route、event、current_focus_file 与 ConversationState 的快照在 dispatch 前后不变，Host 不获取也不写入 Core 状态。
+      - dispatch 返回 None 后必须继续到达原 build_search_query 和 build_retrieval_materials 边界，不得 continue/return 提前结束。
+      - 传给 build_search_query/build_retrieval_materials 的关键参数与修改前确定性快照一致，包括 question、route/event 上下文、allowed_paths、selected_source_files、current_focus_file 和 last_relevant_indices。
+      - 下游测试替身返回的哨兵值仍由原链路原样消费/返回，EmptyDomainHost 不覆盖、替换或伪造下游结果。
+      - repo_meta、system_capability、smalltalk、out_of_scope 和已处理的文件操作不调用领域端口，原 route/handler 继续生效。
+      - 空 Host 不产生 stdout/stderr、用户提示、默认日志、DomainResult、Evidence 或 FocusUpdate。
+      - 生成路径 smoke 只使用 fake client/captured calls 隔离模型：断言原生成边界被到达、问题/Source/route/进入生成前状态不变，不调用真实服务也不比较模型文本。
+      - Host 抛异常、非法结果、fake plugin 与结果消费的完整验证保留到后续“中立契约插件与非法结果”任务，本卡不扩大范围。
+  existing_related_tests:
+    tracked:
+      - test_query_router_repo_meta.py
+      - packages/docmind-domain-sdk/tests
+    local_regression_read_only:
+      - tests/repo_meta/routing/test_router_handlers_route.py
+      - tests/repo_meta/routing/test_routing_core_router_guards.py
+      - tests/repo_meta/routing/test_chat_loop_handlers.py
+      - tests/retrieval/test_scoped_retrieval_analytic_guard.py
+      - tests/chat_text/test_followup_query_stability.py
+      - tests/chat_text/test_followup_scope_expansion.py
+      - tests/chat_text/test_file_locator_followup_local.py
+      - tests/retrieval/test_composite_task_semantics.py
+      - tests/state/test_answer_type_inference.py
+      - tests/file_actions/test_file_rename_focus_flow.py
+    rule: >-
+      tests/ 为本地回归目录，只运行、不修改、不暂存；若实施环境缺少其中任一文件，
+      记录缺失并停止，不用新测试伪装现有基线。
+    positioning:
+      - tests/state/test_answer_type_inference.py 的本地修订只作为当前机器的补充回归基线，不属于本任务 deliverables。
+      - 不暂存、不复制到根目录，也不把其内容并入 test_domain_dispatch_port_empty_host.py。
+      - test_domain_dispatch_port_empty_host.py 必须独立验证本任务契约，不得依赖本地 tests/ 才能成立。
+
+production_entry_regression:
+  baseline_timing: 必须在任何生产代码、测试代码或 requirements.txt 修改之前完成。
+  entry: <isolated_venv>/bin/python ask_notes.py
+  environment:
+    - 交互式本地能力样本仍需 OPENAI_API_KEY 通过生产入口配置守门，但不得调用其对应远程服务，也不得把值写入命令、日志或任务产物。
+    - DOCMIND_EMBEDDING_LOCAL_ONLY=1
+    - DOCMIND_DEBUG_SAVE_QUESTIONS=0
+    - DOCMIND_EMOJI_ENABLED=0
+    - DOCMIND_LOG_FILE 指向 VERIFY_ROOT 下的独立临时文件。
+    - PYTHONDONTWRITEBYTECODE=1
+  exact_samples:
+    - name: startup_help
+      command: ask_notes.py --help
+      actual_boundary: argparse 帮助与顶层 import 启动；不进入对话路由、索引构建或任何模型调用。
+    - name: local_inventory
+      input:
+        - 有哪些文档？
+        - q
+      actual_route: repo_meta
+      actual_local_topic: list_files
+      actual_boundary: >-
+        现有 is_repo_meta_request/route_question 本地守门命中文档清单，
+        try_handle_repo_meta 由 _answer_list_files 生成确定性列表；不进入 normal_retrieval、
+        生成式本地模型或远程模型回答边界。
+  excluded_from_exact_cli:
+    - 哪些文档里提到了检索策略？
+    - 这些文档中哪些还提到了召回？
+    - 上述问题进入 normal_retrieval，不再用作 CLI 生成文本逐字零差异样本；其接线语义由 tracked 确定性测试证明。
+  commands:
+    warm_cache_before_capture: >-
+      env DOCMIND_EMBEDDING_LOCAL_ONLY=1 DOCMIND_DEBUG_SAVE_QUESTIONS=0
+      DOCMIND_EMOJI_ENABLED=0 DOCMIND_LOG_FILE="$VERIFY_ROOT/cli-warmup-before.log"
+      PYTHONDONTWRITEBYTECODE=1
+      "$BEFORE_VENV/bin/python" ask_notes.py --notes-dir examples/demo_notes_public
+      < <("$BEFORE_VENV/bin/python" -c 'print("q")')
+      > "$VERIFY_ROOT/cli-warmup-before.out" 2>&1
+    capture_startup_before: >-
+      set +e;
+      "$BEFORE_VENV/bin/python" ask_notes.py --help
+      > "$VERIFY_ROOT/cli-startup-before.stdout"
+      2> "$VERIFY_ROOT/cli-startup-before.stderr";
+      code=$?; set -e;
+      printf '%s\n' "$code" > "$VERIFY_ROOT/cli-startup-before.exit";
+      test "$code" -eq 0
+    capture_local_before: >-
+      set +e;
+      env DOCMIND_EMBEDDING_LOCAL_ONLY=1 DOCMIND_DEBUG_SAVE_QUESTIONS=0
+      DOCMIND_EMOJI_ENABLED=0 DOCMIND_LOG_FILE="$VERIFY_ROOT/cli-local-before.log"
+      PYTHONDONTWRITEBYTECODE=1
+      "$BEFORE_VENV/bin/python" ask_notes.py --notes-dir examples/demo_notes_public
+      < <("$BEFORE_VENV/bin/python" -c
+      'print("有哪些文档？\nq")')
+      > "$VERIFY_ROOT/cli-local-before.stdout"
+      2> "$VERIFY_ROOT/cli-local-before.stderr";
+      code=$?; set -e;
+      printf '%s\n' "$code" > "$VERIFY_ROOT/cli-local-before.exit";
+      test "$code" -eq 0
+    warm_cache_after_change: >-
+      env DOCMIND_EMBEDDING_LOCAL_ONLY=1 DOCMIND_DEBUG_SAVE_QUESTIONS=0
+      DOCMIND_EMOJI_ENABLED=0 DOCMIND_LOG_FILE="$VERIFY_ROOT/cli-warmup-after.log"
+      PYTHONDONTWRITEBYTECODE=1
+      "$AFTER_VENV/bin/python" ask_notes.py --notes-dir examples/demo_notes_public
+      < <("$AFTER_VENV/bin/python" -c 'print("q")')
+      > "$VERIFY_ROOT/cli-warmup-after.out" 2>&1
+    capture_startup_after: >-
+      set +e;
+      "$AFTER_VENV/bin/python" ask_notes.py --help
+      > "$VERIFY_ROOT/cli-startup-after.stdout"
+      2> "$VERIFY_ROOT/cli-startup-after.stderr";
+      code=$?; set -e;
+      printf '%s\n' "$code" > "$VERIFY_ROOT/cli-startup-after.exit";
+      test "$code" -eq 0
+    capture_local_after: >-
+      set +e;
+      env DOCMIND_EMBEDDING_LOCAL_ONLY=1 DOCMIND_DEBUG_SAVE_QUESTIONS=0
+      DOCMIND_EMOJI_ENABLED=0 DOCMIND_LOG_FILE="$VERIFY_ROOT/cli-local-after.log"
+      PYTHONDONTWRITEBYTECODE=1
+      "$AFTER_VENV/bin/python" ask_notes.py --notes-dir examples/demo_notes_public
+      < <("$AFTER_VENV/bin/python" -c
+      'print("有哪些文档？\nq")')
+      > "$VERIFY_ROOT/cli-local-after.stdout"
+      2> "$VERIFY_ROOT/cli-local-after.stderr";
+      code=$?; set -e;
+      printf '%s\n' "$code" > "$VERIFY_ROOT/cli-local-after.exit";
+      test "$code" -eq 0
+    normalize_and_compare: >-
+      sed -E '/耗时/d' "$VERIFY_ROOT/cli-local-before.stdout"
+      > "$VERIFY_ROOT/cli-local-before.normalized";
+      sed -E '/耗时/d' "$VERIFY_ROOT/cli-local-after.stdout"
+      > "$VERIFY_ROOT/cli-local-after.normalized";
+      .venv/bin/python -c
+      'import pathlib,re,sys;
+      rate=re.compile(rb"[0-9]+(?:\.[0-9]+)?it/s");
+      data=pathlib.Path(sys.argv[1]).read_bytes();
+      parts=re.split(rb"(\r\n|\r|\n)", data);
+      for index in range(0, len(parts), 2):
+          line=parts[index];
+          if rate.search(line):
+              assert b"Loading weights:" in line, line;
+              parts[index]=rate.sub(b"<RATE>it/s", line);
+      pathlib.Path(sys.argv[2]).write_bytes(b"".join(parts))'
+      "$VERIFY_ROOT/cli-local-before.stderr"
+      "$VERIFY_ROOT/cli-local-before.stderr.normalized";
+      .venv/bin/python -c
+      'import pathlib,re,sys;
+      rate=re.compile(rb"[0-9]+(?:\.[0-9]+)?it/s");
+      data=pathlib.Path(sys.argv[1]).read_bytes();
+      parts=re.split(rb"(\r\n|\r|\n)", data);
+      for index in range(0, len(parts), 2):
+          line=parts[index];
+          if rate.search(line):
+              assert b"Loading weights:" in line, line;
+              parts[index]=rate.sub(b"<RATE>it/s", line);
+      pathlib.Path(sys.argv[2]).write_bytes(b"".join(parts))'
+      "$VERIFY_ROOT/cli-local-after.stderr"
+      "$VERIFY_ROOT/cli-local-after.stderr.normalized";
+      diff -u "$VERIFY_ROOT/cli-startup-before.stdout" "$VERIFY_ROOT/cli-startup-after.stdout";
+      diff -u "$VERIFY_ROOT/cli-startup-before.stderr" "$VERIFY_ROOT/cli-startup-after.stderr";
+      diff -u "$VERIFY_ROOT/cli-startup-before.exit" "$VERIFY_ROOT/cli-startup-after.exit";
+      diff -u "$VERIFY_ROOT/cli-local-before.normalized" "$VERIFY_ROOT/cli-local-after.normalized";
+      diff -u "$VERIFY_ROOT/cli-local-before.stderr.normalized"
+      "$VERIFY_ROOT/cli-local-after.stderr.normalized"
+      > "$VERIFY_ROOT/cli-local.stderr.diff";
+      diff -u "$VERIFY_ROOT/cli-local-before.exit" "$VERIFY_ROOT/cli-local-after.exit"
+  capture_rules:
+    - before 使用基准提交 94c8a6f6a78e77d792078f4891bb164771e776e4 的临时 detached worktree 与其 requirements；after 使用当前含未提交实现的工作树与修改后 tracked requirements，不得切换或污染当前工作树。
+    - 两个临时 venv 使用同一 Python 3.12、同一仓库目录、notes_dir、现有 cache、环境变量和完全相同 UTF-8 输入；依赖差异只能是本卡新增的 SDK 声明。
+    - BEFORE_VENV 与 AFTER_VENV 均不得继承 system-site-packages 或复用开发机当前 .venv 的 site-packages。
+    - 只允许在 local_inventory stdout 比较副本中剔除明确的“耗时”数值行。
+    - stderr 只允许在包含 `Loading weights:` 的已确认权重加载/进度行中，把 `[0-9]+(?:\.[0-9]+)?it/s` 吞吐率 token 替换为 `<RATE>it/s`；吞吐率是运行时性能遥测，不是行为契约。
+    - stderr 规范化不得删除整行、进度名称、加载阶段、文件名、计数或其他文本，也不得过滤 warning、error、exception、traceback、模型调用标记或新增/缺失行；任何非白名单行出现吞吐率 token 时立即失败。
+    - stdout、退出码和规范化后的完整 stderr 共同构成 CLI 验收；吞吐率规则不得推广为任意日志过滤，同一行除吞吐率外的任何差异必须使比较失败。
+    - local_inventory 的日志必须证明 repo_meta/list_files、全部索引直接复用，且 stdout/stderr/日志不得出现 [远程模型生成] 或生成式本地模型回答调用。
+    - 本次修订已依据当前实际路由选定 local_inventory；若后续 preflight 无法证明其完全不调用生成模型，应命中确定性 CLI 基线停止条件，不得在实施中静默降级或伪造生成回答逐字零差异。
+    - 确定性 CLI 若出现真实模型调用、网络错误、编码失真或其他不稳定输出，立即停止。
+    - 根级 tracked pytest 承担 normal_retrieval 接线、模型边界 smoke 和关键状态快照；真实生成文本不参与逐字比较。
+  state_snapshot_fields:
+    question:
+      - normalized_question
+      - dispatch_query
+    routing:
+      - route
+      - event_name
+      - entered_normal_retrieval
+    source_scope:
+      - allowed_paths
+      - selected_source_files
+      - current_focus_file
+      - last_relevant_indices
+    conversation_state:
+      - mode
+      - last_user_question
+      - last_route
+      - last_local_topic
+      - last_content_user_question
+      - last_content_route
+      - last_effective_search_query
+      - last_answer_type
+      - last_result_set_items
+      - last_result_set_entity_type
+      - last_result_set_selectable
+      - last_selected_candidate
+      - last_selected_source_files
+    downstream:
+      - build_search_query_kwargs
+      - build_retrieval_materials_kwargs
+      - generation_boundary_reached
+      - generation_boundary_call_kwargs_without_model_text
+  snapshot_serialization:
+    - 使用 JSON ensure_ascii=False、sort_keys=True 和固定 separators；列表/元组保留生产调用顺序，不用集合的非确定顺序。
+    - 控制组与 EmptyDomainHost 组使用同一合成输入和测试替身，比较序列化字节必须完全一致。
+    - 生产修改前在 BEFORE_VENV 中使用临时受控 harness 捕获原 runner 的 control 快照到 VERIFY_ROOT；修改后以相同输入/替身和 EmptyDomainHost 捕获 after，并对序列化字节执行 cmp。
+    - 临时 harness 不得落入仓库、改变生产接口或成为新 tracked 测试的运行依赖；根级 tracked 测试必须独立重建并断言同样的确定性契约。
+    - 快照不得包含时间戳、耗时、临时路径、随机 ID、模型输入 prompt 全文或模型生成文本。
+
+quality_gate:
+  preflight:
+    - test "$(git branch --show-current)" = "arch/domain-plugin-spike"
+    - test "$(git rev-parse HEAD)" = "94c8a6f6a78e77d792078f4891bb164771e776e4"
+    - test -x .venv/bin/python
+    - test "$({ .venv/bin/python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'; })" = "3.12"
+    - test -f requirements.txt
+    - test -f packages/docmind-domain-sdk/pyproject.toml
+    - git ls-files --error-unmatch requirements.txt packages/docmind-domain-sdk/pyproject.toml
+    - git status --short
+  immutable_wheelhouse:
+    network_probe:
+      metadata_url: https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp312-cp312-linux_x86_64.whl.metadata
+      rules:
+        - 不先创建完整 venv；分别使用当前 HTTP/HTTPS 代理与仅对 download.pytorch.org、download-r2.pytorch.org 设置进程级 NO_PROXY/no_proxy 的直连方式探测。
+        - 每种方式最多三次，逐次记录成功、HTTP 状态、TLS 错误与耗时；不修改全局/用户 pip、代理或证书配置。
+        - 两种方式均持续出现 TLS EOF 或不能稳定取得 metadata 时立即停止，不创建 wheelhouse 或修改生产代码。
+    prepare_once: >-
+      VERIFY_ROOT="$(mktemp -d)";
+      WHEELHOUSE="$VERIFY_ROOT/wheelhouse";
+      PIP_CACHE_DIR="$VERIFY_ROOT/pip-cache";
+      BEFORE_VENV="$VERIFY_ROOT/before-venv";
+      AFTER_VENV="$VERIFY_ROOT/after-venv";
+      export VERIFY_ROOT WHEELHOUSE PIP_CACHE_DIR BEFORE_VENV AFTER_VENV;
+      mkdir -p "$WHEELHOUSE" "$PIP_CACHE_DIR";
+      PIP_CONFIG_FILE=/dev/null
+      PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+      PIP_DEFAULT_TIMEOUT=180
+      PIP_RETRIES=8
+      PIP_CACHE_DIR="$PIP_CACHE_DIR"
+      .venv/bin/python -m pip wheel
+      --wheel-dir "$WHEELHOUSE"
+      -r requirements.txt
+      pytest==9.0.3 wheel
+      > "$VERIFY_ROOT/pip-wheelhouse.log" 2>&1
+    build_requirements:
+      - packages/docmind-domain-sdk/pyproject.toml 的 build-system.requires 是 setuptools>=69 与 wheel。
+      - requirements.txt 已声明 setuptools==70.2.0；wheel 按 pyproject 明确声明补入 wheelhouse。
+      - pytest==9.0.3 及其依赖只作为本卡已声明的测试工具补入 wheelhouse，不成为根项目运行时依赖。
+      - 不得引入 requirements、SDK build-system.requires 或本卡固定测试工具之外的任意顶层依赖。
+    allowed_network_sources:
+      - pypi.tuna.tsinghua.edu.cn
+      - download.pytorch.org
+      - download-r2.pytorch.org
+    source_rules:
+      - pip 不保证 index-url、extra-index-url 与 find-links 的来源优先级；不要求普通依赖全部来自清华。
+      - 下载日志中的网络 URL 域名只能属于 allowed_network_sources；不得出现用户级阿里云、豆瓣、中科大或其他额外索引。
+      - requirements.txt 现有 download.pytorch.org/whl/cu124 extra index 保持原样，不复制或修改。
+      - requirements.txt 后续声明的 ./packages/docmind-domain-sdk 是仓库本地源码，不得作为外部 wheel 写入 wheelhouse。
+    lock_and_verify: >-
+      find "$WHEELHOUSE" -maxdepth 1 -type f -printf '%f\n'
+      | LC_ALL=C sort > "$VERIFY_ROOT/wheelhouse.files";
+      test -n "$(cat "$VERIFY_ROOT/wheelhouse.files")";
+      test "$(find "$WHEELHOUSE" -maxdepth 1 -type f | wc -l)" -eq
+      "$(LC_ALL=C sort -u "$VERIFY_ROOT/wheelhouse.files" | wc -l)";
+      test -z "$(find "$WHEELHOUSE" -maxdepth 1 -type f ! -name '*.whl' -print)";
+      test -z "$(find "$WHEELHOUSE" -maxdepth 1 -type f
+      \( -name '*.part' -o -name '*.tmp' -o -name '*docmind_domain_sdk*' \) -print)";
+      (cd "$WHEELHOUSE" && sha256sum -- * | LC_ALL=C sort)
+      > "$VERIFY_ROOT/wheelhouse.locked.sha256";
+      chmod -R a-w "$WHEELHOUSE"
+    offline_probe: >-
+      PROBE_VENV="$VERIFY_ROOT/probe-venv";
+      .venv/bin/python -m venv "$PROBE_VENV";
+      PIP_CONFIG_FILE=/dev/null PIP_NO_INDEX=1
+      "$PROBE_VENV/bin/python" -m pip install
+      --no-index --find-links "$WHEELHOUSE" -r requirements.txt
+      > "$VERIFY_ROOT/pip-offline-probe-requirements.log" 2>&1;
+      "$PROBE_VENV/bin/python" -m pip check;
+      "$PROBE_VENV/bin/python" -c
+      'import torch; assert torch.__version__ == "2.6.0+cu124"';
+      "$PROBE_VENV/bin/python" ask_notes.py --help
+      > "$VERIFY_ROOT/ask-notes-probe-help.out" 2>&1;
+      PIP_CONFIG_FILE=/dev/null PIP_NO_INDEX=1
+      "$PROBE_VENV/bin/python" -m pip install
+      --no-index --find-links "$WHEELHOUSE"
+      ./packages/docmind-domain-sdk
+      > "$VERIFY_ROOT/pip-offline-probe-sdk.log" 2>&1;
+      "$PROBE_VENV/bin/python" -c 'import docmind_domain_sdk';
+      "$PROBE_VENV/bin/python" -m pip check;
+      rm -rf "$PROBE_VENV"
+    immutability_checks:
+      - 在 BEFORE 安装前、AFTER 安装前和全部验证结束后，分别按相同文件名顺序重算 SHA-256，并与 wheelhouse.locked.sha256 执行 cmp。
+      - wheelhouse 锁定后不得增加、删除或替换文件；任一清单差异、重复文件名、不完整文件或哈希异常立即停止。
+      - BEFORE/AFTER 所有安装命令必须同时使用 PIP_CONFIG_FILE=/dev/null、PIP_NO_INDEX=1、--no-index 和 --find-links "$WHEELHOUSE"；日志出现网络访问即失败。
+  isolated_environment_setup:
+    initialize_before_changes: >-
+      cp requirements.txt "$VERIFY_ROOT/requirements.before";
+      find packages/docmind-domain-sdk -type d
+      \( -name build -o -name dist -o -name '*.egg-info' -o -name .venv \)
+      -print | LC_ALL=C sort > "$VERIFY_ROOT/sdk-artifacts.before";
+      sha256sum
+      tests/repo_meta/routing/test_router_handlers_route.py
+      tests/repo_meta/routing/test_routing_core_router_guards.py
+      tests/repo_meta/routing/test_chat_loop_handlers.py
+      tests/retrieval/test_scoped_retrieval_analytic_guard.py
+      tests/chat_text/test_followup_query_stability.py
+      tests/chat_text/test_followup_scope_expansion.py
+      tests/chat_text/test_file_locator_followup_local.py
+      tests/retrieval/test_composite_task_semantics.py
+      tests/state/test_answer_type_inference.py
+      tests/file_actions/test_file_rename_focus_flow.py
+      > "$VERIFY_ROOT/local-regressions.before";
+      .venv/bin/python -m pip freeze --all
+      | LC_ALL=C sort > "$VERIFY_ROOT/current-venv.before"
+    install_before_from_tracked_requirements: >-
+      .venv/bin/python -m venv "$BEFORE_VENV";
+      (cd "$WHEELHOUSE" && sha256sum -- * | LC_ALL=C sort)
+      > "$VERIFY_ROOT/wheelhouse.before.sha256";
+      cmp "$VERIFY_ROOT/wheelhouse.locked.sha256"
+      "$VERIFY_ROOT/wheelhouse.before.sha256";
+      PIP_CONFIG_FILE=/dev/null PIP_NO_INDEX=1
+      "$BEFORE_VENV/bin/python" -m pip install
+      --no-index --find-links "$WHEELHOUSE" -r requirements.txt
+      > "$VERIFY_ROOT/pip-install-before.log" 2>&1;
+      "$BEFORE_VENV/bin/python" -m pip check
+    install_after_from_tracked_requirements: >-
+      .venv/bin/python -m venv "$AFTER_VENV";
+      (cd "$WHEELHOUSE" && sha256sum -- * | LC_ALL=C sort)
+      > "$VERIFY_ROOT/wheelhouse.after-input.sha256";
+      cmp "$VERIFY_ROOT/wheelhouse.locked.sha256"
+      "$VERIFY_ROOT/wheelhouse.after-input.sha256";
+      PIP_CONFIG_FILE=/dev/null PIP_NO_INDEX=1
+      "$AFTER_VENV/bin/python" -m pip install
+      --no-index --find-links "$WHEELHOUSE" -r requirements.txt
+      > "$VERIFY_ROOT/pip-install-after.log" 2>&1;
+      "$AFTER_VENV/bin/python" -m pip check
+    rules:
+      - 两个 venv 均由 python -m venv 创建，不使用 --system-site-packages。
+      - after 只能执行一次离线根依赖安装命令；本地 SDK 必须由修改后 requirements.txt 的相对源码路径触发构建，不得额外 pip install SDK。
+      - 两次根依赖安装均屏蔽用户级 pip 配置并禁用索引，不修改全局或用户配置文件。
+      - BEFORE 与 AFTER 使用同一锁定 wheelhouse 中完全相同的外部依赖文件；不得从当前 .venv 复制包。
+      - 安装过程不得访问网络；requirements.txt 内的 extra index 在 --no-index 下不参与离线安装。
+      - 当前 .venv 只负责创建临时 venv 和记录基线，不安装、卸载或升级任何包。
+      - wheelhouse、pip cache、venv、构建隔离目录和安装日志全部位于 VERIFY_ROOT 或系统临时区，验收后清理。
+    source_checks:
+      - 从 pip-wheelhouse.log 提取全部 http/https URL 的 host；去重结果必须是 allowed_network_sources 的子集。
+      - pip-install-before.log、pip-install-after.log 和两份 offline probe 日志不得出现 Collecting/Downloading http:// 或 https:// URL。
+      - 日志中出现 hash mismatch、索引冲突、下载内容异常、不允许的网络来源或离线阶段网络访问时立即停止。
+  tracked_dependency_checks:
+    exact_requirements_delta: >-
+      "$AFTER_VENV/bin/python" -c
+      'import pathlib, sys;
+      before=pathlib.Path(sys.argv[1]).read_bytes();
+      after=pathlib.Path("requirements.txt").read_bytes();
+      addition="./packages/docmind-domain-sdk\r\n".encode("utf-16le");
+      assert before.startswith(b"\xff\xfe");
+      assert before.endswith("\r\n".encode("utf-16le"));
+      assert after == before + addition'
+      "$VERIFY_ROOT/requirements.before"
+    declared_once: >-
+      "$AFTER_VENV/bin/python" -c
+      'import pathlib;
+      raw=pathlib.Path("requirements.txt").read_bytes();
+      assert raw.startswith(b"\xff\xfe");
+      text=raw[2:].decode("utf-16le");
+      assert text.splitlines().count("./packages/docmind-domain-sdk") == 1;
+      assert not text.replace("\r\n", "").count("\n");
+      assert not text.replace("\r\n", "").count("\r")'
+    installed_sdk: >-
+      "$AFTER_VENV/bin/python" -c
+      'import docmind_domain_sdk;
+      assert docmind_domain_sdk.PROTOCOL_VERSION == "1.0"'
+    installed_origin: >-
+      "$AFTER_VENV/bin/python" -c
+      'import importlib.metadata as m, json;
+      d=m.distribution("docmind-domain-sdk");
+      direct=json.loads(d.read_text("direct_url.json"));
+      assert direct["url"].rstrip("/").endswith("/packages/docmind-domain-sdk");
+      assert not direct.get("dir_info", {}).get("editable", False)'
+    isolated_import_path: >-
+      "$AFTER_VENV/bin/python" -c
+      'import pathlib, sys;
+      current=pathlib.Path(".venv").resolve();
+      assert all(current not in pathlib.Path(p).resolve().parents
+      and pathlib.Path(p).resolve() != current for p in sys.path if p)'
+    production_import_start: >-
+      "$AFTER_VENV/bin/python" -c
+      'import ask_notes;
+      import app.domain_dispatch_port;
+      import bootstrap.domain_composition'
+    production_cli_help: >-
+      "$AFTER_VENV/bin/python" ask_notes.py --help
+      > "$VERIFY_ROOT/ask-notes-help.out" 2>&1;
+      rg -n 'usage:|--notes-dir' "$VERIFY_ROOT/ask-notes-help.out"
+    test_tooling_after_runtime_checks: >-
+      PIP_CONFIG_FILE=/dev/null PIP_NO_INDEX=1
+      "$AFTER_VENV/bin/python" -m pip install
+      --no-index --find-links "$WHEELHOUSE" pytest==9.0.3;
+      "$AFTER_VENV/bin/python" -m pip check
+    test_tooling_rule: >-
+      pytest 仅在 requirements 安装、SDK import、origin 和生产入口检查全部通过后，
+      安装到临时 AFTER_VENV 用于运行测试；不得借此额外安装或重装 SDK，
+      也不得把测试工具状态当作生产依赖验收证据。
+  baseline_capture:
+    - >-
+      PIP_CONFIG_FILE=/dev/null PIP_NO_INDEX=1
+      "$BEFORE_VENV/bin/python" -m pip install
+      --no-index --find-links "$WHEELHOUSE" pytest==9.0.3
+    - 在改代码前运行 production_entry_regression，保存规范化 stdout/stderr 与关键状态基线到 VERIFY_ROOT。
+    - 使用 BEFORE_VENV 在改代码前运行受影响 pytest，并保存命令、退出码和摘要；不得向 BEFORE_VENV 安装 SDK。
+  static_checks:
+    py_compile: >-
+      PYTHONPYCACHEPREFIX="$VERIFY_ROOT/pycache"
+      "$AFTER_VENV/bin/python" -m py_compile
+      app/domain_dispatch_port.py
+      app/domain_host/__init__.py
+      app/domain_host/host.py
+      bootstrap/domain_composition.py
+      ask_notes.py
+      app/chat_loop_parts/runner.py
+      test_domain_dispatch_port_empty_host.py
+    task_card_yaml: >-
+      "$AFTER_VENV/bin/python" -c
+      'import pathlib, yaml;
+      p=pathlib.Path("docs/task_card_domain_dispatch_port_empty_host.yaml");
+      data=yaml.safe_load(p.read_text(encoding="utf-8"));
+      assert data["version"] == 1;
+      assert data["task_goal"]'
+    actual_changed_targets: >-
+      { git diff --name-only --
+      requirements.txt ask_notes.py app/chat_loop_parts/runner.py
+      app/domain_dispatch_port.py app/domain_host
+      bootstrap/domain_composition.py test_domain_dispatch_port_empty_host.py;
+      git status --porcelain=v1 --untracked-files=all --
+      app/domain_dispatch_port.py app/domain_host
+      bootstrap/domain_composition.py test_domain_dispatch_port_empty_host.py
+      | sed -n 's/^?? //p'; }
+      | LC_ALL=C sort -u > "$VERIFY_ROOT/actual-changed-code-test-requirements.txt";
+      test -s "$VERIFY_ROOT/actual-changed-code-test-requirements.txt";
+      while IFS= read -r path; do test -f "$path"; done
+      < "$VERIFY_ROOT/actual-changed-code-test-requirements.txt"
+    utf8_encoding: >-
+      while IFS= read -r path; do
+        test "$path" = requirements.txt && continue;
+        "$AFTER_VENV/bin/python"
+        packages/docmind-domain-sdk/scripts/check_text_encoding.py "$path";
+      done < "$VERIFY_ROOT/actual-changed-code-test-requirements.txt"
+    requirements_encoding: >-
+      "$AFTER_VENV/bin/python" -c
+      'import pathlib;
+      raw=pathlib.Path("requirements.txt").read_bytes();
+      assert raw.startswith(b"\xff\xfe");
+      text=raw[2:].decode("utf-16le");
+      assert text.endswith("\r\n");
+      assert "\n" not in text.replace("\r\n", "");
+      assert "\r" not in text.replace("\r\n", "")'
+    mojibake_scan: >-
+      while IFS= read -r path; do
+      if test "$path" = requirements.txt; then
+      scan_target="$VERIFY_ROOT/requirements.decoded.utf8";
+      iconv -f UTF-16LE -t UTF-8 "$path" > "$scan_target";
+      else scan_target="$path"; fi;
+      if rg -n
+      'AI鍥炵瓟|馃|鈴憋笍|鈿狅笍|褰撳墠杩樻病鏈|锛\?|銆\?'
+      "$scan_target"; then exit 1; fi;
+      done < "$VERIFY_ROOT/actual-changed-code-test-requirements.txt"
+  tests:
+    new_contract_tests: >-
+      PYTHONDONTWRITEBYTECODE=1
+      "$AFTER_VENV/bin/python" -m pytest -q -p no:cacheprovider
+      test_domain_dispatch_port_empty_host.py
+    sdk_contract_baseline: >-
+      PYTHONDONTWRITEBYTECODE=1
+      "$AFTER_VENV/bin/python" -m pytest -q -p no:cacheprovider
+      packages/docmind-domain-sdk/tests
+    tracked_core_baseline: >-
+      PYTHONDONTWRITEBYTECODE=1
+      "$AFTER_VENV/bin/python" -m pytest -q -p no:cacheprovider
+      test_query_router_repo_meta.py
+    related_local_regressions: >-
+      PYTHONDONTWRITEBYTECODE=1
+      "$AFTER_VENV/bin/python" -m pytest -q -p no:cacheprovider
+      tests/repo_meta/routing/test_router_handlers_route.py
+      tests/repo_meta/routing/test_routing_core_router_guards.py
+      tests/repo_meta/routing/test_chat_loop_handlers.py
+      tests/retrieval/test_scoped_retrieval_analytic_guard.py
+      tests/chat_text/test_followup_query_stability.py
+      tests/chat_text/test_followup_scope_expansion.py
+      tests/chat_text/test_file_locator_followup_local.py
+      tests/retrieval/test_composite_task_semantics.py
+      tests/state/test_answer_type_inference.py
+      tests/file_actions/test_file_rename_focus_flow.py
+    all_available_pytest: >-
+      PYTHONDONTWRITEBYTECODE=1
+      "$AFTER_VENV/bin/python" -m pytest -q -p no:cacheprovider
+      test_query_router_repo_meta.py
+      test_domain_dispatch_port_empty_host.py
+      packages/docmind-domain-sdk/tests
+      tests
+  production_regression:
+    - 使用 production_entry_regression 规定的 AFTER_VENV、相同运行参数和相同 UTF-8 输入捕获 startup_help 与 local_inventory after。
+    - startup_help 的 stdout/stderr/退出码逐字节一致；local_inventory 只剔除 stdout 耗时行并仅规范化已确认权重加载行的吞吐率 token，随后 stdout、完整规范化 stderr 和退出码逐字节一致。
+    - 断言输出中没有新增 Domain Host、plugin、插件、未处理、降级等用户提示或日志。
+    - local_inventory 必须仍命中 repo_meta/list_files，不调用 DomainDispatchPort，也不得出现 [远程模型生成] 或本地生成模型回答。
+    - normal_retrieval 和生成边界由 test_domain_dispatch_port_empty_host.py 的受控替身验证，不对真实模型文本做逐字比较。
+  dependency_checks:
+    core_does_not_import_host: >-
+      ! rg -n
+      '(from|import)[[:space:]]+(app\.domain_host|bootstrap\.domain_composition)'
+      app/chat_loop.py app/chat_loop_parts app/dialog app/retrieval_flow
+    host_does_not_import_core_internals: >-
+      ! rg -n
+      '(^|[[:space:]])(from|import)[[:space:]]+(ai|retrieval|infra|loaders)([.[:space:]]|$)'
+      app/domain_host bootstrap/domain_composition.py
+    no_discovery_or_transport: >-
+      ! rg -ni
+      '(entry_points|importlib\.metadata|mcp|transport|discover|registry|register_plugin)'
+      app/domain_host bootstrap/domain_composition.py
+    no_duplicate_protocol_models: >-
+      ! rg -n
+      '^class[[:space:]]+(DomainRequest|DomainResult|SourceRef|SourceSnapshot|FocusContext|FocusUpdate|OpaqueFocus)\b'
+      app bootstrap test_domain_dispatch_port_empty_host.py
+    sdk_unchanged: git diff --exit-code -- packages/docmind-domain-sdk
+    adr_unchanged: git diff --exit-code -- docs/adr docs/spikes docs/evolution.md
+    runner_imports_only_port: >-
+      rg -n
+      '(from app\.domain_dispatch_port import|import app\.domain_dispatch_port)'
+      app/chat_loop_parts/runner.py
+  diff_checks:
+    editable_scope_only: git status --short
+    whitespace: git diff --check
+    new_file_whitespace: >-
+      for path in
+      app/domain_dispatch_port.py
+      app/domain_host/__init__.py
+      app/domain_host/host.py
+      bootstrap/domain_composition.py
+      test_domain_dispatch_port_empty_host.py
+      docs/task_card_domain_dispatch_port_empty_host.yaml;
+      do
+        if ! git ls-files --error-unmatch "$path" >/dev/null 2>&1; then
+          git diff --no-index --check /dev/null "$path";
+          code=$?;
+          test "$code" -eq 1;
+        fi;
+      done
+    forbidden_tracked_changes: >-
+      test -z "$(git diff --name-only --
+      packages/docmind-domain-sdk docs/adr docs/spikes docs/evolution.md README.md
+      app/chat_loop.py app/dialog app/chat_state_helpers.py
+      app/retrieval_flow app/file_actions ai retrieval infra loaders
+      scan_docs.py test_query_router_repo_meta.py tests examples)"
+  artifact_cleanup:
+    - >-
+      .venv/bin/python -m pip freeze --all | LC_ALL=C sort
+      > "$VERIFY_ROOT/current-venv.after";
+      cmp "$VERIFY_ROOT/current-venv.before" "$VERIFY_ROOT/current-venv.after"
+    - 当前 .venv 的任务前后 freeze 快照必须完全一致；本卡不得向当前 .venv 安装、卸载或升级 SDK/任何包。
+    - 不删除任务开始前已经存在的 cache、logs、.pytest_cache、__pycache__、npz、db 或用户文件。
+    - 确认 packages/docmind-domain-sdk 下没有本任务产生的 dist、build、egg-info 或 .venv。
+    - 若 clean install 在 SDK 源码树生成新构建目录，只删除 sdk-artifacts.before 中不存在且可确认由本任务创建的路径，再重新扫描；不得删除任务前已有路径。
+    - >-
+      find packages/docmind-domain-sdk -type d
+      \( -name build -o -name dist -o -name '*.egg-info' -o -name .venv \)
+      -print | LC_ALL=C sort > "$VERIFY_ROOT/sdk-artifacts.after";
+      cmp "$VERIFY_ROOT/sdk-artifacts.before" "$VERIFY_ROOT/sdk-artifacts.after"
+    - >-
+      sha256sum
+      tests/repo_meta/routing/test_router_handlers_route.py
+      tests/repo_meta/routing/test_routing_core_router_guards.py
+      tests/repo_meta/routing/test_chat_loop_handlers.py
+      tests/retrieval/test_scoped_retrieval_analytic_guard.py
+      tests/chat_text/test_followup_query_stability.py
+      tests/chat_text/test_followup_scope_expansion.py
+      tests/chat_text/test_file_locator_followup_local.py
+      tests/retrieval/test_composite_task_semantics.py
+      tests/state/test_answer_type_inference.py
+      tests/file_actions/test_file_rename_focus_flow.py
+      > "$VERIFY_ROOT/local-regressions.after";
+      cmp "$VERIFY_ROOT/local-regressions.before"
+      "$VERIFY_ROOT/local-regressions.after"
+    - 确认新增/修改路径下没有本任务产生的 __pycache__、*.pyc、临时快照或日志。
+    - >-
+      (cd "$WHEELHOUSE" && sha256sum -- * | LC_ALL=C sort)
+      > "$VERIFY_ROOT/wheelhouse.final.sha256";
+      cmp "$VERIFY_ROOT/wheelhouse.locked.sha256"
+      "$VERIFY_ROOT/wheelhouse.final.sha256"
+    - 正常成功时删除 VERIFY_ROOT 和临时 worktree；其中包括锁定 wheelhouse、BEFORE_VENV、AFTER_VENV、probe venv、pip cache、构建隔离产物、CLI 捕获、日志和输入。
+    - 若 CLI 或关键状态比较失败，汇报前必须保留 raw before/after、normalized before/after、diff、状态快照及其所在 VERIFY_ROOT；未经用户确认不得清理这些失败证据。
+    - 使用 git status --short 做最终工作区检查，并逐项解释所有条目。
+  verification_order:
+    - 环境、分支、HEAD、权威 requirements、现有工作区和当前 .venv 状态预检
+    - 最多各三次探测 PyTorch metadata 的当前代理与仅对 PyTorch 域名直连链路，选定稳定链路
+    - 从修改前 requirements、SDK 声明构建依赖和固定 pytest 工具一次性生成 wheelhouse，核对来源域名并锁定 SHA-256 清单
+    - 在 probe venv 中完全离线安装 requirements、校验 torch/pip check/ask_notes.py --help，再从本地源码离线构建并导入 SDK
+    - 对全部指定本地回归文件按固定顺序记录 SHA-256 基线，缺失时停止
+    - 从修改前 tracked requirements 和锁定 wheelhouse 离线创建 BEFORE_VENV，捕获生产入口、pytest 与关键状态基线
+    - 最小修改 requirements.txt，并从修改后 tracked requirements 和同一 wheelhouse 离线创建 AFTER_VENV
+    - 在不额外安装 SDK 的前提下验证 SDK import/origin、pip check 和 ask_notes.py import/--help
+    - 校验 requirements 精确增量、UTF-16LE BOM、CRLF 和唯一 SDK 声明
+    - UTF-8、乱码扫描和 py_compile
+    - 端口/factory/composition root 函数级契约测试
+    - 相关 Core、Source、追问、状态、文件操作和 SDK pytest
+    - 全部可用 pytest
+    - 生产入口 after 捕获与零差异比较
+    - import/依赖方向/重复 DTO 扫描
+    - git diff --check、当前 .venv 零变化、临时环境/产物清理和最终 git status --short
+
+acceptance_dialog:
+  - q: 有哪些文档？
+    verification: 真实 CLI 确定性零差异
+    expect: >-
+      仍由 repo_meta 守门处理；不调用领域端口，接入前后输出和状态零差异。
+  - q: 哪些文档里提到了检索策略？
+    verification: tracked 确定性 runner 测试，不用真实 CLI 生成文本比较
+    expect: >-
+      仍进入 normal_retrieval；空 Host 返回 None，原问题、Source、route、focus、
+      build_search_query/build_retrieval_materials 参数和下游边界调用与控制快照零差异。
+  - scenario: 受控生成边界 smoke
+    verification: tracked pytest fake client/captured calls
+    expect: >-
+      不调用真实远程或本地生成模型；EmptyDomainHost 不提前结束，
+      原生成边界仍被到达，且进入边界前的问题、Source、route 和状态快照不变。
+  - scenario: 文件重命名预览、取消及既有焦点回归
+    expect: >-
+      仍由 app/file_actions 处理且不调用领域端口；现有文件操作 pytest 全部通过，
+      不产生真实文件变更。
+
+acceptance_min:
+  - requirements.txt 是根项目唯一权威依赖入口，并以唯一一行 ./packages/docmind-domain-sdk 声明 SDK 运行时依赖。
+  - requirements.txt 除追加该行外字节级不变，继续保持 UTF-16LE BOM 与 CRLF。
+  - 外部依赖一次性下载到仓库外 wheelhouse，网络日志域名仅来自清华 PyPI 与 requirements 声明的 PyTorch/CDN 域名；不假设 index-url 与 extra-index-url 的来源优先级。
+  - wheelhouse 文件按文件名排序的 SHA-256 锁定清单，在 BEFORE、AFTER 和最终清理前 cmp 完全一致；本地 SDK 不作为外部 wheel 混入。
+  - 全新 BEFORE_VENV 与 AFTER_VENV 都只从同一 wheelhouse 以 --no-index --find-links 离线安装；安装日志无网络访问。
+  - 全新 AFTER_VENV 仅执行离线 pip install -r requirements.txt 后即可从仓库源码构建并 import docmind_domain_sdk，且安装为非 editable 的 SDK 0.1.0。
+  - 同一干净环境中 ask_notes.py 顶层 import 与 --help 启动阶段通过，不依赖当前 .venv 或 PYTHONPATH。
+  - Core 中存在单一中立 DomainDispatchPort，runner 只依赖该端口与 SDK 顶层 DTO。
+  - EmptyDomainHost 是具体实现，且不注册、不发现、不调用插件，只返回 None。
+  - ask_notes.py::main 是唯一创建点，并把 Host 作为 keyword-only 依赖注入 runner。
+  - 领域 dispatch 只位于全部通用守门之后、原 normal_retrieval 链之前。
+  - 无插件时原问题、Source 范围、route、检索参数、回答、文件操作和状态写回零差异。
+  - EmptyDomainHost 返回 None 时不能覆盖或截断原 Core 链路；异常、非法结果与结果消费的完整验证属于后续任务。
+  - SDK 协议实现、Schema 和校验逻辑未修改，仓库中没有第二份协议 DTO 或校验器。
+  - 新端口契约测试、SDK pytest、tracked pytest、现有相关本地 pytest 和全部可用 pytest 通过。
+  - 真实 CLI 的 startup_help 和 repo_meta/list_files 确定性样本 before/after stdout、退出码与仅规范化权重加载吞吐率后的完整 stderr 比较通过。
+  - tracked 测试的 normal_retrieval 接线快照与受控生成边界 smoke 通过，不使用真实模型文本做硬验收。
+  - import 与依赖方向扫描、乱码/编码检查、py_compile 和 git diff --check 通过。
+  - wheelhouse、BEFORE_VENV、AFTER_VENV、probe venv、pip cache、构建目录、日志、快照和输入已清理，当前 .venv 任务前后零变化。
+  - 全部指定本地回归文件的前后 SHA-256 清单 cmp 为空，tests/ 未发生变化。
+  - 最终 git status 仅含批准范围改动，requirements.txt 是唯一获准修改的既有依赖文件。
+
+refactor_guard:
+  line_threshold: 405
+  deflatten_targets: []
+  import_compatibility_required: true
+  moved_files: 0
+
+perf_guard:
+  required: false
+  benchmark: ""
+  threshold: ""
+
+stop_conditions:
+  - ADR 与当前代码的依赖方向冲突，且不能通过本卡已选的 3a 窄切片保持一致；仅待后续更新 ADR 的 3a/3b 文字不构成阻塞。
+  - ask_notes.py::main 不再是稳定且唯一的生产 composition root，或发现第二个未覆盖的生产入口。
+  - 接入 Host 必须大面积修改 runner、app/chat_loop.py、状态机、路由、检索或文件操作链路。
+  - 必须把 RepoState、ChatState、Path、chunk、模型 client、logger 或数据库连接暴露给 Host/SDK。
+  - 必须重新设计 SDK 公开协议、增加第二份 DTO/校验逻辑或修改 protocol 1.0 Schema 才能推进。
+  - 必须实现 SourceCatalog、SourceSync、插件发现、生命周期或具体领域插件才能完成空 Host 接线。
+  - requirements.txt 不再是根项目权威 tracked 依赖入口，或实施时发现另一个必须同步的权威机制。
+  - 当前 pip 无法从 requirements.txt 的 ./packages/docmind-domain-sdk 解析并非 editable 安装 SDK。
+  - 必须新增根 pyproject、第二份 requirements、PYTHONPATH、editable install、绝对路径或手动修改当前 .venv 才能导入 SDK。
+  - 无法在保持 requirements.txt 其余字节、UTF-16LE BOM 和 CRLF 不变时加入唯一 SDK 声明。
+  - 从干净 AFTER_VENV 仅执行 pip install -r requirements.txt 后，SDK import、pip check、origin 校验或 ask_notes.py import/--help 失败。
+  - 当前代理与仅对 PyTorch 域名直连的链路均无法在最多三次探测内稳定取得指定 torch metadata。
+  - wheelhouse 生成不完整、含重复文件名/临时文件/本地 SDK wheel、存在哈希异常，或锁定后的任一 SHA-256 cmp 不一致。
+  - wheelhouse 网络下载日志出现 pypi.tuna.tsinghua.edu.cn、download.pytorch.org、download-r2.pytorch.org 之外的来源域名。
+  - 离线 probe、BEFORE 或 AFTER 安装发生网络访问，或 SDK 的 setuptools>=69、wheel 声明构建依赖不能由 wheelhouse 满足。
+  - 任一安装出现 hash mismatch、索引冲突或下载内容异常。
+  - 任一指定本地回归文件缺失，或实施前后 SHA-256 清单不一致。
+  - 找不到可用 monkeypatch/spy/fake 确定验证 normal_retrieval 接线的边界，或必须修改生产接口暴露不必要实现细节。
+  - 必须调用真实远程或本地生成模型，才能证明 EmptyDomainHost 返回 None 后安全进入原 normal_retrieval/生成边界。
+  - 接入 EmptyDomainHost 必须改变现有 route、ConversationState/focus、Source 语义或 SDK protocol 1.0。
+  - 干净安装、指定 pytest、startup_help 或 repo_meta/list_files 确定性 CLI 基线失败；仅已确认权重加载行中的数字吞吐率 token 不同不构成失败。
+  - 规范化吞吐率后 stderr 仍有其他差异，或 stdout、退出码、关键状态快照不一致。
+  - CLI 出现模型调用、warning、异常、新增/缺失日志，或 normal_retrieval 原链路行为发生变化。
+  - 实施需要修改 editable_scope.deny 中任一文件。
+  - 任一停止条件命中时停止实施，保留可审查证据并请求用户决定，不自行扩大范围。
+
+non_blocking_validation_observations:
+  - 某个已移出精确零差异清单的生成型 CLI 问题会调用模型，本身不构成停止条件。
+  - 不得通过固定温度、重复真实请求、过滤生成内容或取偶然相同结果，把生成型问题重新纳入逐字节硬验收。
+
+future_slices:
+  - name: 发现、生命周期与基础运行时治理
+    scope: >-
+      对齐 ADR 原第 3 步剩余部分；实现中立发现、describe/start/stop、基础错误隔离，
+      但仍不引入具体领域结论。
+  - name: Source 边界
+    scope: >-
+      建立 SourceCatalog/SourceSync 适配器、revision、权限裁剪与 SDK Source DTO 转换，
+      覆盖增量、删除和版本变化。
+  - name: 中立契约插件与非法结果
+    scope: >-
+      以完全合成、跨领域中立数据验证 probe/execute、handled/abstain/error、
+      SDK boundary validator、异常、非法结果、超时与降级；本卡不提前实现。
+  - name: 不透明状态与结果消费
+    scope: >-
+      引入 PluginInteractionState、OpaqueFocus 通用序号选择、合法 handled 结果呈现和
+      FocusUpdate 写回；先影子验证，不删除旧状态。
+  - name: 外部领域插件与后续 MCP
+    scope: >-
+      在独立发布物中实现具体领域插件；稳定后再做影子切流、Core 耦合清理和 MCP 适配。
+
+future_implementation_permissions:
+  editable_only_within_card: true
+  run_all_quality_gates: true
+  commit_allowed: false
+  push_allowed: false
+  rules:
+    - 实施阶段只可修改 editable_scope.allow 中批准的生产代码、tracked 测试和本任务卡。
+    - 完成后必须运行本卡列出的全部质量门并汇报原始命令、退出码和摘要。
+    - 未经用户再次明确授权，不得 git add、commit、push、开 PR 或修改远端状态。
+
+deliverables:
+  - requirements.txt 中可复现的本地 SDK 运行时依赖声明
+  - 中立 DomainDispatchPort
+  - 不发现、不调用插件的 EmptyDomainHost
+  - composition root factory 与实际注入
+  - 无插件局部安全回落边界
+  - 根级 tracked 契约/回归测试
+  - 生产入口 before/after 零差异证据与关键状态快照
+  - 干净环境安装/import/生产入口证据、全部质量门、当前 .venv 零变化、产物清理和最终 git status --short
+
+commit_message:
+  allowed: false
+  proposed_for_future_authorization_only:
+    title: "feat(domain-host): 建立空 Host 接线并保持无插件行为不变"
+    body:
+      - "目标: 注入中立领域调度边界，并证明无插件场景用户行为零差异。"
+      - "手段: 由 composition root 创建空 Host，增加端口契约、局部回落与生产入口回归。"

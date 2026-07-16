@@ -7,6 +7,7 @@ from ai.repo_meta.category import resolve_repo_content_category_scope
 from ai.structured_skill_summary import summarize_structured_skill_summary_with_remote
 from ai.decision_result import parse_decision_result, render_decision_result
 from app.dialog_state_machine import apply_event_to_state, detect_dialog_event
+from app.domain_dispatch_port import DomainDispatchPort, dispatch_domain_request
 from app.chat_retrieval_flow import (
     build_retrieval_materials,
     build_safe_final_prompt,
@@ -41,6 +42,7 @@ def run_chat_loop(
     *,
     notes_dir: Path,
     change_log_file: Path,
+    domain_dispatch_port: DomainDispatchPort,
     question_recorder=None,
 ):
     from app import chat_loop as runtime
@@ -194,6 +196,7 @@ def run_chat_loop(
                     is_content_answer=False,
                 )
                 continue
+            dispatch_domain_request(domain_dispatch_port, question)
             # 5) normal retrieval
             runtime.conversation_state.mode = "content"
             runtime.conversation_state.last_user_question = question
