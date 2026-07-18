@@ -1,3 +1,3 @@
-from .host import EmptyDomainHost
+from .host import EmptyDomainHost, StaticDomainHost
 
-__all__ = ["EmptyDomainHost"]
+__all__ = ["EmptyDomainHost", "StaticDomainHost"]

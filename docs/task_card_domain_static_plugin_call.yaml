@@ -1,0 +1,357 @@
+version: 1
+
+task_goal: >-
+  在不改变现有用户可观察行为的前提下，使领域 Host 能由 composition root
+  静态获得并调用最多一个实现 SDK protocol 1.0 的中立插件实例；插件明确未处理、
+  调用失败或边界校验失败时继续返回 Core 已理解的 None，合法 handled 结果仅返回给
+  现有影子 dispatch 边界而不在本卡消费。
+
+slice:
+  id: 3a
+  name: 单个中立契约插件的静态接入与调用
+  order: 先于 docs/task_card_domain_minimal_handled_result_consumption.yaml
+  depends_on:
+    - aad3bd37fe5c086be23cb52267066deddbc4ee53
+
+verified_facts:
+  repository:
+    branch: arch/domain-plugin-spike
+    head: aad3bd37fe5c086be23cb52267066deddbc4ee53
+    production_composition_root: ask_notes.py::main
+    composition_factory: bootstrap/domain_composition.py::create_domain_host
+    core_port: app/domain_dispatch_port.py::DomainDispatchPort
+    request_factory: app/domain_dispatch_port.py::dispatch_domain_request
+    empty_host: app/domain_host/host.py::EmptyDomainHost
+    runner: app/chat_loop_parts/runner.py::run_chat_loop
+    dispatch_line_semantics: >-
+      runner 在文件操作、contextless follow-up、system_capability、repo_meta、
+      smalltalk、out_of_scope 均未处理后调用 dispatch_domain_request，随后才写入
+      normal_retrieval 状态并进入原检索链；当前返回值被忽略。
+    current_request: >-
+      dispatch_domain_request 拥有 DomainRequest 创建职责；query 等于规范化后的
+      question，request_id 为 uuid4().hex，source_scope 固定为空元组，focus 与
+      deadline_ms 使用 SDK 默认值。
+    current_fallback: >-
+      dispatch_domain_request 捕获端口异常，并把非 DomainResult 返回值映射为 None；
+      EmptyDomainHost.dispatch 对任意 DomainRequest 返回 None。
+    current_composition: >-
+      ask_notes.py::main 在 RepoState 和嵌入索引就绪后调用 create_domain_host()，
+      再以 domain_dispatch_port keyword 注入 run_chat_loop；这是现有单一生产创建点。
+    existing_sync_async_bridge: >-
+      全仓只读搜索未发现生产代码中可复用的“同步调用单个 async 函数”边界；
+      docs/spikes/domain_plugin_protocol/verify_protocol.py 仅在独立 smoke 入口用
+      asyncio.run(verify()) 驱动整个异步验证，检索模块的 ThreadPoolExecutor 只处理
+      同步索引任务，不能作为 DomainPlugin.execute 的桥接机制。
+    current_sdk_install_contract: >-
+      requirements.txt 已以 ./packages/docmind-domain-sdk 声明本地 SDK；当前工作区
+      .venv 未安装该包，实施验证不得把当前 .venv 的偶然状态当作生产依赖证明。
+  sdk_protocol_1_0:
+    public_plugin_port: docmind_domain_sdk.DomainPlugin
+    execution_shape: async
+    methods:
+      - describe(PluginDescribeRequest) -> PluginManifest
+      - start(PluginStartRequest) -> LifecycleResult
+      - sync_sources(SourceSyncRequest) -> SourceSyncResult
+      - probe(DomainRequest) -> ProbeResult
+      - execute(DomainRequest) -> DomainResult
+      - stop(PluginStopRequest) -> LifecycleResult
+    domain_request_fields:
+      - protocol_version: Literal["1.0"]，默认 PROTOCOL_VERSION
+      - request_id: 非空且不允许首尾空白
+      - query: 长度 1..16000
+      - locale: 默认 und
+      - source_scope: tuple[SourceRef, ...]，必填
+      - focus: FocusContext，默认空 collection/selected
+      - deadline_ms: 默认 10000，范围 50..300000
+    domain_result_statuses:
+      - handled
+      - abstain
+      - retryable_error
+      - fatal_error
+    handled_expression: >-
+      DomainResult.status == "handled"；answer_markdown.strip() 必须非空，error 必须为 None。
+    unhandled_expression: >-
+      SDK 内由 status == "abstain"、"retryable_error" 或 "fatal_error" 表达；
+      Core 端当前统一使用 DomainResult | None 中的 None 表达未处理/安全回落。
+    probe_variants:
+      - disposition == "claim"
+      - disposition == "abstain"，且 score 必须为 0、evidence_source_refs 必须为空
+    related_fields:
+      - FocusUpdate.mode: preserve | replace_collection | clear
+      - EvidenceRef.source_ref/source_revision/locator/excerpt/confidence
+      - SourceRef.source_id/revision/display_label/media_type
+      - PluginError.code/message/retryable
+      - DomainResult.answer_markdown/focus_update/evidence/warnings/error
+    result_boundary_validator: docmind_domain_sdk.validate_result_boundary
+    result_boundary_checks:
+      - request_id 与请求一致
+      - plugin_id 与 Host 静态配置的 expected_plugin_id 一致
+      - Evidence 的 Source ID/revision 位于请求 source_scope
+      - FocusUpdate.items 的 plugin_id 与 Source 引用合法
+    protocol_sufficiency: >-
+      DomainPlugin.execute、DomainRequest、DomainResult 和 validate_result_boundary 已足以
+      完成静态单插件调用与结果校验；不需要修改 SDK、Schema 或 protocol 1.0。
+  state_and_return:
+    conversation_state_owner: app.chat_loop.conversation_state
+    local_writeback: app.chat_state_helpers.update_state_after_local_answer
+    retrieval_writeback: app.chat_state_helpers.update_state_after_retrieval_answer
+    runner_return: run_chat_loop 为交互循环，正常退出返回 None
+    approved_3a_behavior: >-
+      本卡不调用任何状态写回函数、不呈现插件结果、不提前 continue；无论静态插件返回
+      handled 还是未处理，runner 的既有 normal_retrieval 路径与返回类型均保持不变。
+  tests:
+    tracked_root_contract: test_domain_dispatch_port_empty_host.py
+    ignored_local_tests: tests/
+    existing_patterns:
+      - pytest monkeypatch
+      - SimpleNamespace fake client
+      - captured dict/list
+      - spy port requests 与 state_snapshots
+      - 受控本地/远程边界哨兵结果
+      - 不调用真实模型的 runner 单轮驱动
+
+decision:
+  split_from_result_consumption: true
+  reasons:
+    - 3a 可通过插件调用次数、请求 DTO、边界校验、未处理映射和 runner 零差异独立验收。
+    - 3b 会新增用户可见提前返回语义；与 3a 合并会混合 Host 调用风险和 Core 状态/回答风险。
+    - 两卡虽共享现有 dispatch 点，但验收边界不同，拆分后可单独回滚且不需要 protocol 1.0 变更。
+  neutral_contract_plugin_location: 根级 tracked 契约测试中的测试替身
+  location_reason: >-
+    当前没有要安装的真实中立插件，也未授权具体领域插件。把完整实现 DomainPlugin
+    形状的合成替身放入现有根级 tracked 契约测试，能诚实证明进程内协议调用；
+    独立示例包会制造额外发布/安装面，最小生产插件则会把测试夹具伪装成线上能力。
+  production_plugin_created: false
+
+architecture_boundary:
+  dependency_direction:
+    - Core 继续只依赖 app.domain_dispatch_port 与 SDK 顶层公开 DTO。
+    - bootstrap.domain_composition 可接收已构造的 DomainPlugin 实例并选择具体 Host。
+    - app.domain_host 只依赖 DomainDispatchPort 与 SDK 顶层公开 API，不静态 import 任何插件包。
+    - 测试替身不得被生产模块 import。
+  host_shape:
+    keep_empty_host: >-
+      EmptyDomainHost 及 create_domain_host() 无参数生产路径继续返回 None，现有 ask_notes.py
+      调用无需改变。
+    add_static_host: >-
+      在 app/domain_host/host.py 增加与 EmptyDomainHost 并列的 StaticDomainHost；构造参数
+      仅为一个 DomainPlugin 实例和 expected_plugin_id: str，不接收列表、RepoState、
+      ConversationState、模型 client、logger、Path、数据库或配置目录。
+    composition: >-
+      bootstrap/domain_composition.py::create_domain_host 增加显式可选 plugin 与
+      expected_plugin_id 参数；两者均未提供时返回 EmptyDomainHost，两者完整提供时返回
+      StaticDomainHost，部分提供时显式失败，不猜测插件身份。
+    max_plugins: 1
+  call_contract:
+    selected_sdk_method: DomainPlugin.execute
+    call_count_per_dispatch: 1
+    rationale: >-
+      本卡的插件由 composition root 显式指定，不存在候选选择，因此不调用 probe；
+      describe/start/sync_sources/stop、认领阈值和生命周期留到后续治理切片。
+    sync_async_bridge: >-
+      StaticDomainHost.dispatch 在调用 plugin.execute 前先用 asyncio.get_running_loop()
+      检测当前线程是否已有运行中的 event loop；没有运行 loop 时，精确使用一次
+      asyncio.run(plugin.execute(request))，为本次 dispatch 建立并关闭一个局部 event loop。
+      不复用或持久化该 loop，不把 runner/DomainDispatchPort 改成 async，也不创建后台线程、
+      线程池、任务调度器或并发执行器。
+    running_loop_rule: >-
+      若 asyncio.get_running_loop() 表明当前线程已有运行中的 event loop，必须在创建
+      plugin.execute(request) coroutine 之前立即抛出明确异常；现有
+      dispatch_domain_request 捕获该异常并安全回落为 None。不得调用 nest_asyncio、
+      run_until_complete、run_coroutine_threadsafe 或其他强行嵌套/跨线程方案。
+    validation: >-
+      execute 返回 DomainResult 后必须调用 SDK 顶层 validate_result_boundary，
+      expected_plugin_id 来自 composition root 的显式静态配置，不从回答文本或插件属性猜测。
+    mapping:
+      handled: 返回经过校验的原 DomainResult；3a runner 仍忽略它
+      abstain: 返回 None
+      retryable_error: 返回 None
+      fatal_error: 返回 None
+      exception_or_protocol_violation: 由现有 dispatch_domain_request 局部回落为 None
+  dto_ownership:
+    request_owner: app.domain_dispatch_port.dispatch_domain_request
+    host_role: 只接收并原样传给 DomainPlugin.execute
+    forbidden_conversions:
+      - 不复制 DomainRequest/DomainResult
+      - 不把 route、event、RepoState、ConversationState 或检索内部对象塞入 DTO
+      - 不把 search_query 或 route_question_input 替换为 query
+  source_focus_state:
+    source_scope: >-
+      本卡维持 DomainRequest.source_scope == ()；这表示插件未获 Source，不表示清空或改变
+      Core 的 category_scope_paths、selected_source_files、current_focus_file 或检索范围。
+    focus: 维持 SDK 默认空 FocusContext
+    conversation_state: 插件不可访问且本卡不写回
+    route: 不新增 route，既有通用守门顺序不变
+
+editable_scope:
+  allow:
+    - app/domain_host/host.py
+    - app/domain_host/__init__.py
+    - bootstrap/domain_composition.py
+    - test_domain_dispatch_port_empty_host.py
+    - docs/task_card_domain_static_plugin_call.yaml
+  deny:
+    - app/domain_dispatch_port.py
+    - app/chat_loop_parts/runner.py
+    - app/chat_loop.py
+    - ask_notes.py
+    - app/dialog/**
+    - app/chat_state_helpers.py
+    - app/retrieval_flow/**
+    - app/file_actions/**
+    - packages/docmind-domain-sdk/**
+    - requirements.txt
+    - docs/adr/**
+    - docs/spikes/**
+    - README.md
+    - docs/evolution.md
+    - ai/**
+    - retrieval/**
+    - infra/**
+    - loaders/**
+    - tests/**
+    - test_notes/**
+    - examples/**
+
+non_goals:
+  - 消费或呈现 handled DomainResult
+  - 修改 ConversationState、memory_buffer 或结果集状态
+  - SourceCatalog、SourceSync、SourceSnapshot 或真实 SourceRef 构造
+  - probe、describe、start、stop 或生命周期管理
+  - 动态发现、entry point、插件目录扫描或注册表
+  - 多插件集合、优先级、冲突、并发或 active plugin
+  - 超时、重试、熔断或异常治理完整矩阵
+  - 非法返回值全部矩阵
+  - 示例插件包、最小生产插件或具体招聘领域插件
+  - 文件操作类结果、插件状态持久化、证据版本同步
+  - MCP、UI、配置界面或 protocol 1.1
+
+implementation_plan:
+  - 保持 EmptyDomainHost 代码路径和 ask_notes.py::main 的无参数 factory 调用不变。
+  - 在 app/domain_host/host.py 增加仅持有单个 DomainPlugin 与 expected_plugin_id 的 StaticDomainHost。
+  - 在 StaticDomainHost.dispatch 中先检测当前线程运行中的 event loop；若存在则在创建 coroutine 前失败，由 dispatch_domain_request 回落 None。
+  - 无运行 loop 时精确执行一次 asyncio.run(plugin.execute(request))；本次 dispatch 的局部 event loop 在返回或异常时关闭，不缓存或复用。
+  - execute 完成后复用 validate_result_boundary，并把三种非 handled 状态映射为 None。
+  - 从 app/domain_host/__init__.py 导出新的 Host 实现，不导出测试替身。
+  - 扩展 create_domain_host，使显式单插件参数选择 StaticDomainHost，默认仍选择 EmptyDomainHost。
+  - 在根级 tracked 契约测试中定义完整异步形状的中立 fake；除 execute 外的方法若被调用立即失败。
+  - 不修改 runner；用既有 runner harness 证明合法 handled 结果在 3a 仍不被呈现，原 normal_retrieval 继续。
+
+test_contract:
+  deterministic_only: true
+  external_services: false
+  cases:
+    - create_domain_host() 仍返回 EmptyDomainHost，现有零差异契约全部继续通过。
+    - create_domain_host(plugin=fake, expected_plugin_id=...) 返回满足 DomainDispatchPort 的 StaticDomainHost。
+    - 只提供 plugin 或只提供 expected_plugin_id 时显式失败，不静默改成 EmptyDomainHost。
+    - fake.execute 恰好调用一次；describe/start/sync_sources/probe/stop 调用次数均为零。
+    - 无运行 event loop 时，fake.execute 内可取得本次 asyncio.run 创建且正在运行的 loop；dispatch 返回后该 loop 已关闭。
+    - 连续两次独立 dispatch 使用两个不同且最终均关闭的局部 event loop；每次各调用 execute 一次，不复用 loop。
+    - fake.execute 在记录当前 loop 后抛出受控异常时，dispatch_domain_request 返回 None，记录到的局部 loop 仍已关闭且没有后台任务残留。
+    - 在一个受控 asyncio.run 驱动的测试 coroutine 内同步调用 dispatch_domain_request；StaticDomainHost 必须在创建 execute coroutine 前检测到当前线程已有运行 loop，execute 调用次数为零，dispatch_domain_request 返回 None。
+    - 已有运行 loop 的回落测试捕获 warnings，确保没有“coroutine was never awaited”或 nest_asyncio/强行嵌套副作用。
+    - fake 收到的对象是 SDK 顶层公开 DomainRequest，且与 Host 收到的是同一不可变 DTO。
+    - request.query 与规范化后的原 question 逐字符一致；request.source_scope == ()。
+    - 合法 handled DomainResult 经 validate_result_boundary 后由 dispatch_domain_request 原样返回。
+    - abstain、retryable_error、fatal_error 均映射为 None，且不混入 answer/evidence/focus。
+    - 至少一个 request_id 或 plugin_id 不匹配样本证明 validate_result_boundary 被实际调用；完整非法矩阵不在本卡实现。
+    - 3a runner 即使收到合法 handled 结果仍继续原 normal_retrieval，并消费原链路哨兵回答。
+    - route、event、current_focus_file、Source 约束和 ConversationState 在 dispatch 前后不因插件改变。
+    - 测试捕获 stdout/stderr、logger 与 fake client 调用，确保没有新增提示、日志或模型调用。
+    - fake 抛错的回落是显式断言的 None 语义；不得靠测试未观察异常来声称通过。
+    - 测试只修改根级 tracked 契约文件，不依赖被忽略的 tests/。
+
+quality_gate:
+  environment:
+    - 所有命令使用 Linux Bash。
+    - Python 优先使用 .venv/bin/python；SDK 源码验证可显式设置 PYTHONPATH=packages/docmind-domain-sdk/src。
+    - 若需要生产安装证明，在 mktemp -d 下创建一次临时 venv 并从仓库根执行 python -m pip install -r requirements.txt；不得修改当前 .venv。
+    - 临时目录使用 trap 清理；不保留 wheel、egg-info、日志或测试缓存。
+  commands:
+    py_compile: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src .venv/bin/python -m py_compile
+      app/domain_host/host.py app/domain_host/__init__.py bootstrap/domain_composition.py
+      test_domain_dispatch_port_empty_host.py
+    contract_test: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src PYTHONDONTWRITEBYTECODE=1
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      test_domain_dispatch_port_empty_host.py
+    sdk_test: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src PYTHONDONTWRITEBYTECODE=1
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      packages/docmind-domain-sdk/tests
+    tracked_baseline: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src PYTHONDONTWRITEBYTECODE=1
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      test_query_router_repo_meta.py test_domain_dispatch_port_empty_host.py
+      packages/docmind-domain-sdk/tests
+    encoding: >-
+      .venv/bin/python packages/docmind-domain-sdk/scripts/check_text_encoding.py
+      app/domain_host bootstrap/domain_composition.py
+      test_domain_dispatch_port_empty_host.py docs/task_card_domain_static_plugin_call.yaml
+    whitespace: git diff --check
+  static_checks:
+    - Host/composition 不 import 具体插件包、entry_points、MCP、ai、retrieval、infra 或 loaders。
+    - app、bootstrap 和测试不复制 SDK DTO 或协议 validator。
+    - packages/docmind-domain-sdk、requirements.txt、runner、ask_notes.py、ADR 与 tests/ 无差异。
+    - 新 fake 仅存在于 tracked 根级测试，不被生产代码 import。
+  verification_order:
+    - preflight 与 UTF-8 检查
+    - py_compile
+    - 函数级 Host/composition 契约
+    - runner 零差异契约
+    - SDK 与 tracked baseline
+    - 静态依赖扫描
+    - git diff --check 与 git status --short
+
+stop_conditions:
+  - protocol 1.0 无法表达本卡 DomainRequest 或 DomainResult。
+  - 必须修改 SDK、Schema、requirements.txt 或 ADR 才能调用静态插件。
+  - DomainRequest 创建职责必须从 app.domain_dispatch_port 移到 Host，或 Host 必须接收 Core 内部对象。
+  - create_domain_host 不能在不改变 ask_notes.py 默认调用的前提下形成稳定单插件注入点。
+  - 同步 runner 无法用局部桥接确定调用一次异步 execute，必须改造整个 runner/event loop。
+  - 无法在创建 plugin.execute coroutine 前可靠检测当前线程已运行的 event loop，或已有 loop 场景不能由 dispatch_domain_request 确定回落 None。
+  - asyncio.run 不能保证每次 dispatch 的局部 event loop 在成功和异常路径均关闭，或实现必须复用持久 loop、线程/线程池、任务调度器、nest_asyncio、run_until_complete 或 run_coroutine_threadsafe。
+  - 必须调用 probe、生命周期、动态发现、多插件治理或具体领域逻辑才能形成闭环。
+  - 无法用 tracked fake、spy 和哨兵结果在不调用真实模型的情况下确定性验证。
+  - ADR 的依赖方向与当前生产代码出现无法由本卡窄切片规避的实质冲突。
+  - 实施需要修改 editable_scope.deny 中任一文件。
+
+acceptance_min:
+  - 默认 create_domain_host()、EmptyDomainHost、ask_notes.py 注入和无插件行为零差异。
+  - composition root 边界可显式静态注入且最多注入一个 SDK DomainPlugin 实例。
+  - StaticDomainHost 每次 dispatch 只调用一次 DomainPlugin.execute，并使用原 DomainRequest。
+  - 无运行 loop 时每次 dispatch 精确使用一次 asyncio.run，局部 event loop 不复用且调用结束后关闭。
+  - 当前线程已有运行 loop 时在创建 execute coroutine 前立即失败；execute 不被调用，且现有 dispatch_domain_request 回落 None、无未 await coroutine warning。
+  - validate_result_boundary 以显式 expected_plugin_id 校验合法结果。
+  - 三种非 handled 状态、异常和已选边界违规样本统一回落 None。
+  - 合法 handled 结果可返回到现有影子边界，但本卡不呈现、不写状态、不跳过 normal_retrieval。
+  - 原 question、空 SDK Source scope、Core Source 限定、route、focus 和 ConversationState 保持不变。
+  - 没有新增本地/远程模型调用、用户提示、默认日志或文件副作用。
+  - 根级 tracked 契约、SDK 测试和现有 EmptyDomainHost 零差异回归通过。
+  - SDK、runner、ask_notes.py、requirements.txt、ADR、tests/ 均未修改，git diff --check 通过。
+
+future_tasks:
+  - docs/task_card_domain_minimal_handled_result_consumption.yaml：只消费最小纯 Markdown handled 结果。
+  - 更新 ADR 实施状态与迁移顺序文字；不作为 3a 实施阻塞项。
+  - SourceCatalog/SourceSync、真实 SourceRef/revision 与权限裁剪。
+  - 动态发现、entry point、manifest/lifecycle、probe 选择和多插件治理。
+  - 超时、重试、熔断、完整异常与非法返回矩阵。
+  - PluginInteractionState、OpaqueFocus 和 Evidence 的消费/持久化。
+  - 独立外部领域插件、MCP 和 protocol 1.1。
+
+implementation_permissions:
+  production_code_change_requires_new_user_authorization: true
+  editable_only_within_card: true
+  git_add_allowed: false
+  commit_allowed: false
+  push_allowed: false
+  pull_request_allowed: false
+
+commit_message:
+  allowed: false
+  proposed_for_future_authorization_only:
+    title: "feat(domain-host): 静态调用单个中立契约插件"
+    body:
+      - "目标: 建立可独立验收的单插件静态调用与未处理回落闭环。"
+      - "手段: composition root 显式注入插件，Host 单次执行并复用 SDK 边界校验。"

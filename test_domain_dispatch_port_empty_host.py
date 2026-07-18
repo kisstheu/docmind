@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import gc
 import inspect
 import sys
+import warnings
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -11,10 +14,13 @@ import app.chat_loop as runtime
 import app.chat_loop_parts.runner as runner
 import ask_notes
 from app.dialog_state_machine import ConversationState, DialogEvent
-from app.domain_dispatch_port import DomainDispatchPort
-from app.domain_host import EmptyDomainHost
+from app.domain_dispatch_port import DomainDispatchPort, dispatch_domain_request
+from app.domain_host import EmptyDomainHost, StaticDomainHost
 from bootstrap.domain_composition import create_domain_host
-from docmind_domain_sdk import DomainRequest
+from docmind_domain_sdk import DomainPlugin, DomainRequest, DomainResult, PluginError
+
+
+_PLUGIN_ID = "org.example.neutral"
 
 
 class _Logger:
@@ -29,6 +35,59 @@ class _Logger:
 
     def error(self, *_args, **_kwargs):
         return None
+
+
+class _NeutralPlugin:
+    def __init__(self, result_factory):
+        self._result_factory = result_factory
+        self.execute_requests = []
+        self.execute_loops = []
+        self.other_calls = []
+
+    async def describe(self, request):
+        self.other_calls.append(("describe", request))
+        raise AssertionError("describe must not be called")
+
+    async def start(self, request):
+        self.other_calls.append(("start", request))
+        raise AssertionError("start must not be called")
+
+    async def sync_sources(self, request):
+        self.other_calls.append(("sync_sources", request))
+        raise AssertionError("sync_sources must not be called")
+
+    async def probe(self, request):
+        self.other_calls.append(("probe", request))
+        raise AssertionError("probe must not be called")
+
+    async def execute(self, request):
+        self.execute_requests.append(request)
+        self.execute_loops.append(asyncio.get_running_loop())
+        result = self._result_factory(request)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    async def stop(self, request):
+        self.other_calls.append(("stop", request))
+        raise AssertionError("stop must not be called")
+
+
+def _domain_result(request, status="handled"):
+    error = None
+    if status in {"retryable_error", "fatal_error"}:
+        error = PluginError(
+            code="synthetic.failure",
+            message="Synthetic plugin failure.",
+            retryable=status == "retryable_error",
+        )
+    return DomainResult(
+        request_id=request.request_id,
+        plugin_id=_PLUGIN_ID,
+        status=status,
+        answer_markdown="Synthetic handled result." if status == "handled" else "",
+        error=error,
+    )
 
 
 class _SpyPort:
@@ -244,6 +303,126 @@ def test_empty_host_satisfies_sync_port_and_has_no_side_effects(capsys):
     assert isinstance(create_domain_host(), EmptyDomainHost)
 
 
+def test_composition_factory_requires_complete_static_plugin_configuration():
+    plugin = _NeutralPlugin(_domain_result)
+
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+    assert isinstance(plugin, DomainPlugin)
+    assert isinstance(host, StaticDomainHost)
+    assert isinstance(host, DomainDispatchPort)
+    with pytest.raises(ValueError, match="provided together"):
+        create_domain_host(plugin=plugin)
+    with pytest.raises(ValueError, match="provided together"):
+        create_domain_host(expected_plugin_id=_PLUGIN_ID)
+
+
+def test_static_host_executes_once_with_original_request_and_returns_handled_result():
+    request = DomainRequest(
+        request_id="request-handled",
+        query="Synthetic contract question.",
+        source_scope=(),
+    )
+    handled_result = _domain_result(request)
+    plugin = _NeutralPlugin(lambda _request: handled_result)
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+    result = host.dispatch(request)
+
+    assert result is handled_result
+    assert result.status == "handled"
+    assert plugin.execute_requests == [request]
+    assert plugin.execute_requests[0] is request
+    assert plugin.other_calls == []
+    assert len(plugin.execute_loops) == 1
+    assert plugin.execute_loops[0].is_closed()
+
+
+@pytest.mark.parametrize("status", ["abstain", "retryable_error", "fatal_error"])
+def test_static_host_maps_each_non_handled_status_to_none(status):
+    plugin = _NeutralPlugin(lambda request: _domain_result(request, status))
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+    request = DomainRequest(
+        request_id=f"request-{status}",
+        query="Synthetic status question.",
+        source_scope=(),
+    )
+
+    assert host.dispatch(request) is None
+    assert plugin.execute_requests == [request]
+    assert plugin.other_calls == []
+    assert plugin.execute_loops[0].is_closed()
+
+
+def test_static_host_uses_a_distinct_closed_event_loop_for_each_dispatch():
+    plugin = _NeutralPlugin(_domain_result)
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+    for sequence in (1, 2):
+        request = DomainRequest(
+            request_id=f"request-loop-{sequence}",
+            query="Synthetic loop question.",
+            source_scope=(),
+        )
+        assert host.dispatch(request).request_id == request.request_id
+
+    assert len(plugin.execute_requests) == 2
+    assert len(plugin.execute_loops) == 2
+    assert plugin.execute_loops[0] is not plugin.execute_loops[1]
+    assert all(loop.is_closed() for loop in plugin.execute_loops)
+    assert plugin.other_calls == []
+
+
+def test_static_host_closes_event_loop_after_execute_exception_and_outer_boundary_falls_back():
+    plugin = _NeutralPlugin(lambda _request: RuntimeError("synthetic execute failure"))
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+    result = dispatch_domain_request(host, "Synthetic exception question.")
+
+    assert result is None
+    assert len(plugin.execute_requests) == 1
+    assert len(plugin.execute_loops) == 1
+    assert plugin.execute_loops[0].is_closed()
+    assert asyncio.all_tasks(plugin.execute_loops[0]) == set()
+    assert plugin.other_calls == []
+
+
+def test_static_host_refuses_running_loop_before_creating_execute_coroutine():
+    plugin = _NeutralPlugin(_domain_result)
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+    async def dispatch_inside_running_loop():
+        return dispatch_domain_request(host, "Synthetic nested-loop question.")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = asyncio.run(dispatch_inside_running_loop())
+        gc.collect()
+
+    assert result is None
+    assert plugin.execute_requests == []
+    assert plugin.execute_loops == []
+    assert plugin.other_calls == []
+    assert not any("was never awaited" in str(item.message) for item in caught)
+
+
+@pytest.mark.parametrize("mismatch", ["request_id", "plugin_id"])
+def test_static_host_protocol_boundary_mismatch_falls_back_instead_of_succeeding(mismatch):
+    def invalid_result(request):
+        result = _domain_result(request)
+        if mismatch == "request_id":
+            return result.model_copy(update={"request_id": "request-other"})
+        return result.model_copy(update={"plugin_id": "org.example.other"})
+
+    plugin = _NeutralPlugin(invalid_result)
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+    assert dispatch_domain_request(host, "Synthetic boundary question.") is None
+    assert len(plugin.execute_requests) == 1
+    assert plugin.execute_loops[0].is_closed()
+    assert plugin.other_calls == []
+
+
 def test_composition_root_creates_and_injects_host(monkeypatch, tmp_path):
     captured = {}
     host = EmptyDomainHost()
@@ -347,3 +526,32 @@ def test_empty_host_reaches_controlled_generation_boundary(monkeypatch, tmp_path
     assert captured["materials"][0]["selected_source_files"] == ["scope-a.md"]
     assert captured["printed"] == captured["state_updates"] == ["受控模型回答"]
     assert state.last_route == "normal_retrieval"
+
+
+def test_static_handled_result_remains_shadowed_by_normal_retrieval(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    plugin = _NeutralPlugin(_domain_result)
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+    state, captured, fake_models = _run_turn(monkeypatch, tmp_path, port=host)
+    output = capsys.readouterr()
+
+    assert len(plugin.execute_requests) == 1
+    request = plugin.execute_requests[0]
+    assert isinstance(request, DomainRequest)
+    assert request.query == "哪些文档里提到了检索策略？"
+    assert request.source_scope == ()
+    assert plugin.other_calls == []
+    assert plugin.execute_loops[0].is_closed()
+    assert captured["printed"] == captured["state_updates"] == ["受控本地结果"]
+    assert "Synthetic handled result." not in output.out
+    assert output.err == ""
+    assert fake_models.calls == []
+    assert state.mode == "content"
+    assert state.last_route == "normal_retrieval"
+    assert state.last_result_set_items == ["scope-a.md", "scope-b.md"]
+    assert state.last_selected_candidate == "候选项X"
+    assert state.last_selected_source_files == ["scope-a.md"]
