@@ -3,10 +3,12 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from docmind_domain_sdk import DomainResult
+
 from ai.repo_meta.category import resolve_repo_content_category_scope
 from ai.structured_skill_summary import summarize_structured_skill_summary_with_remote
 from ai.decision_result import parse_decision_result, render_decision_result
-from app.dialog_state_machine import apply_event_to_state, detect_dialog_event
+from app.dialog_state_machine import ConversationState, apply_event_to_state, detect_dialog_event
 from app.domain_dispatch_port import DomainDispatchPort, dispatch_domain_request
 from app.chat_retrieval_flow import (
     build_retrieval_materials,
@@ -196,7 +198,25 @@ def run_chat_loop(
                     is_content_answer=False,
                 )
                 continue
-            dispatch_domain_request(domain_dispatch_port, question)
+            domain_result = dispatch_domain_request(domain_dispatch_port, question)
+            if (
+                isinstance(domain_result, DomainResult)
+                and domain_result.status == "handled"
+                and isinstance(domain_result.answer_markdown, str)
+                and bool(domain_result.answer_markdown.strip())
+                and domain_result.focus_update.mode == "preserve"
+                and not domain_result.focus_update.items
+                and domain_result.focus_update.selected is None
+                and not domain_result.evidence
+                and not domain_result.warnings
+                and domain_result.error is None
+            ):
+                print_answer(domain_result.answer_markdown, start_qa)
+                append_memory(memory_buffer, question, domain_result.answer_markdown)
+                runtime.conversation_state = ConversationState()
+                current_focus_file = None
+                last_relevant_indices = []
+                continue
             # 5) normal retrieval
             runtime.conversation_state.mode = "content"
             runtime.conversation_state.last_user_question = question

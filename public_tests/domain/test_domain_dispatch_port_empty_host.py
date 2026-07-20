@@ -17,7 +17,13 @@ from app.dialog_state_machine import ConversationState, DialogEvent
 from app.domain_dispatch_port import DomainDispatchPort, dispatch_domain_request
 from app.domain_host import EmptyDomainHost, StaticDomainHost
 from bootstrap.domain_composition import create_domain_host
-from docmind_domain_sdk import DomainPlugin, DomainRequest, DomainResult, PluginError
+from docmind_domain_sdk import (
+    DomainPlugin,
+    DomainRequest,
+    DomainResult,
+    FocusUpdate,
+    PluginError,
+)
 
 
 _PLUGIN_ID = "org.example.neutral"
@@ -90,6 +96,43 @@ def _domain_result(request, status="handled"):
     )
 
 
+def _host_handling_only(*handled_questions):
+    handled_set = set(handled_questions)
+    plugin = _NeutralPlugin(
+        lambda request: _domain_result(
+            request,
+            "handled" if request.query in handled_set else "abstain",
+        )
+    )
+    return plugin, create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+
+def _stale_interaction_state():
+    return ConversationState(
+        mode="content",
+        last_user_question="旧问题",
+        last_route="repo_meta",
+        last_local_topic="list_files",
+        last_answer_preview="旧文件集合回答",
+        last_category_context_answer="旧分类上下文",
+        last_content_user_question="旧内容问题",
+        last_content_route="normal_retrieval",
+        last_content_topic="旧内容主题",
+        last_effective_search_query="旧检索锚点",
+        last_answer_text="1. scope-a.md\n2. scope-b.md",
+        last_answer_type="enumeration_file",
+        last_result_set_query="旧集合问题",
+        last_result_set_items=["scope-a.md", "scope-b.md"],
+        last_result_set_entity_type="文件",
+        last_result_set_summary_text="旧集合概括",
+        last_result_set_summary_level=2,
+        last_result_set_selectable=True,
+        last_selected_candidate="候选项X",
+        last_selected_source_files=["scope-a.md"],
+        pending_action_preview="孤立的旧预览",
+    )
+
+
 class _SpyPort:
     def __init__(self, state: ConversationState):
         self.state = state
@@ -120,9 +163,28 @@ class _FakeModels:
         return SimpleNamespace(text="受控模型回答")
 
 
-def _run_turn(monkeypatch, tmp_path, *, port, gate=None, generate=False):
+def _state_snapshot(state: ConversationState):
+    return {
+        name: list(value) if isinstance(value, list) else value
+        for name, value in vars(state).items()
+    }
+
+
+def _run_turn(
+    monkeypatch,
+    tmp_path,
+    *,
+    port,
+    gate=None,
+    generate=False,
+    scripted_questions=None,
+    initial_state=None,
+    initial_focus="focus.md",
+    use_real_dialog_events=False,
+    material_indices=None,
+):
     question = "哪些文档里提到了检索策略？"
-    state = ConversationState(
+    state = initial_state or ConversationState(
         mode="idle",
         last_user_question="旧问题",
         last_route="repo_meta",
@@ -143,12 +205,22 @@ def _run_turn(monkeypatch, tmp_path, *, port, gate=None, generate=False):
     runtime.conversation_state = state
     if hasattr(port, "state"):
         port.state = state
-    questions = iter([question, "q"])
+    question_values = list(scripted_questions or [question])
+    if not question_values or question_values[-1].strip().lower() not in {"q", "quit", "exit"}:
+        question_values.append("q")
+    questions = iter(question_values)
     captured = {
         "search": [],
         "materials": [],
+        "prompts": [],
         "printed": [],
+        "memory_calls": [],
+        "memory_snapshots": [],
         "state_updates": [],
+        "file_action_inputs": [],
+        "dialog_inputs": [],
+        "events": [],
+        "route_inputs": [],
     }
     fake_models = _FakeModels()
 
@@ -159,21 +231,41 @@ def _run_turn(monkeypatch, tmp_path, *, port, gate=None, generate=False):
         "_read_user_question",
         lambda **_kwargs: next(questions),
     )
+    def fake_handle_file_action_turn(**kwargs):
+        captured["file_action_inputs"].append({
+            "question": kwargs["question"],
+            "state": _state_snapshot(kwargs["state"]),
+            "current_focus_file": kwargs["current_focus_file"],
+        })
+        next_focus = kwargs["current_focus_file"]
+        if len(captured["file_action_inputs"]) == 1:
+            next_focus = initial_focus
+        return gate == "file_action", kwargs["state"], next_focus
+
+    monkeypatch.setattr(runner, "handle_file_action_turn", fake_handle_file_action_turn)
+    real_detect_dialog_event = runner.detect_dialog_event
+    real_apply_event_to_state = runner.apply_event_to_state
+
+    def fake_detect_dialog_event(current_question, current_state, logger, **kwargs):
+        captured["dialog_inputs"].append({
+            "question": current_question,
+            "state": _state_snapshot(current_state),
+            "focused_file": kwargs.get("focused_file"),
+        })
+        event = (
+            real_detect_dialog_event(current_question, current_state, logger, **kwargs)
+            if use_real_dialog_events
+            else DialogEvent(name="unknown")
+        )
+        captured["events"].append(event)
+        return event
+
+    monkeypatch.setattr(runner, "detect_dialog_event", fake_detect_dialog_event)
     monkeypatch.setattr(
         runner,
-        "handle_file_action_turn",
-        lambda **kwargs: (
-            gate == "file_action",
-            kwargs["state"],
-            "focus.md",
-        ),
+        "apply_event_to_state",
+        real_apply_event_to_state if use_real_dialog_events else lambda current, _event: current,
     )
-    monkeypatch.setattr(
-        runner,
-        "detect_dialog_event",
-        lambda *_args, **_kwargs: DialogEvent(name="unknown"),
-    )
-    monkeypatch.setattr(runner, "apply_event_to_state", lambda current, _event: current)
     monkeypatch.setattr(
         runtime,
         "try_handle_contextless_followup",
@@ -185,15 +277,19 @@ def _run_turn(monkeypatch, tmp_path, *, port, gate=None, generate=False):
         "smalltalk",
         "out_of_scope",
     } else "normal_retrieval"
-    monkeypatch.setattr(
-        runner,
-        "resolve_route",
-        lambda *_args, **_kwargs: {
+    def fake_resolve_route(current_question, event, *_args, **kwargs):
+        captured["route_inputs"].append({
+            "question": current_question,
+            "event": event,
+            "state": _state_snapshot(kwargs["state"]),
+        })
+        return {
             "route": route,
             "smalltalk_reply": "",
-            "route_question_input": question,
-        },
-    )
+            "route_question_input": current_question,
+        }
+
+    monkeypatch.setattr(runner, "resolve_route", fake_resolve_route)
     monkeypatch.setattr(
         runtime,
         "try_handle_system_capability",
@@ -239,9 +335,14 @@ def _run_turn(monkeypatch, tmp_path, *, port, gate=None, generate=False):
 
     def fake_build_materials(**kwargs):
         captured["materials"].append(kwargs)
+        call_index = len(captured["materials"]) - 1
+        if material_indices:
+            selected_indices = material_indices[min(call_index, len(material_indices) - 1)]
+        else:
+            selected_indices = [2, 0]
         return {
-            "current_focus_file": "focus.md",
-            "relevant_indices": [2, 0],
+            "current_focus_file": kwargs["current_focus_file"],
+            "relevant_indices": list(selected_indices),
             "inventory_candidates_text": "稳定候选",
             "context_text": "稳定上下文",
             "timeline_evidence_text": "",
@@ -262,20 +363,31 @@ def _run_turn(monkeypatch, tmp_path, *, port, gate=None, generate=False):
         "try_handle_retrieval_force_local_or_empty_context",
         lambda **_kwargs: None,
     )
-    monkeypatch.setattr(runner, "build_safe_final_prompt", lambda **_kwargs: "受控提示")
+    def fake_build_safe_final_prompt(**kwargs):
+        captured["prompts"].append(kwargs)
+        return "受控提示"
+
+    monkeypatch.setattr(runner, "build_safe_final_prompt", fake_build_safe_final_prompt)
     monkeypatch.setattr(
         runner,
         "print_answer",
         lambda answer, _start: captured["printed"].append(answer),
     )
-    monkeypatch.setattr(runner, "append_memory", lambda *_args: None)
+    real_append_memory = runner.append_memory
+
+    def capture_append_memory(memory_buffer, current_question, answer):
+        captured["memory_calls"].append((current_question, answer))
+        real_append_memory(memory_buffer, current_question, answer)
+        captured["memory_snapshots"].append(list(memory_buffer))
+
+    monkeypatch.setattr(runner, "append_memory", capture_append_memory)
 
     def fake_update(current, _question, answer, _logger, **_kwargs):
         captured["state_updates"].append(answer)
         return current
 
     monkeypatch.setattr(runner, "update_state_after_retrieval_answer", fake_update)
-    runner.run_chat_loop(
+    captured["runner_return"] = runner.run_chat_loop(
         SimpleNamespace(),
         None,
         SimpleNamespace(models=fake_models),
@@ -287,7 +399,7 @@ def _run_turn(monkeypatch, tmp_path, *, port, gate=None, generate=False):
         change_log_file=tmp_path / "changes.jsonl",
         domain_dispatch_port=port,
     )
-    return state, captured, fake_models
+    return runtime.conversation_state, captured, fake_models
 
 
 def test_empty_host_satisfies_sync_port_and_has_no_side_effects(capsys):
@@ -528,7 +640,7 @@ def test_empty_host_reaches_controlled_generation_boundary(monkeypatch, tmp_path
     assert state.last_route == "normal_retrieval"
 
 
-def test_static_handled_result_remains_shadowed_by_normal_retrieval(
+def test_static_minimal_handled_result_is_presented_once_and_short_circuits_retrieval(
     monkeypatch,
     tmp_path,
     capsys,
@@ -546,12 +658,321 @@ def test_static_handled_result_remains_shadowed_by_normal_retrieval(
     assert request.source_scope == ()
     assert plugin.other_calls == []
     assert plugin.execute_loops[0].is_closed()
-    assert captured["printed"] == captured["state_updates"] == ["受控本地结果"]
-    assert "Synthetic handled result." not in output.out
+    assert captured["printed"] == ["Synthetic handled result."]
+    assert captured["memory_calls"] == [
+        ("哪些文档里提到了检索策略？", "Synthetic handled result.")
+    ]
+    assert captured["memory_snapshots"] == [[
+        "用户问：哪些文档里提到了检索策略？",
+        "AI答：Synthetic handled result.",
+    ]]
+    assert captured["runner_return"] is None
+    assert state == ConversationState()
+    assert captured["search"] == []
+    assert captured["materials"] == []
+    assert captured["prompts"] == []
+    assert captured["state_updates"] == []
     assert output.err == ""
+    assert "[远程模型生成]" not in output.out
+    assert "插件状态" not in output.out
     assert fake_models.calls == []
-    assert state.mode == "content"
+
+
+@pytest.mark.parametrize("status", ["abstain", "retryable_error", "fatal_error"])
+def test_runner_unhandled_statuses_preserve_normal_retrieval_behavior(
+    monkeypatch,
+    tmp_path,
+    status,
+):
+    plugin = _NeutralPlugin(lambda request: _domain_result(request, status))
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+    state, captured, fake_models = _run_turn(monkeypatch, tmp_path, port=host)
+
+    assert len(plugin.execute_requests) == 1
+    assert captured["printed"] == captured["state_updates"] == ["受控本地结果"]
+    assert len(captured["search"]) == len(captured["materials"]) == 1
+    assert captured["prompts"] == []
+    assert fake_models.calls == []
     assert state.last_route == "normal_retrieval"
     assert state.last_result_set_items == ["scope-a.md", "scope-b.md"]
     assert state.last_selected_candidate == "候选项X"
-    assert state.last_selected_source_files == ["scope-a.md"]
+
+
+@pytest.mark.parametrize("variant", ["warnings", "focus_clear"])
+def test_adjacent_legal_handled_profiles_fall_back_without_reset(
+    monkeypatch,
+    tmp_path,
+    variant,
+):
+    def adjacent_result(request):
+        result = _domain_result(request)
+        if variant == "warnings":
+            return result.model_copy(update={"warnings": ("Synthetic warning.",)})
+        return result.model_copy(update={"focus_update": FocusUpdate(mode="clear")})
+
+    plugin = _NeutralPlugin(adjacent_result)
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+    state, captured, fake_models = _run_turn(monkeypatch, tmp_path, port=host)
+
+    assert captured["printed"] == ["受控本地结果"]
+    assert "Synthetic handled result." not in captured["printed"]
+    assert captured["memory_calls"] == [
+        ("哪些文档里提到了检索策略？", "受控本地结果")
+    ]
+    assert len(captured["search"]) == len(captured["materials"]) == 1
+    assert state.last_route == "normal_retrieval"
+    assert state.last_result_set_items == ["scope-a.md", "scope-b.md"]
+    assert state.last_selected_candidate == "候选项X"
+    assert fake_models.calls == []
+
+
+@pytest.mark.parametrize("malformed_kind", ["request_id_mismatch", "non_domain_result"])
+def test_runner_malformed_or_non_domain_result_uses_existing_fallback(
+    monkeypatch,
+    tmp_path,
+    malformed_kind,
+):
+    if malformed_kind == "request_id_mismatch":
+        plugin = _NeutralPlugin(
+            lambda request: _domain_result(request).model_copy(
+                update={"request_id": "request-other"}
+            )
+        )
+        port = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+    else:
+        port = SimpleNamespace(dispatch=lambda _request: {"status": "handled"})
+
+    state, captured, fake_models = _run_turn(monkeypatch, tmp_path, port=port)
+
+    assert captured["printed"] == ["受控本地结果"]
+    assert captured["memory_calls"] == [
+        ("哪些文档里提到了检索策略？", "受控本地结果")
+    ]
+    assert len(captured["search"]) == len(captured["materials"]) == 1
+    assert state.last_route == "normal_retrieval"
+    assert state.last_result_set_items == ["scope-a.md", "scope-b.md"]
+    assert fake_models.calls == []
+
+
+def test_handled_reset_prevents_old_result_set_from_reaching_next_turn(
+    monkeypatch,
+    tmp_path,
+):
+    plugin, host = _host_handling_only("领域请求甲")
+
+    state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=["领域请求甲", "这两个分别对应哪些名称？"],
+        initial_state=_stale_interaction_state(),
+        initial_focus="scope-a.md",
+        use_real_dialog_events=True,
+        generate=True,
+    )
+
+    assert len(plugin.execute_requests) == 2
+    assert captured["events"][1].name not in {
+        "result_set_followup",
+        "result_set_expansion_followup",
+        "synthesis_request",
+    }
+    assert captured["dialog_inputs"][1]["state"] == _state_snapshot(ConversationState())
+    assert captured["dialog_inputs"][1]["focused_file"] is None
+    assert len(captured["search"]) == len(captured["materials"]) == 1
+    assert captured["search"][0]["last_result_set_items"] is None
+    assert captured["search"][0]["last_result_set_entity_type"] is None
+    assert captured["materials"][0]["allowed_paths"] is None
+    assert captured["prompts"][0]["result_set_items"] is None
+    assert captured["printed"] == ["Synthetic handled result.", "受控模型回答"]
+    assert len(fake_models.calls) == 1
+    assert state.last_result_set_items is None
+
+
+def test_handled_reset_prevents_old_selected_candidate_followup(
+    monkeypatch,
+    tmp_path,
+):
+    plugin, host = _host_handling_only("领域请求甲")
+
+    _, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=["领域请求甲", "详细分析一下"],
+        initial_state=_stale_interaction_state(),
+        initial_focus="scope-a.md",
+        use_real_dialog_events=True,
+        generate=True,
+    )
+
+    assert len(plugin.execute_requests) == 2
+    assert captured["events"][1].name != "selected_candidate_followup"
+    assert captured["dialog_inputs"][1]["state"]["last_selected_candidate"] is None
+    assert captured["dialog_inputs"][1]["state"]["last_selected_source_files"] is None
+    assert captured["dialog_inputs"][1]["focused_file"] is None
+    assert captured["search"][0]["last_selected_candidate"] is None
+    assert captured["search"][0]["last_selected_source_files"] is None
+    assert captured["materials"][0]["selected_source_files"] is None
+    assert captured["prompts"][0]["selected_candidate"] is None
+    assert captured["prompts"][0]["selected_source_files"] is None
+    assert len(fake_models.calls) == 1
+
+
+def test_handled_reset_clears_old_file_focus_and_relevant_indices(
+    monkeypatch,
+    tmp_path,
+):
+    plugin, host = _host_handling_only("领域请求甲")
+
+    _, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=["预热普通检索", "领域请求甲", "新的明确检索请求"],
+        initial_state=_stale_interaction_state(),
+        initial_focus="旧文件.md",
+        use_real_dialog_events=True,
+        generate=True,
+        material_indices=[[8, 3], [5]],
+    )
+
+    assert len(plugin.execute_requests) == 3
+    assert captured["file_action_inputs"][1]["current_focus_file"] == "旧文件.md"
+    assert captured["file_action_inputs"][2]["current_focus_file"] is None
+    assert captured["dialog_inputs"][2]["focused_file"] is None
+    assert len(captured["search"]) == len(captured["materials"]) == 2
+    assert captured["search"][1]["last_relevant_indices"] == []
+    assert captured["materials"][1]["current_focus_file"] is None
+    assert captured["materials"][1]["last_relevant_indices"] == []
+    assert len(fake_models.calls) == 2
+
+
+def test_handled_reset_prevents_old_route_and_content_context_inheritance(
+    monkeypatch,
+    tmp_path,
+):
+    plugin, host = _host_handling_only("领域请求甲")
+
+    _, captured, _ = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=["领域请求甲", "继续"],
+        initial_state=_stale_interaction_state(),
+        initial_focus="scope-a.md",
+        use_real_dialog_events=True,
+    )
+
+    second_dialog_state = captured["dialog_inputs"][1]["state"]
+    second_route_state = captured["route_inputs"][1]["state"]
+    assert captured["events"][1].merged_query is None
+    for field in (
+        "last_route",
+        "last_content_route",
+        "last_content_user_question",
+        "last_content_topic",
+        "last_effective_search_query",
+        "last_local_topic",
+        "last_category_context_answer",
+    ):
+        assert second_dialog_state[field] is None
+        assert second_route_state[field] is None
+    assert captured["search"][0]["last_effective_search_query"] is None
+    assert captured["search"][0]["last_user_question"] is None
+
+
+def test_handled_memory_preserves_prior_history_and_does_not_write_answer_state(
+    monkeypatch,
+    tmp_path,
+):
+    plugin, host = _host_handling_only("领域请求甲")
+
+    state, captured, _ = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=["普通问题", "领域请求甲"],
+    )
+
+    assert len(plugin.execute_requests) == 2
+    assert captured["memory_snapshots"][-1] == [
+        "用户问：普通问题",
+        "AI答：受控本地结果",
+        "用户问：领域请求甲",
+        "AI答：Synthetic handled result.",
+    ]
+    assert state == ConversationState()
+    assert state.last_answer_text is None
+    assert state.last_answer_preview is None
+    assert state.last_answer_type is None
+
+
+def test_next_turn_can_dispatch_again_and_consume_another_minimal_result(
+    monkeypatch,
+    tmp_path,
+):
+    plugin, host = _host_handling_only("领域请求甲", "领域请求乙")
+
+    state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=["领域请求甲", "领域请求乙"],
+        initial_state=_stale_interaction_state(),
+        initial_focus="scope-a.md",
+    )
+
+    assert [request.query for request in plugin.execute_requests] == ["领域请求甲", "领域请求乙"]
+    assert captured["printed"] == [
+        "Synthetic handled result.",
+        "Synthetic handled result.",
+    ]
+    assert captured["memory_calls"] == [
+        ("领域请求甲", "Synthetic handled result."),
+        ("领域请求乙", "Synthetic handled result."),
+    ]
+    assert captured["search"] == captured["materials"] == captured["prompts"] == []
+    assert fake_models.calls == []
+    assert captured["file_action_inputs"][1]["current_focus_file"] is None
+    assert state == ConversationState()
+
+
+@pytest.mark.parametrize("pending_action_type", ["rename", "delete", "organize"])
+def test_valid_pending_action_still_precedes_domain_dispatch(
+    monkeypatch,
+    tmp_path,
+    pending_action_type,
+):
+    pending_state = ConversationState(
+        pending_action_type=pending_action_type,
+        pending_action_source_path="旧文件.md",
+        pending_action_target_path="新文件.md",
+        pending_action_requested_text="原动作请求",
+        pending_action_preview="待确认预览",
+        pending_action_payload=(
+            '{"root_rel_path": "已整理", "moves": '
+            '[{"source_rel_path": "旧文件.md", "target_rel_path": "新文件.md"}]}'
+        ),
+    )
+    plugin = _NeutralPlugin(_domain_result)
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+    state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        gate="file_action",
+        scripted_questions=["确认"],
+        initial_state=pending_state,
+        initial_focus="旧文件.md",
+    )
+
+    assert captured["file_action_inputs"][0]["state"]["pending_action_type"] == pending_action_type
+    assert plugin.execute_requests == []
+    assert captured["events"] == []
+    assert captured["search"] == captured["materials"] == captured["prompts"] == []
+    assert fake_models.calls == []
+    assert state.pending_action_type == pending_action_type

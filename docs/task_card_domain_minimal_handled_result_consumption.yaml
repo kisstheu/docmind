@@ -1,0 +1,365 @@
+version: 1
+
+task_goal: >-
+  在完成静态单插件调用后，让 Core 只消费 protocol 1.0 已定义的最小纯 Markdown
+  handled DomainResult：在现有 dispatch 点呈现 answer_markdown、保留普通 memory_buffer
+  会话历史并跳过本轮 normal_retrieval；不把插件答案反解析为 Core result set、
+  selected candidate、file focus、route 或其他控制状态，不调用现有 local/retrieval
+  answer 状态写回 helper，并在回答后把旧 Core 结构化交互状态恢复为中立默认值。
+
+slice:
+  id: 3b
+  name: 单一合法结果的最小消费
+  order: 在 docs/task_card_domain_static_plugin_call.yaml 验收通过后实施
+  implementation_status: ready_for_implementation
+  depends_on:
+    - docs/task_card_domain_static_plugin_call.yaml
+
+verified_facts:
+  approved_input_type: docmind_domain_sdk.DomainResult
+  legal_result_statuses:
+    - handled
+    - abstain
+    - retryable_error
+    - fatal_error
+  selected_result_profile:
+    status: handled
+    answer_markdown: 非空字符串
+    focus_update.mode: preserve
+    focus_update.items: []
+    focus_update.selected: null
+    evidence: []
+    warnings: []
+    error: null
+  selection_reason: >-
+    该形态由当前 DomainResult validator 直接允许，默认 FocusUpdate 已是 preserve，
+    不要求 Source、Evidence、文件操作、结果集、不透明状态、模型调用或新 DTO；
+    因而是 protocol 1.0 中最低风险的首个用户可见 handled 结果。
+  current_dispatch_boundary:
+    file: app/chat_loop_parts/runner.py
+    symbol: run_chat_loop
+    point: >-
+      全部现有通用守门之后，注释“# 5) normal retrieval”之前的
+      dispatch_domain_request(domain_dispatch_port, question)。
+    current_behavior: 返回值被忽略，随后无条件进入 normal_retrieval。
+  existing_answer_boundary:
+    print: app.chat_state_helpers.print_answer
+    memory: app.chat_state_helpers.append_memory
+    local_state: app.chat_state_helpers.update_state_after_local_answer
+    retrieval_state: app.chat_state_helpers.update_state_after_retrieval_answer
+  runner_return_type: >-
+    run_chat_loop 是交互循环；用户输入 q/quit/exit 后正常返回 None。本卡不改变返回类型，
+    插件回答仍通过现有 print_answer 输出给 CLI 调用方。
+  conversation_state: >-
+    app.chat_loop.conversation_state 是现有 ConversationState 所有者；dispatch 发生前已执行
+    detect_dialog_event、apply_event_to_state 和通用路由守门，normal_retrieval 的 mode、
+    last_user_question、last_route、last_local_topic 写入当前位于 dispatch 之后。
+  cross_turn_state_risk: >-
+    已被否决的“handled 后完全不写 ConversationState，也不改变 runner 局部状态”候选方案会让
+    current_focus_file 保持旧值，因此上一轮的 last_route、last_result_set_items、
+    last_result_set_entity_type、last_result_set_selectable、last_selected_candidate、
+    last_selected_source_files 和文件焦点可继续参与下一轮 detect_dialog_event、短追问、
+    指代解析、Source 选择与检索。这可能把第二轮问题错误绑定到插件回答之前的旧结果集、
+    旧选择候选或旧文件焦点。
+  verified_cross_turn_probe: >-
+    这是对已被否决候选方案的只读函数探测事实，不是 3b 已完成验证：探测使用旧
+    normal_retrieval route、旧 result set、旧 selected candidate、
+    与 selected_source_files 匹配的旧 focused_file 预置状态；在假定第一轮 handled 后这些值
+    完全不变时，第二轮“详细分析一下”被 detect_dialog_event 确定判为
+    selected_candidate_followup。这证明单轮 print_answer、append_memory 和 continue 通过，
+    不足以证明本切片跨轮次安全。
+  result_set_boundary: >-
+    现有 update_state_after_retrieval_answer 会从回答文本推断 answer_type、结果集与选择状态；
+    为避免首个插件结果触发领域文本反解析，本卡不得调用它或其他状态写回 helper。
+  protocol_sufficiency: >-
+    DomainResult 的现有 status、answer_markdown、FocusUpdate、evidence、warnings、error
+    已足以精确限定本卡消费形态，不需要 SDK 或 protocol 1.1。
+
+decision:
+  consume_only_one_profile: true
+  implementation_readiness: ready
+  approved_state_semantics: minimal_core_state_reset
+  plugin_interaction_state_required: false
+  decision_rationale: >-
+    3b 只消费一次性最小 handled 结果，尚无插件内部多轮会话需求；现有 memory_buffer
+    足以保留用户可见问答历史。新增 PluginInteractionState、plugin route 或插件焦点会提前
+    绑定未来协议并把本切片扩大为插件状态机，因此本卡采用 fresh ConversationState 与
+    runner 局部状态清理完成最小收口。
+  core_boundary: app/chat_loop_parts/runner.py::run_chat_loop
+  handled_check: >-
+    dispatch_domain_request 返回 DomainResult，且 status == "handled"、answer_markdown 非空、
+    focus_update 为默认 preserve/空 items/无 selected、evidence 为空、warnings 为空、error 为 None。
+  on_match:
+    - 使用现有 print_answer(result.answer_markdown, start_qa) 产生用户可见回答。
+    - 使用现有 append_memory(memory_buffer, question, result.answer_markdown) 保留当前进程内对话文本上下文。
+    - 将 runtime.conversation_state 替换为 fresh ConversationState()，不解析 answer_markdown。
+    - 将 current_focus_file 设置为 None。
+    - 将 last_relevant_indices 设置为 []。
+    - continue 结束本轮，跳过 normal_retrieval 的状态赋值、检索、本地回答和远程生成。
+  on_non_match: >-
+    不呈现任何插件部分输出，继续使用原 question、Core Source 约束、route、focus 与 state
+    进入既有 normal_retrieval；不顺手消费其他合法或非法变体。
+  conversation_state_writeback:
+    plugin_result_writeback: disabled
+    core_state_reset: enabled
+    rule: >-
+      本卡不调用 update_state_after_local_answer 或 update_state_after_retrieval_answer，
+      不把 answer_markdown 写入 last_answer_text、last_answer_preview、last_answer_type、
+      result set、selected candidate、文件焦点或 route。handled 回答呈现并追加 memory 后，
+      直接用 fresh ConversationState() 替换旧 Core 状态，使所有字段恢复构造器默认值。
+    rationale: >-
+      当前状态 helper 会从回答文本推断 answer type、结果集或选择状态，不适合插件 Markdown。
+      fresh ConversationState() 属于旧 Core 检索控制状态收口，不是插件结果语义写回；它同时避免
+      逐字段复制清理逻辑，并确保未来新增带默认值的 Core 控制字段不会意外残留。
+  source_evidence_focus_result_set:
+    source_scope: 继续为当前 DomainRequest.source_scope == ()
+    evidence: 不消费且本卡批准形态必须为空
+    focus_update: 不消费且必须为 preserve 空更新
+    conversation_state: handled 后替换为 fresh ConversationState()，全部字段恢复构造器默认值
+    result_set: 不从插件答案解析或创建；旧 result set 随 fresh ConversationState() 清除
+    selected_candidate: 不从插件答案写入；旧 candidate 与 selected source files 随 fresh state 清除
+    content_followup: 旧 last_content_*、effective search query 与 answer 控制字段随 fresh state 清除
+    route_and_topic: 旧 route、local topic 与 category context 随 fresh state 清除
+    pending_action_residue: 孤立残留字段随 fresh state 清除；有效 pending action 必须在 dispatch 前由现有顺序处理
+    current_focus_file: handled 后设置为 None
+    last_relevant_indices: handled 后设置为 []
+    memory_buffer: 保留既有历史，并准确追加当前 question 与 answer_markdown
+  handled_turn_order:
+    - print_answer
+    - append_memory
+    - fresh ConversationState()、current_focus_file=None、last_relevant_indices=[]
+    - continue
+  model_calls: >-
+    本卡不新增任何本地或远程模型调用；handled 短路后不得到达 build_search_query、
+    build_retrieval_materials、本地生成 helper 或 client.models.generate_content。
+
+architecture_boundary:
+  dependency_direction:
+    - runner 继续只依赖 DomainDispatchPort、dispatch_domain_request 与 SDK 顶层 DomainResult 语义。
+    - Core 不 import app.domain_host、具体插件或测试替身。
+    - Host 负责调用与 validate_result_boundary；Core 只做批准结果形态的最小消费。
+  unique_consumption_point: >-
+    只允许在现有 dispatch 调用与“# 5) normal retrieval”之间判断和消费；
+    不在路由器、Host、print helper、状态 helper 或检索模块增加第二消费点，也不新增通用
+    reset service、状态机重构或新 helper。
+  user_visible_answer: DomainResult.answer_markdown 原样交给现有 print_answer
+  return_to_existing_caller: run_chat_loop 仍返回 None
+  failure_semantics: 未处理或未批准结果继续原 normal_retrieval，不吞掉原链路回答或异常提示
+
+editable_scope:
+  allow:
+    - app/chat_loop_parts/runner.py
+    - public_tests/domain/test_domain_dispatch_port_empty_host.py
+    - docs/task_card_domain_minimal_handled_result_consumption.yaml
+  deny:
+    - app/domain_dispatch_port.py
+    - app/domain_host/**
+    - bootstrap/domain_composition.py
+    - ask_notes.py
+    - app/chat_loop.py
+    - app/dialog/**
+    - app/chat_state_helpers.py
+    - app/retrieval_flow/**
+    - app/file_actions/**
+    - packages/docmind-domain-sdk/**
+    - requirements.txt
+    - docs/adr/**
+    - docs/spikes/**
+    - README.md
+    - docs/evolution.md
+    - ai/**
+    - retrieval/**
+    - infra/**
+    - loaders/**
+    - tests/**
+    - test_notes/**
+    - examples/**
+
+non_goals:
+  - 消费 abstain、retryable_error、fatal_error
+  - 消费带 Evidence、warnings 或非 preserve FocusUpdate 的 handled 结果
+  - 新增或扩展 ConversationState 字段
+  - PluginInteractionState、插件内部多轮状态或完整插件状态机
+  - plugin route、OpaqueFocus 正式消费或插件焦点
+  - 把插件答案解析成 result set、selected candidate、selected source files 或文件焦点
+  - 新 route、路由规则、prompt、模型调用或回答生成
+  - SourceCatalog、SourceSync、SourceRef revision 或证据呈现
+  - 文件操作类结果或 Core action
+  - 动态发现、entry point、安装卸载、多插件优先级或冲突
+  - 生命周期、超时、重试、熔断或完整异常治理
+  - 招聘领域插件、示例插件包、MCP、UI 或 protocol 1.1
+  - 修改 EmptyDomainHost 或 3a 的单插件调用契约
+
+implementation_plan:
+  - 把现有 dispatch_domain_request 返回值保存为局部 DomainResult | None。
+  - 仅在唯一批准边界检查 selected_result_profile 的全部条件。
+  - 命中后先调用现有 print_answer，再调用 append_memory，保留既有 memory_buffer 并追加当前插件问答。
+  - 输出与 memory 追加完成后，将 runtime.conversation_state 替换为 fresh ConversationState()。
+  - 将 runner 局部 current_focus_file 设置为 None，并将 last_relevant_indices 设置为 []。
+  - 完成 Core 状态收口后 continue，跳过 normal_retrieval。
+  - 不命中时不输出插件内容，沿用当前代码逐行进入 normal_retrieval。
+  - 扩展根级 tracked runner 契约测试，使用稳定 DomainResult 哨兵和 spy/fake client 验证短路、返回与状态边界。
+  - 保持 EmptyDomainHost、common guards、未处理回落和原生成路径的现有测试全部通过。
+  - 不新增通用 reset service、新 helper 或状态机重构；若 runner 无法安全直接完成上述三项收口，触发 stop condition。
+
+test_contract:
+  deterministic_only: true
+  external_services: false
+  cross_turn_acceptance_required: true
+  cases:
+    - 最小 handled 哨兵使用 SDK 顶层 DomainResult 构造，字段精确匹配 selected_result_profile。
+    - runner 只消费一次该结果，print_answer 与 append_memory 各调用一次且文本逐字符等于 answer_markdown。
+    - handled 后 build_search_query、build_retrieval_materials、检索本地 helper 与 fake client 均未调用。
+    - handled 后 runner 读取下一条 q 并返回 None，不改变现有调用方对象类型。
+    - handled 后 runtime.conversation_state 的全部字段与 fresh ConversationState() 默认语义相等。
+    - handled 后 current_focus_file is None，last_relevant_indices == []。
+    - memory_buffer 保留原有历史，并按现有 append_memory 格式准确追加当前 question 与 answer_markdown。
+    - 插件答案不进入 last_answer_text、last_answer_preview、last_answer_type、result set、candidate 或文件焦点字段。
+    - 不直接或间接调用 update_state_after_local_answer、update_state_after_retrieval_answer，也不解析插件 Markdown。
+    - >-
+      必需跨轮次验收：先预置旧 last_route、旧 result set、旧 selected candidate、
+      last_selected_source_files 和匹配的 current_focus_file；第一轮由插件返回 selected_result_profile；
+      第二轮输入一个会触发指代或短追问判断的受控问题（基线样本为“详细分析一下”）。
+    - >-
+      跨轮次验收必须证明第二轮不会被绑定到第一轮之前的旧 result set、旧 selected candidate
+      或旧 file focus，也不会复用旧 last_relevant_indices、route 或 content context；同时捕获
+      detect_dialog_event、route、检索参数和状态快照，不能只断言最终文本。
+    - >-
+      跨轮次验收全程使用 fake plugin、spy port、fake client、受控输入和稳定哨兵，
+      不调用真实本地或远程模型。
+    - >-
+      已被否决的“状态不收口”候选在历史只读探测中会把“详细分析一下”路由到旧 selected
+      candidate；新测试必须用同类触发问题证明 fresh reset 消除了该绑定，不得通过更换成
+      不会触发指代的问题、放宽断言或只测第一轮绕过。
+    - EmptyDomainHost/None、abstain、retryable_error、fatal_error 继续原 normal_retrieval，并消费原链路稳定哨兵回答。
+    - 至少覆盖一个相邻合法 handled 反例，例如非空 warnings 或 replace_collection；不得呈现其 answer_markdown，必须回落原链路。
+    - malformed DomainResult 或非 DomainResult 返回值继续由现有 Host/port 边界拒绝并回落，不进入 handled 消费分支。
+    - 未批准结果回落时原 question、source_scope、route/event、allowed_paths、selected_source_files 与 state 参数保持不变。
+    - common guards 仍不 dispatch；EmptyDomainHost 无插件零差异契约继续通过。
+    - 下一轮明确新请求可正常进入普通检索；下一轮再次命中插件时可再次进入领域 dispatch 并消费 handled。
+    - >-
+      有效 pending rename/delete/organize 仍由 handle_file_action_turn 在领域 dispatch 前处理，
+      插件调用次数为零；fresh reset 不得被设计成正常取消有效 pending action 的机制。
+    - stdout/stderr/logger 捕获证明不增加插件状态提示、远程模型标记或静默丢失的原异常信息。
+    - 所有测试使用 monkeypatch、spy port、fake client、captured calls 和稳定哨兵，不调用真实服务。
+    - 新增测试只进入现有根级 tracked 契约体系，不依赖被忽略的 tests/。
+  required_scenarios:
+    - Empty Host、None 和 unhandled 原行为零差异。
+    - 最小 handled 直接呈现并跳过 normal_retrieval。
+    - 旧 result set 不污染下一轮。
+    - 旧 selected candidate 与 selected source files 不污染下一轮。
+    - 旧 file focus 与 relevant indices 不污染下一轮。
+    - 旧 route 与 content context 不劫持下一轮。
+    - memory 正确保留既有历史并追加当前插件问答。
+    - malformed DomainResult 与非 DomainResult 由既有边界拒绝并回落。
+    - handled 后检索、材料构建和模型调用均为零。
+    - 下一轮可正常进入普通检索或再次领域 dispatch。
+    - 有效 pending action 仍优先于领域 dispatch。
+    - 带 warnings 或非默认 FocusUpdate 的相邻合法 handled 不在 3b 消费范围内。
+
+quality_gate:
+  environment:
+    - 所有命令使用 Linux Bash。
+    - Python 优先使用 .venv/bin/python；SDK 源码验证可显式设置 PYTHONPATH=packages/docmind-domain-sdk/src。
+    - 不安装新依赖，不修改当前 .venv；若需生产安装复核，只在 mktemp -d 的临时 venv 从 requirements.txt 安装并清理。
+  commands:
+    py_compile: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src .venv/bin/python -m py_compile
+      app/chat_loop_parts/runner.py public_tests/domain/test_domain_dispatch_port_empty_host.py
+    contract_test: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src PYTHONDONTWRITEBYTECODE=1
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      public_tests/domain/test_domain_dispatch_port_empty_host.py
+    sdk_test: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src PYTHONDONTWRITEBYTECODE=1
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      packages/docmind-domain-sdk/tests
+    tracked_baseline: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src PYTHONDONTWRITEBYTECODE=1
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      test_query_router_repo_meta.py public_tests/domain/test_domain_dispatch_port_empty_host.py
+      packages/docmind-domain-sdk/tests
+    encoding: >-
+      .venv/bin/python packages/docmind-domain-sdk/scripts/check_text_encoding.py
+      app/chat_loop_parts/runner.py public_tests/domain/test_domain_dispatch_port_empty_host.py
+      docs/task_card_domain_minimal_handled_result_consumption.yaml
+    whitespace: git diff --check
+  static_checks:
+    - runner 只在原 dispatch 点后新增一个消费边界，不新增 route、模型调用或领域词表。
+    - app.chat_state_helpers、ConversationState 定义、SDK、Host、composition、requirements 与 ADR 无差异。
+    - tests/ 无差异，测试替身与哨兵只位于 tracked 根级契约测试。
+    - 源码不复制 DomainResult、FocusUpdate、EvidenceRef 或 validator。
+  verification_order:
+    - preflight 与 UTF-8 检查
+    - py_compile
+    - 最小 handled 函数级断言
+    - 未处理/相邻结果回落断言
+    - runner 单轮短路与 None 返回断言
+    - EmptyDomainHost、SDK 与 tracked baseline
+    - 静态扫描、git diff --check 与 git status --short
+
+stop_conditions:
+  - 3a 尚未完成或 Host 不能返回经过 validate_result_boundary 的 DomainResult。
+  - protocol 1.0 不允许 selected_result_profile，或必须修改 SDK 才能识别最小 handled 结果。
+  - 消费必须迁移 dispatch 点、改造大段 runner、路由或状态机。
+  - 必须新增 route、ConversationState 字段、PluginInteractionState、通用 reset service、新 helper、结果集解析或模型调用才能呈现 answer_markdown 并完成收口。
+  - 无法在 runner 唯一消费点用 fresh ConversationState()、current_focus_file=None 与 last_relevant_indices=[] 完成安全收口。
+  - fresh ConversationState() 会破坏仍然有效且按现有执行顺序本应越过 dispatch 存活的状态；此时必须停止并报告具体可复现路径，不得仅以理论上的未来扩展为理由停止。
+  - 无法用 fake client/spy/哨兵确定性证明检索与模型边界未调用。
+  - 必须同时消费 Evidence、warnings、非默认 FocusUpdate、文件操作或其他状态变体。
+  - 必须实现动态发现、生命周期、多插件或具体领域逻辑。
+  - ADR 与当前代码的依赖方向出现实质冲突，且无法保持唯一 Core 消费点。
+  - 实施需要修改 editable_scope.deny 中任一文件。
+
+acceptance_min:
+  - 只消费 selected_result_profile，其他结果统一继续原 normal_retrieval。
+  - 唯一消费点位于现有通用守门之后、normal_retrieval 之前。
+  - 用户可见文本逐字符来自 answer_markdown，并复用 print_answer；不调用模型生成或改写。
+  - handled 时 append_memory 一次，保留既有 memory_buffer 并准确追加当前 question/answer。
+  - handled 后 runtime.conversation_state 恢复 fresh ConversationState() 默认语义，current_focus_file is None，last_relevant_indices == []。
+  - 插件答案不写入或反解析为 last_answer_*、result set、selected candidate、selected source files、文件焦点或 route。
+  - handled 后跳过本轮检索、材料构建、本地回答和远程生成，相关调用次数均为零。
+  - run_chat_loop 正常退出仍返回 None。
+  - 必需的两轮受控验收通过：第二轮指代/短追问不得绑定到插件 handled 之前的旧 result set、selected candidate、file focus、route 或 content context。
+  - 下一轮明确请求可正常进入普通检索或再次领域 dispatch；无独立上下文短句允许由现有 contextless guard 处理。
+  - Source、Evidence 呈现、非默认 FocusUpdate、warnings 与文件操作均不参与本卡消费；默认 preserve 空更新只作为批准 profile 的边界条件。
+  - 未处理回落保持原 question、Core Source 范围、route、focus、state 和下游哨兵回答。
+  - EmptyDomainHost、None、unhandled 与非批准 handled profile 零差异，malformed/non-DomainResult 仍由既有边界拒绝并回落。
+  - 有效 pending action 仍先于领域 dispatch 被处理，不以 fresh reset 作为正常取消机制。
+  - 没有新增远程/本地模型调用、route、状态字段、PluginInteractionState、插件多轮机制、用户提示、默认日志或异常吞没路径。
+  - 只修改批准的 runner、tracked 契约测试和本任务卡，git diff --check 通过。
+
+future_tasks:
+  - 非默认 FocusUpdate 与 OpaqueFocus 的正式消费语义另立任务。
+  - SourceCatalog/SourceSync、Evidence revision 校验后的呈现与引用格式。
+  - warnings 的用户可见策略与插件错误治理。
+  - 文件操作类结果必须另建可确认的通用 action 协议。
+  - 动态发现、entry point、多插件选择、生命周期、超时、重试与熔断。
+  - 更新 ADR 当前实施状态与拆分后的迁移顺序。
+  - 独立领域插件、影子切流、MCP 与 protocol 1.1。
+
+resolved_user_decision:
+  status: resolved
+  decision: minimal_core_state_reset
+  plugin_interaction_state: not_required_for_3b
+  approved_semantics: >-
+    最小 handled 回答依次执行 print_answer、append_memory、fresh ConversationState()、
+    current_focus_file=None、last_relevant_indices=[] 与 continue。插件问答只进入普通
+    memory_buffer，不进入 Core 检索控制字段；3b 不提供插件内部多轮会话，无独立上下文短句
+    可由现有 contextless guard 处理。
+
+implementation_permissions:
+  production_code_change_requires_new_user_authorization: true
+  editable_only_within_card: true
+  git_add_allowed: false
+  commit_allowed: false
+  push_allowed: false
+  pull_request_allowed: false
+
+commit_message:
+  allowed: false
+  proposed_for_future_authorization_only:
+    title: "feat(domain-dispatch): 呈现最小 handled 结果并收口旧 Core 检索状态"
+    body:
+      - "目标: 在唯一 Core 边界呈现最小 handled 结果，收口旧检索控制状态并安全跳过通用检索。"
+      - "手段: 仅接受纯 Markdown 结果形态，保留 memory_buffer，并以 fresh ConversationState 和 runner 局部清理阻断跨轮污染。"
