@@ -7,6 +7,8 @@ import re
 import time
 from pathlib import Path
 
+from docmind_recruitment_plugin import PLUGIN_ID, RecruitmentJDPlugin
+
 from app.chat_loop import run_chat_loop
 from bootstrap.domain_composition import create_domain_host
 from bootstrap.env_setup import apply_environment_defaults
@@ -106,6 +108,14 @@ def _resolve_change_log_file(cache_file: Path, logger) -> Path:
     return change_log_file
 
 
+def create_production_domain_host():
+    plugin = RecruitmentJDPlugin()
+    return create_domain_host(
+        plugin=plugin,
+        expected_plugin_id=PLUGIN_ID,
+    )
+
+
 def main():
     args = _parse_args()
     apply_environment_defaults()
@@ -176,7 +186,7 @@ def main():
         ollama_api_url,
         ollama_model,
     )
-    domain_host = create_domain_host()
+    domain_host = create_production_domain_host()
 
     logger.info(f"✅ 系统就绪！启动总耗时: {time.time() - start_init:.2f}s")
     run_chat_loop(

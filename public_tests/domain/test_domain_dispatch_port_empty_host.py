@@ -562,7 +562,7 @@ def test_composition_root_creates_and_injects_host(monkeypatch, tmp_path):
     monkeypatch.setattr(ask_notes, "build_debug_question_recorder", lambda **_kwargs: object())
     monkeypatch.setattr(ask_notes, "scan_repository", lambda *_args: object())
     monkeypatch.setattr(ask_notes, "load_or_build_embeddings", lambda *_args: object())
-    monkeypatch.setattr(ask_notes, "create_domain_host", lambda: host)
+    monkeypatch.setattr(ask_notes, "create_production_domain_host", lambda: host)
     monkeypatch.setattr(
         ask_notes,
         "run_chat_loop",
