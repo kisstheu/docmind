@@ -1,0 +1,942 @@
+version: 1
+
+task_name: recruitment_jd_constraints_slice
+
+goal: >-
+  对用户在单轮 query 中直接提供的、具有明确结构锚点的单份单岗位招聘 JD，
+  保守提取原文明确写出的岗位约束，并以当前 3b 可直接消费的稳定纯 Markdown
+  DomainResult 返回；不满足全部严格门槛时返回 abstain。交付必须依次通过现有输入到达
+  验证、临时合成包边界探测和正式包骨架复验，当前任务卡修订不授权创建正式插件包。
+
+background:
+  task_kind: 首个真实招聘领域插件最小纵向切片
+  implementation_status: ready_for_A_and_B1_preflight
+  decision_kind: design_decision
+  decision: >-
+    本切片只建立“一次性结构化 JD 原文明示约束抽取”能力，不宣称支持任意自然语言
+    招聘文本，也不扩展为招聘分析、个性化求职决策或多轮插件系统。独立包边界先由不写入
+    仓库的临时合成包 B1 探测；A 与 B1 通过并获得新授权后才创建正式骨架，正式骨架通过
+    B2 复验后才实现招聘领域逻辑。
+  depends_on:
+    - 94c8a6f：独立 protocol 1.0 Domain SDK
+    - aad3bd3：EmptyDomainHost 影子分发
+    - bfd65ad：StaticDomainHost 静态单插件调用
+    - 85b0e25：最小 handled 结果消费与跨轮 Core 状态收口
+    - 8227107：public_tests 公开合成契约测试
+  rationale:
+    - 输入和输出可收敛为可枚举、可断言的单轮契约。
+    - 插件可直接处理当前 query 中的 JD，形成相对普通仓库检索链的明确增量。
+    - 招聘字段只存在于独立插件内部和最终 Markdown，不进入 Core、Host 或 SDK。
+    - 严格 abstain 与禁止意图规则可阻止能力扩张为岗位评价或完整招聘系统。
+    - B1 使用系统临时目录中的合成包证明架构可行性，消除“先建正式包才能通过实施前验证”的循环依赖。
+  phase_model:
+    current_authorized:
+      - A_input_reaches_domain_dispatch
+      - B1_independent_package_boundary_probe
+    requires_new_authorization:
+      - 创建正式 package skeleton
+      - B2_real_package_skeleton_verification
+    requires_B2_pass:
+      - JD 识别、字段抽取与 Markdown handled
+      - 招聘领域单元测试与 Core 边界测试
+      - production composition root 静态注入
+
+verified_baseline:
+  evidence_type: code_fact
+  repository:
+    branch: arch/domain-plugin-spike
+    head: 82271074ff7df26313887c82f8b5b087b472ac4e
+    remote_head: 82271074ff7df26313887c82f8b5b087b472ac4e
+  sdk:
+    package: packages/docmind-domain-sdk
+    protocol_file: packages/docmind-domain-sdk/src/docmind_domain_sdk/protocol.py
+    dto_file: packages/docmind-domain-sdk/src/docmind_domain_sdk/dto.py
+    plugin_port: docmind_domain_sdk.DomainPlugin
+    execution_method: "execute(DomainRequest) -> DomainResult"
+    request_contract:
+      query_length: 1..16000
+      source_scope: required tuple
+      focus_default: empty FocusContext
+    result_contract:
+      statuses:
+        - handled
+        - abstain
+        - retryable_error
+        - fatal_error
+      handled_requires_non_empty_answer: true
+      non_handled_partial_answer_forbidden: true
+      default_focus_update_mode: preserve
+  host:
+    file: app/domain_host/host.py
+    class: StaticDomainHost
+    behavior:
+      - 静态持有一个 DomainPlugin 与 expected_plugin_id。
+      - 每次 dispatch 只调用一次 plugin.execute(request)。
+      - execute 返回后调用 validate_result_boundary。
+      - 仅 handled 返回 DomainResult，abstain/error 映射为 None。
+      - 当前静态调用路径不调用 probe、source sync 或生命周期方法。
+  dispatch:
+    file: app/domain_dispatch_port.py
+    port: DomainDispatchPort
+    function: dispatch_domain_request
+    request_semantics:
+      - query 等于 runner 传入的当前规范化 question。
+      - source_scope 固定为空元组。
+      - 端口异常与非 DomainResult 返回值回落为 None。
+  handled_consumption:
+    file: app/chat_loop_parts/runner.py
+    function: run_chat_loop
+    position: 全部当前通用守门之后、normal_retrieval 之前
+    approved_profile:
+      status: handled
+      answer_markdown: 非空字符串
+      focus_update.mode: preserve
+      focus_update.items: []
+      focus_update.selected: null
+      evidence: []
+      warnings: []
+      error: null
+    effect:
+      - 使用现有 print_answer 呈现 answer_markdown。
+      - 使用现有 append_memory 保留普通文本 memory。
+      - 重置旧 ConversationState、current_focus_file 与 last_relevant_indices。
+      - continue 跳过本轮 normal_retrieval。
+  composition:
+    production_root: ask_notes.py::main
+    factory: bootstrap/domain_composition.py::create_domain_host
+    current_default: ask_notes.py 当前无参数调用 create_domain_host()，得到 EmptyDomainHost
+    existing_static_injection: >-
+      create_domain_host 已支持同时传入 plugin 与 expected_plugin_id，二者完整时返回
+      StaticDomainHost；本切片不需要修改 composition factory。
+  dependencies:
+    file: requirements.txt
+    encoding: UTF-16 LE with CRLF
+    current_local_package_entry: ./packages/docmind-domain-sdk
+    formal_recruitment_package_entry_present: false
+  formal_plugin_package:
+    path: packages/docmind-recruitment-plugin
+    current_state: absent
+    verification_meaning: >-
+      当前代码只能证明现有 SDK、Host 与 factory 边界；B1 将用临时合成包证明独立包方案
+      可行，B2 才能证明未来创建的正式插件骨架本身可构建、安装与注入。
+  tracked_tests:
+    domain_contract: public_tests/domain/test_domain_dispatch_port_empty_host.py
+    public_test_roots:
+      - public_tests/domain
+      - public_tests/file_actions
+      - public_tests/retrieval
+      - public_tests/state
+    ignored_local_root: tests/
+
+approved_input:
+  decision_kind: design_decision
+  transport: DomainRequest.query
+  source_count: exactly_one_direct_jd
+  job_count: exactly_one
+  history_dependency: forbidden
+  source_dependency: forbidden
+  external_dependency: forbidden
+  required_structure:
+    job_title_anchors:
+      - 岗位名称
+      - 职位名称
+      - 招聘岗位
+      - 招聘职位
+    requirement_section_anchors:
+      - 任职要求
+      - 岗位要求
+      - 职位要求
+      - 技能要求
+      - 技术要求
+      - 任职资格
+      - 岗位资格
+    rule: >-
+      输入必须同时存在至少一个明确岗位名称锚点和至少一个上述任职或技能栏目锚点；
+      “等价栏目”在首片仅指本列表中的确定性别名，不由模型或模糊语义临时判断。
+  optional_instruction:
+    allowed: true
+    max_sentences: 1
+    accepted_intent: 仅提取或整理当前 JD 的明确约束
+    rule: >-
+      允许“请整理这份 JD 的明确约束”一类单句指令；若没有指令，完整结构化 JD 的直接
+      提交视为隐含的抽取请求。指令不得同时包含评价、比较、建议、追问或外部调查意图。
+  rejected_forms:
+    - 自由散文式招聘宣传
+    - 严重残缺 OCR
+    - 只有职位名称
+    - 只有公司名称
+    - 多份 JD 或多个岗位块
+    - DocMind 已检索文件、Source 或历史上下文的引用式输入
+    - 需要打开网页、链接或读取外部数据的输入
+  length_rule:
+    measure: 移除批准的单句指令后，对 JD 正文按 Python str.isspace() 排除空白字符并计数
+    minimum_non_whitespace_characters: 80
+    protocol_maximum_query_characters: 16000
+    rationale: >-
+      80 是设计决定中的保守下限，用于排除职位名、短广告和明显残缺片段；它不是 JD 识别
+      的唯一条件。达到 80 字仍必须同时通过唯一岗位、栏目锚点、单 JD、字段门槛、原文
+      可追溯和纯抽取意图等全部断言；低于 80 字一律 abstain。
+
+normalized_job_title_rule:
+  decision_kind: design_decision
+  purpose: 仅判断同一输入中的岗位名称是否为一个唯一值，不建立职位分类或同义词系统
+  extraction:
+    - 只读取明确岗位名称锚点后的原文值。
+    - 输出时使用首次出现且非空的原文岗位名称，不输出规范化值。
+  comparison_normalization_order:
+    - 去除岗位名称值首尾空白。
+    - 使用 Python str.casefold() 归并拉丁字母大小写差异。
+    - 删除所有 Python str.isspace() 判定为空白的字符。
+    - 删除仅用于分隔的字符：半角/全角横线、下划线、斜线、中点、圆点和竖线。
+  comparison_separator_characters:
+    - "-"
+    - "_"
+    - "/"
+    - "／"
+    - "·"
+    - "•"
+    - "|"
+    - "｜"
+    - "—"
+    - "–"
+  forbidden_normalization:
+    - 不删除“高级”“初级”“后端”“前端”等语义限定词。
+    - 不把“开发工程师”和“软件工程师”等近义职位映射为同一类。
+    - 不根据行业、公司、地域或技术栈改写岗位名称。
+    - 不使用模型、向量相似度、职位分类器或外部职位词库。
+  uniqueness_assertions:
+    - 多次出现的岗位名称经上述规范化后只有一个非空值时，仍视为一个岗位。
+    - 标题、正文或同一栏目重复同一规范化岗位名称，不构成多岗位。
+    - 出现两个不同的规范化岗位名称时立即 abstain，不选择其中一个。
+    - >-
+      两个独立 JD 块即使岗位名称规范化后相同也 abstain；最小确定性判据是同一 query 中
+      出现两组可按位置排序的“岗位名称锚点 -> 任职/技能栏目锚点”完整结构，且第二组岗位
+      锚点位于第一组要求栏目内容之后。
+
+handled_conditions:
+  decision_kind: design_decision
+  all_required: true
+  assertions:
+    - JD 正文非空白字符数大于或等于 80，且整个 query 满足 SDK 1..16000 字符约束。
+    - 至少命中一个批准的岗位名称锚点，并得到非空岗位名称原文。
+    - 全部岗位名称出现值经最小规范化后只有一个唯一值。
+    - 至少命中一个批准的任职或技能栏目锚点。
+    - 只识别到一份 JD，且不存在第二组独立岗位块。
+    - 至少提取 4 个有效字段。
+    - 有效字段集合必须包含岗位名称。
+    - 有效字段集合必须包含技术要求。
+    - 技术要求至少包含一个来自批准要求区域的非空原文片段。
+    - 每个输出值都能在当前 query 的 JD 正文中回查到原文片段。
+    - 用户主要意图仅为提取或整理当前 JD 的明确约束。
+    - 输出严格匹配 output_contract.handled_profile。
+  valid_field_definition:
+    - 字段值非空，且来自当前 JD 正文的明确标签值或明确约束片段。
+    - 限定语与否定语必须随原文值一起保留。
+    - 字段不得依赖岗位常识、公司信息、历史上下文、网页或模型补全。
+    - 非岗位名称字段若存在明确冲突，可展示全部冲突原文，但该冲突字段不计入 4 个有效字段。
+    - 岗位名称发生冲突时不允许 handled。
+
+abstain_conditions:
+  decision_kind: design_decision
+  no_partial_output: true
+  conditions:
+    - 不是招聘 JD。
+    - 只有职位名称或公司名称。
+    - JD 正文非空白字符数少于 80。
+    - 缺少批准的岗位名称锚点或锚点后的名称为空。
+    - 缺少批准的任职或技能栏目锚点。
+    - 出现两个不同的规范化岗位名称。
+    - 出现两份 JD 或两组独立岗位块。
+    - 有效字段少于 4 个。
+    - 缺少技术要求原文片段。
+    - OCR 严重残缺，以无法满足锚点、字段门槛或原文回查断言为确定性判据。
+    - 需要继续追问才能满足 handled 门槛。
+    - 需要访问网页、链接、DocMind Source 或任何外部数据。
+    - 要求结合用户简历、偏好、历史情况或历史对话作判断。
+    - 要求判断岗位值不值得去、好坏、风险、红旗或适合度。
+    - 要求多 JD 比较、排序、选择或合并。
+    - 要求投递、面试、职业规划或薪资谈判建议。
+    - 主要意图超出原文明示约束抽取，即使输入同时附带完整 JD。
+  behavior: >-
+    任一条件命中即返回纯 abstain；不得先输出部分字段，再追加“无法评价”或其他越界提示。
+
+output_contract:
+  decision_kind: code_fact_plus_design_decision
+  result_type: docmind_domain_sdk.DomainResult
+  handled_profile:
+    status: handled
+    answer_markdown: 非空稳定纯 Markdown
+    focus_update:
+      mode: preserve
+      items: []
+      selected: null
+    evidence: []
+    warnings: []
+    error: null
+  abstain_profile:
+    status: abstain
+    answer_markdown: ""
+    focus_update:
+      mode: preserve
+      items: []
+      selected: null
+    evidence: []
+    warnings: []
+    error: null
+  markdown_template: |-
+    ## JD 明确约束
+
+    - 岗位名称：……
+    - 薪资：……
+    - 工作地点：……
+    - 工作制：……
+    - 加班或大小周：……
+    - 外包：……
+    - 驻场：……
+    - 学历：……
+    - 经验：……
+    - 技术要求：……
+
+    > 仅整理原文明确内容；未列出的字段表示原文没有明确说明。
+  rendering_rules:
+    - 标题、字段顺序和结尾说明固定。
+    - 缺失字段省略整行，不输出“未提及”。
+    - 非岗位名称字段冲突时按原文顺序列出冲突片段并明确标注“原文存在冲突”，不自行裁决。
+    - 不输出插件状态、置信度、Evidence、warnings、风险提示或调试信息。
+
+field_contract:
+  decision_kind: design_decision
+  stable_order:
+    - 岗位名称
+    - 薪资
+    - 工作地点
+    - 工作制
+    - 加班或大小周
+    - 外包
+    - 驻场
+    - 学历
+    - 经验
+    - 技术要求
+  common_rules:
+    - 不要求全部字段存在。
+    - 缺失字段整行省略，不输出“未提及”。
+    - 只保留当前 JD 中可回查的原文值，不推断或补全。
+    - 数值范围、以上/以下、可选、视情况、优先、必须等限定语原样保留。
+    - 多个同字段原文片段按输入出现顺序组合，不按经验重新排序。
+    - 岗位名称冲突直接 abstain；其他字段冲突只保留原文冲突，不裁决且不计入 handled 字段数。
+  technical_requirements:
+    output_name: 技术要求
+    allowed_sources:
+      - 批准的任职要求栏目
+      - 批准的岗位/职位要求栏目
+      - 批准的技能要求或技术要求栏目
+    allowed_behavior:
+      - 提取原文技术词。
+      - 提取必要的原文短句。
+      - 保留必须、熟悉、了解、优先等原文限定语。
+      - 按原文顺序组合多个片段。
+    forbidden_behavior:
+      - 判断哪些要求才是“核心”。
+      - 按经验、熟练度或重要性重新排序。
+      - 将岗位职责推断为技术要求。
+      - 根据岗位名称补齐技术栈。
+      - 对技能进行熟练度评级、重要性归纳或模型摘要。
+  explicitly_removed_fields:
+    - 明显风险项
+  forbidden_replacements:
+    - 风险评分
+    - 红旗判断
+    - 岗位好坏
+    - 岗位适合度
+    - 任何对“明显风险项”的改名或等价重引入
+
+implementation_scope:
+  decision_kind: design_decision
+  package: packages/docmind-recruitment-plugin
+  plugin_id_policy: 在独立包中声明一个符合 SDK PluginId 格式的稳定常量，并由 composition root 显式复用
+  phase_scope:
+    current_task_card_revision:
+      repository_changes:
+        - docs/task_card_recruitment_jd_constraints_slice.yaml
+      forbidden:
+        - 执行 A、B1 或 B2
+        - 创建临时验证脚本或正式插件文件
+        - 修改 production、测试、requirements.txt 或 ask_notes.py
+    A_and_B1_preflight:
+      authorization: immediately_allowed_after_task_card_validation
+      repository_changes: []
+      allowed:
+        - 使用现有代码和完全合成输入执行 A_input_reaches_domain_dispatch。
+        - 在系统临时目录或测试临时目录中创建、构建、安装并清理 B1 最小合成包。
+      forbidden:
+        - 创建 packages/docmind-recruitment-plugin
+        - 修改 requirements.txt 或 ask_notes.py
+        - 新增仓库脚本、生产代码或测试
+        - 实现任何招聘 JD 逻辑
+    B2_real_skeleton:
+      authorization: requires_A_and_B1_pass_and_new_user_authorization
+      allowed:
+        - 创建 packages/docmind-recruitment-plugin/pyproject.toml。
+        - 创建 packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/__init__.py。
+        - 创建 packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/plugin.py。
+        - 创建 packages/docmind-recruitment-plugin/tests/test_plugin_contract.py，但只写包骨架与 protocol 1.0 形状契约。
+        - 实现 protocol 1.0 所需的最小、无状态、无 I/O 插件形状。
+        - 让 execute 暂时始终返回 output_contract.abstain_profile。
+        - 离线构建、隔离安装、公开 import、Core import 静态扫描与现有 factory 静态注入复验。
+        - 必要时按既有编码规则向 requirements.txt 追加 ./packages/docmind-recruitment-plugin。
+      forbidden:
+        - 实现 JD 识别、岗位名称规则或任何招聘领域判定。
+        - 实现字段抽取、Markdown handled 或 status=handled 返回。
+        - 编写招聘领域样本和领域行为测试。
+        - 修改 ask_notes.py 或 public_tests/domain/test_recruitment_jd_slice_contract.py。
+        - 修改 SDK、Host、Port、runner、3b 或 composition factory。
+    recruitment_domain_implementation:
+      authorization: requires_B2_pass
+      allowed:
+        - 在正式插件内部定义私有、不可泄漏到 SDK/Core 的抽取结果结构。
+        - 实现确定性的输入判定、岗位名称最小规范化、字段抽取和 Markdown 渲染。
+        - 让 execute 只返回 output_contract 中批准的 handled 或 abstain profile。
+        - 增加完全合成的招聘插件单元测试和 public runner/Host 纵向边界测试。
+        - 在 ask_notes.py 静态构造唯一招聘插件并把同一 plugin_id 传给现有 create_domain_host。
+  final_architecture_requirements:
+    - 正式插件仅依赖 docmind-domain-sdk 顶层公开 API，不复制 DTO、validator 或协议定义。
+    - >-
+      为满足 DomainPlugin 结构协议而需要的非 execute 方法只能实现最小、无状态、无 I/O 的
+      协议兼容形状；本切片不接入或治理 describe/start/sync_sources/probe/stop 生命周期。
+  architecture_rules:
+    - Core、Host、Port 和 SDK 不 import 招聘插件。
+    - 具体插件 import 只允许出现在 production composition root 和对应测试。
+    - 招聘栏目词与字段规则只存在于插件包，不进入 Core 路由或远程模型触发规则。
+    - StaticDomainHost 仍只静态持有一个插件，不新增注册表、集合或发现逻辑。
+
+editable_scope:
+  allow:
+    - docs/task_card_recruitment_jd_constraints_slice.yaml
+    - packages/docmind-recruitment-plugin/**
+    - public_tests/domain/test_recruitment_jd_slice_contract.py
+    - requirements.txt
+    - ask_notes.py
+  deny:
+    - packages/docmind-domain-sdk/**
+    - app/domain_dispatch_port.py
+    - app/domain_host/**
+    - app/chat_loop_parts/runner.py
+    - app/chat_loop.py
+    - app/dialog/**
+    - app/chat_state_helpers.py
+    - bootstrap/domain_composition.py
+    - ai/**
+    - retrieval/**
+    - infra/**
+    - tests/**
+    - test_notes/**
+  resolution: >-
+    允许与禁止范围没有路径交叉。ask_notes.py 是现有 production composition root，允许它只做
+    具体插件的静态构造和注入；bootstrap/domain_composition.py 的 factory 已支持该注入，因此保持禁止修改。
+  phase_restrictions:
+    current_revision: 只允许修改 docs/task_card_recruitment_jd_constraints_slice.yaml
+    A_and_B1: 不允许修改任何仓库文件；B1 产物只能位于临时目录且必须清理
+    before_A_and_B1_pass:
+      - 禁止创建 packages/docmind-recruitment-plugin/**
+      - 禁止修改 requirements.txt
+      - 禁止修改 ask_notes.py
+      - 禁止实现领域逻辑或新增测试
+    after_A_and_B1_pass_with_new_authorization:
+      - 仅开放 packages/docmind-recruitment-plugin/** 的最小骨架和 protocol 形状
+      - 仅在 B2 必要时开放 requirements.txt 本地包入口
+      - ask_notes.py 与 public runner 边界测试仍保持禁止
+    after_B2_pass:
+      - 开放正式招聘领域逻辑和插件领域单元测试
+      - 开放 public_tests/domain/test_recruitment_jd_slice_contract.py
+      - 最后开放 ask_notes.py 静态注入
+
+non_goals:
+  - 当前任务卡修订中执行 A、B1、B2，或创建任何临时验证脚本、正式插件文件、生产代码和测试。
+  - 把 B1 的临时合成包探测解释为正式插件包已经创建、完成或通过 B2。
+  - 在 B2 中实现 JD 识别、字段抽取、handled、招聘领域规则、领域行为测试或 production 注入。
+  - 支持任意自然语言、自由散文式或严重残缺 OCR 招聘文本。
+  - 从 DocMind 文件、source_scope、历史检索结果或历史对话读取 JD。
+  - 公司背景调查、网页访问、链接解析或外部数据补充。
+  - 读取或分析用户简历、偏好、求职历史或个人情况。
+  - 岗位是否值得去、适合度、风险、红旗或好坏判断。
+  - 多 JD 汇总、比较、排序、选择或合并。
+  - 投递、面试、职业规划或薪资谈判建议。
+  - 对技术要求做“核心”判断、重要性排序、熟练度评级、模型归纳或职责推断。
+  - 输出明显风险项或以其他名称重引入风险结论。
+  - 插件多轮上下文、PluginInteractionState、OpaqueFocus 或插件状态持久化。
+  - Evidence、warnings、非默认 FocusUpdate 或新的 SDK 字段。
+  - 修改 SDK、Schema、Host、Port、runner、3b 消费逻辑、ConversationState 或 composition factory。
+  - 新 route、Core 招聘词表、Core 领域分支或远程模型触发规则。
+  - 动态发现、entry point、插件目录扫描、生命周期治理、多插件仲裁或 MCP。
+  - 远程模型、本地生成模型、网页、网络 API 或真实外部服务调用。
+
+implementation_plan:
+  - step: 1. 创建并校验任务卡
+    phase: current_task_card_revision
+    gate: 已完成后立即允许执行 A 与 B1，但不授权其他仓库修改
+  - step: 2. 执行 A_input_reaches_domain_dispatch
+    phase: preflight
+    gate: 不修改仓库文件；失败且只能修改禁止范围时停止
+  - step: 3. 执行 B1_independent_package_boundary_probe
+    phase: preflight
+    gate: 只使用临时合成包；不创建正式包、不修改 requirements.txt、不实现招聘逻辑
+  - step: 4. A 与 B1 均通过后，申请或获得新的实施授权
+    phase: authorization_gate
+    gate: 未获新授权不得创建正式插件目录或修改 requirements.txt/ask_notes.py
+  - step: 5. 创建正式插件 package skeleton
+    phase: B2_skeleton
+    gate: 只允许最小 protocol 1.0 形状，execute 始终返回规范 abstain
+  - step: 6. 执行 B2_real_package_skeleton_verification
+    phase: B2_skeleton
+    gate: B2 未通过不得实现任何 JD 识别、抽取或 handled
+  - step: 7. B2 通过后，实现正式招聘领域逻辑
+    phase: recruitment_domain_implementation
+    gate: >-
+      实现岗位名称锚点与最小规范化、80 字联合门槛、单 JD 判定、固定字段抽取、
+      技术要求原文保留、Markdown 渲染及严格 handled/abstain profile
+  - step: 8. 完成领域测试与 Core 边界测试
+    phase: recruitment_domain_verification
+    gate: >-
+      增加完全合成的命中、相邻误触发、三类跨域反例、插件单元测试和
+      StaticDomainHost/runner 纵向边界测试
+  - step: 9. 完成 production composition root 静态注入
+    phase: production_wiring
+    gate: >-
+      最后在 ask_notes.py 静态构造唯一插件并调用现有
+      create_domain_host(plugin=..., expected_plugin_id=...)；不修改 factory。随后按 quality_gate
+      完成全量验收；任一 stop condition 命中即停止，不扩大范围或绕过阶段门修复。
+
+test_contract:
+  deterministic_only: true
+  external_services: forbidden
+  synthetic_data_only: true
+  phase_contract:
+    A_input_reaches_domain_dispatch:
+      authorization: allowed_immediately
+      artifact_policy: 不新增或修改仓库文件
+      proof: 批准输入经过真实前置守门后精确到达 domain dispatch 一次
+    B1_independent_package_boundary_probe:
+      authorization: allowed_immediately
+      artifact_policy: 仅在临时目录生成合成包、构建物和隔离环境，结束后全部清理
+      proof: 只证明独立包边界在当前架构下可行，不证明正式招聘插件包已完成
+    B2_real_package_skeleton_verification:
+      authorization: requires_A_and_B1_pass_and_new_user_authorization
+      allowed_tests: 只允许最小包构建、安装、import、SDK API、Core import 扫描、factory 注入和始终 abstain 契约
+      forbidden_tests: 招聘 JD 识别、字段抽取、handled、Markdown 领域输出或招聘样本
+      proof: 证明正式包骨架满足独立安装与静态注入边界
+    recruitment_domain_tests:
+      authorization: requires_B2_pass
+      cases: test_contract.required_matrix
+      proof: 证明正式招聘领域行为与 Core 回落/消费边界
+  privacy_guard:
+    - 公司使用“某公司A”等占位符。
+    - 人名使用“候选人X”等占位符。
+    - 联系方式如需出现，只使用“手机号138****0000”或“name@example.com”等脱敏占位符。
+    - 不使用真实企业联系人、真实个人信息、完整地址或真实私有日志。
+  required_matrix:
+    - id: 1_standard_single_jd
+      input: 字段充分、具有岗位名称和要求栏目锚点的单份单岗位合成 JD
+      expected_status: handled
+      assertions:
+        - 至少输出岗位名称、技术要求及另外两个有效字段。
+        - 字段顺序严格符合 field_contract.stable_order。
+      boundary: 标准批准输入形成稳定结果
+    - id: 2_partial_fields_at_threshold
+      input: 正文不少于 80 个非空白字符，只含岗位名称、技术要求和两个其他有效字段的单份合成 JD
+      expected_status: handled
+      assertions:
+        - 精确达到 4 个有效字段仍可 handled。
+        - 缺失字段整行省略，不输出“未提及”。
+      boundary: 80 字不是唯一判断条件，部分字段允许缺失
+    - id: 3_repeated_same_title
+      input: 同一岗位名称在标题和正文重复，且仅有一个要求栏目和一个 JD 块
+      expected_status: handled
+      assertions:
+        - 大小写、空白或批准分隔符变化规范化后只有一个岗位名称值。
+        - 输出使用首次出现的原文岗位名称。
+      boundary: 同一岗位重复不误判为多岗位
+    - id: 4_two_distinct_titles
+      input: 同一文本出现两个规范化后不同的岗位名称
+      expected_status: abstain
+      assertions:
+        - answer_markdown 为空。
+        - 插件不自行选择任一岗位。
+      boundary: 岗位名称冲突直接回落
+    - id: 5_two_jd_blocks
+      input: 同一 query 中存在两组完整“岗位名称 -> 任职/技能栏目”结构
+      expected_status: abstain
+      assertions:
+        - 即使两个块的规范化岗位名称相同也 abstain。
+        - 不合并、不比较、不输出部分字段。
+      boundary: 首片只处理一份 JD
+    - id: 6_non_recruitment_text
+      input: 具有标题和条款结构但不是招聘 JD 的完全合成文本
+      expected_status: abstain
+      assertions:
+        - 不因一般结构化文本而 handled。
+      boundary: 相邻结构误触发防护
+    - id: 7_title_only
+      input: 只有“职位名称：后端工程师”的短文本
+      expected_status: abstain
+      assertions:
+        - 同时因长度、栏目和字段门槛不足而失败。
+      boundary: 单一职位名不能触发
+    - id: 8_missing_requirement_section
+      input: 长度和其他字段充分，但没有批准任职/技能栏目锚点的招聘宣传文本
+      expected_status: abstain
+      assertions:
+        - 不用自由散文语义替代明确栏目锚点。
+      boundary: 批准输入结构必须完整
+    - id: 9_subjective_job_decision
+      input: 完整单份 JD 加“这个岗位值不值得去”
+      expected_status: abstain
+      assertions:
+        - 不先输出字段再拒绝评价。
+      boundary: 主要意图超出抽取范围时整体回落
+    - id: 10_resume_or_preference_request
+      input: 完整单份 JD 加“结合候选人X的简历和偏好判断是否适合”
+      expected_status: abstain
+      assertions:
+        - 不读取或假设简历、偏好和历史情况。
+      boundary: 禁止个性化求职决策
+    - id: 11_no_hallucinated_fields
+      input: 达到 handled 门槛但未写薪资、外包、驻场或工作制的单份 JD
+      expected_status: handled
+      assertions:
+        - 未出现的字段整行缺失。
+        - 每个输出值都可在输入原文中定位。
+      boundary: 不补写原文不存在的信息
+    - id: 12_technical_requirements_verbatim
+      input: 要求栏目包含带“必须/熟悉/优先”等限定语且顺序明确的多个技术片段
+      expected_status: handled
+      assertions:
+        - 输出字段名仅为“技术要求”。
+        - 原文词句、限定语与顺序保持不变。
+        - 不出现“核心”、重要性排序、熟练度评级或职责推断。
+      boundary: 技术要求只做原文抽取
+    - id: 13_minimal_3b_profile
+      input: 通过真实 RecruitmentJDPlugin 与 StaticDomainHost 执行标准批准 JD
+      expected_status: handled
+      assertions:
+        - answer_markdown 非空且为稳定纯 Markdown。
+        - focus_update 为 preserve、空 items、selected is None。
+        - evidence 和 warnings 为空，error is None。
+        - runner 只展示一次并跳过 normal_retrieval。
+      boundary: 当前 3b 无需修改即可消费
+    - id: 14_abstain_preserves_docmind
+      input: 通过真实插件和 StaticDomainHost 执行一个明确非招聘合成文本
+      expected_status: abstain
+      assertions:
+        - Host/port 向 runner 返回 None。
+        - 原 question、route/event、检索范围与 Core 状态参数不因插件改变。
+        - 原 normal_retrieval 受控哨兵答案仍被消费。
+      boundary: abstain 不吞掉或污染原 DocMind 路径
+    - id: 15_no_network_or_model
+      input: 在 socket、HTTP、网页和模型边界设置“一旦调用即失败”哨兵后执行标准批准 JD
+      expected_status: handled
+      assertions:
+        - 插件仍返回稳定 Markdown。
+        - 网络、网页、本地生成模型、远程模型和其他外部服务调用次数均为零。
+      boundary: 插件完全基于当前 query 原文
+    - id: 16_cross_domain_boundaries
+      input: 招聘 JD 命中样本，以及合同条款、采购规格、项目说明三类异质合成反例
+      expected_status: mixed
+      assertions:
+        - 招聘 JD 在满足全部门槛时 handled。
+        - 合同、采购和项目文本全部 abstain。
+      boundary: 命中、相邻误触发和三类跨域反例齐备
+  additional_boundaries:
+    - 79 个非空白字符的 JD 即使其他锚点存在也 abstain。
+    - 80 个非空白字符的文本若缺少任一其他 handled 条件仍 abstain。
+    - 非岗位名称字段有冲突且剩余有效字段仍达到门槛时，按原文顺序展示冲突但不裁决。
+    - 岗位名称冲突无论其他字段多少都 abstain。
+    - 所有 abstain 结果不携带部分 answer、Evidence、warnings、error 或状态更新。
+  phase_order_assertions:
+    - A 与 B1 可以在正式插件目录不存在时执行。
+    - B1 测试不得引用 packages/docmind-recruitment-plugin、requirements.txt 新入口或 ask_notes.py 新 import。
+    - B2 测试必须观察 execute 始终 abstain，且任何 handled 或招聘规则均视为越界失败。
+    - required_matrix 中的招聘领域行为测试只有 B2 通过后才允许新增和执行。
+    - production composition root 静态注入只有领域测试与 Core 边界测试通过后才允许实施。
+
+preflight_checks:
+  current_authorization:
+    allowed_now:
+      - A_input_reaches_domain_dispatch
+      - B1_independent_package_boundary_probe
+    repository_write_permission: none
+    forbidden_until_A_and_B1_pass_and_new_authorization:
+      - 创建 packages/docmind-recruitment-plugin
+      - 修改 requirements.txt
+      - 修改 ask_notes.py
+      - 实现任何招聘领域逻辑或新增仓库测试
+  A_input_reaches_domain_dispatch:
+    evidence_type: required_future_verification
+    goal: 证明标准批准输入经过当前 runner 前置守门后能到达 dispatch_domain_request
+    fixture: >-
+      使用完全合成的单份单岗位结构化 JD；包含一句简单整理指令、一个岗位名称锚点、
+      一个要求栏目锚点、至少 4 个有效字段和至少 80 个正文非空白字符。
+    method:
+      - 使用现有 runner 顺序驱动一轮输入，并用 spy DomainDispatchPort 捕获 DomainRequest。
+      - 保留真实 detect_dialog_event、apply_event_to_state、resolve_route 与各 try_handle_* 守门判断。
+      - 只替换终端、文件副作用、网络和模型 I/O 边界；不得把 resolve_route 或全部守门直接硬编码为 normal_retrieval/None 来伪造到达。
+      - 外部路由调用可用确定性失败哨兵触发现有安全回落，但不得调用真实本地或远程服务。
+      - 断言 dispatch 精确调用一次、request.query 等于规范化后的完整输入、request.source_scope == ()。
+      - 断言在 dispatch 前没有任何守门回答消费该输入。
+    pass_condition: 标准批准输入稳定到达 dispatch_domain_request 一次
+    fail_action: >-
+      若输入稳定被前置守门消费，且修复必须修改 Core 路由、runner 或其他禁止范围，立即停止本切片并报告捕获它的具体守门和复现输入。
+  B1_independent_package_boundary_probe:
+    evidence_type: required_future_verification
+    stage: before_formal_package_creation
+    goal: 使用仓库外临时合成包证明独立包边界在当前架构下可行
+    method:
+      - 在 mktemp -d 创建系统临时目录，并用 trap 在成功或失败时清理全部合成源码、构建物和隔离环境。
+      - 仅在该临时目录创建最小合成 Python 包，不在仓库中创建 packages/docmind-recruitment-plugin 或任何验证脚本。
+      - 合成包 pyproject 只声明 docmind-domain-sdk；源码只 import docmind_domain_sdk 顶层公开 API。
+      - 合成插件实现 protocol 1.0 所需最小形状，execute 只返回与请求关联的规范 abstain，不含任何招聘 JD 逻辑。
+      - 通过当前本地 packages/docmind-domain-sdk 边界验证 SDK 可被该独立包导入，不复制 SDK 源码或 DTO。
+      - 禁止包索引和网络，在临时位置离线构建最小包，并在隔离环境中安装和 import。
+      - 静态扫描临时合成包不 import app、bootstrap、ai、retrieval、infra、ask_notes 或其他 Core 内部模块。
+      - 使用合成插件对象和稳定 plugin_id 调用现有 create_domain_host(plugin=..., expected_plugin_id=...)，验证返回 StaticDomainHost 且不修改 factory。
+      - 验证结束后确认仓库 status 没有因 B1 增加或修改任何文件，requirements.txt 与 ask_notes.py 无差异。
+    forbidden:
+      - 创建或修改 packages/docmind-recruitment-plugin/**
+      - 修改 requirements.txt、ask_notes.py、生产代码或测试
+      - 实现 JD 识别、字段抽取、handled 或任何招聘领域规则
+      - 调用远程模型、网页、网络、包索引或真实外部服务
+    pass_condition: >-
+      临时合成包仅依赖 SDK 顶层 API，离线构建、隔离安装、import、Core import 扫描和
+      现有 factory 静态注入全部通过，且仓库无文件变化。
+    proof_limit: 只证明独立包边界可行，不证明 packages/docmind-recruitment-plugin 已创建或完成
+    fail_action: >-
+      若 B1 无法在纯临时合成包中完成，或必须修改任何正式仓库文件、SDK、Host、runner、
+      composition factory 或引入 Core 内部依赖才能安装/注入，立即停止本切片。
+  authorization_gate_after_A_and_B1:
+    condition:
+      - A_input_reaches_domain_dispatch passed
+      - B1_independent_package_boundary_probe passed
+    effect: 仅可申请新的实施授权，不自动授权正式包创建或其他仓库修改
+    required_user_authorization: 创建正式 package skeleton 并执行 B2
+  B2_real_package_skeleton_verification:
+    evidence_type: required_post_authorization_verification
+    stage: after_A_and_B1_and_new_authorization_before_domain_logic
+    prerequisites:
+      - A_input_reaches_domain_dispatch passed
+      - B1_independent_package_boundary_probe passed
+      - 已获得创建正式 package skeleton 与执行 B2 的新用户授权
+    allowed_skeleton:
+      - packages/docmind-recruitment-plugin/pyproject.toml
+      - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/__init__.py
+      - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/plugin.py
+      - packages/docmind-recruitment-plugin/tests/test_plugin_contract.py
+    allowed_behavior:
+      - 建立最小可安装 package skeleton。
+      - 实现 protocol 1.0 所需的最小、无状态、无 I/O 插件形状。
+      - execute 暂时始终返回与请求关联的 output_contract.abstain_profile。
+      - 完成正式包离线构建、隔离安装和 import 验证。
+      - 验证正式包只依赖 docmind-domain-sdk 顶层公开 API，不复制 SDK 定义。
+      - 静态扫描正式包不 import Core 内部模块。
+      - 使用正式最小插件对象验证现有 create_domain_host 静态注入，不修改 factory。
+      - 必要时按既有规则安全追加 requirements.txt 本地包入口并保留 UTF-16 LE/CRLF。
+    forbidden:
+      - 实现 JD 识别、岗位名称规范化、字段抽取或招聘领域规则。
+      - 返回 handled 或生成 JD Markdown。
+      - 编写招聘领域行为测试或 public runner 边界测试。
+      - 修改 ask_notes.py、SDK、Host、Port、runner、3b 或 composition factory。
+      - 扩大 editable_scope。
+    pass_condition: >-
+      正式 skeleton 可离线构建、隔离安装和 import，只依赖 SDK 顶层 API，不 import Core；
+      execute 始终规范 abstain，现有 factory 静态注入通过，必要的 requirements 变更保持编码。
+    fail_action: >-
+      B2 任一边界失败立即停止；不得绕过 B2、放宽为 Core 内部依赖或直接开始招聘逻辑实现。
+  order:
+    - 1. 创建并校验任务卡
+    - 2. A_input_reaches_domain_dispatch
+    - 3. B1_independent_package_boundary_probe
+    - 4. A 与 B1 均通过后申请或获得新的实施授权
+    - 5. 创建正式插件 package skeleton
+    - 6. B2_real_package_skeleton_verification
+    - 7. B2 通过后实现 JD 识别、抽取和 handled
+    - 8. 完成领域测试与 Core 边界测试
+    - 9. 完成 production composition root 静态注入
+
+quality_gate:
+  environment:
+    - 所有命令使用 Linux Bash。
+    - Python 优先使用 .venv/bin/python，不使用系统 python 代替项目环境。
+    - 测试设置 PYTHONDONTWRITEBYTECODE=1 并禁用 pytest cacheprovider。
+    - 临时目录使用 mktemp -d 和 trap 清理，不保留 wheel、egg-info、日志或缓存。
+    - 禁止访问网络、网页、真实本地模型、远程模型或包索引。
+  phase_availability:
+    current_revision:
+      - 只执行任务卡 YAML、引用、阶段一致性、范围和 git 检查。
+      - 不执行 A、B1、B2 或任何插件测试。
+    A_and_B1:
+      - 只执行 preflight_checks 中的 A 与临时合成包 B1。
+      - B1 结束后必须证明仓库文件零变化。
+    B2:
+      - 只执行正式 skeleton 的构建、安装、import、依赖扫描、factory 注入和始终 abstain 契约。
+      - 下方招聘领域测试命令此时仍不得执行。
+    after_B2:
+      - 才允许执行插件招聘领域测试、public domain 边界测试和最终全量回归。
+  commands:
+    py_compile: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      .venv/bin/python -m py_compile
+      packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/*.py
+      packages/docmind-recruitment-plugin/tests/test_plugin_contract.py
+      public_tests/domain/test_recruitment_jd_slice_contract.py ask_notes.py
+    plugin_contract: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider
+      packages/docmind-recruitment-plugin/tests
+    domain_contract: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider
+      public_tests/domain
+    sdk_contract: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src PYTHONDONTWRITEBYTECODE=1
+      .venv/bin/python -m pytest -q -p no:cacheprovider packages/docmind-domain-sdk/tests
+    public_contracts: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider public_tests
+    task_card_yaml: >-
+      .venv/bin/python -c
+      "from pathlib import Path; import yaml; yaml.safe_load(Path('docs/task_card_recruitment_jd_constraints_slice.yaml').read_text(encoding='utf-8'))"
+    encoding: >-
+      .venv/bin/python packages/docmind-domain-sdk/scripts/check_text_encoding.py
+      packages/docmind-recruitment-plugin public_tests/domain/test_recruitment_jd_slice_contract.py
+      ask_notes.py docs/task_card_recruitment_jd_constraints_slice.yaml
+    mojibake_scan: >-
+      rg -n "AI鍥炵瓟|馃|鈴憋笍|鈿狅笍|褰撳墠杩樻病鏈|锛\\?|銆\\?"
+      packages/docmind-recruitment-plugin public_tests/domain ask_notes.py
+      docs/task_card_recruitment_jd_constraints_slice.yaml
+    whitespace: git diff --check
+  static_checks:
+    - git diff --name-only 只包含 editable_scope.allow 中的路径。
+    - SDK、Host、Port、runner、3b、composition factory、ai、retrieval、infra、tests 与 test_notes 无差异。
+    - 插件生产源码不 import Core 内部包，不访问网络或模型，不复制 SDK DTO。
+    - Core、Host、Port、runner 和 SDK 不出现招聘字段、岗位词表或插件 import。
+    - requirements.txt 保持 UTF-16 LE/CRLF，既有依赖行除追加本地插件路径外逐字符不变。
+    - 输出字段中不存在“明显风险项”“风险评分”“红旗”或“核心技术要求”。
+    - 测试样本均为完全合成和脱敏数据。
+    - B1 只产生临时目录内容，正式插件目录、requirements.txt、ask_notes.py 和测试均无差异。
+    - B2 的 plugin.py 不含 JD 锚点、字段表、Markdown handled 模板或 status=handled 路径。
+    - B2 通过前，public runner 边界测试和 ask_notes.py 插件 import 均不存在。
+  verification_order:
+    - 创建并校验任务卡
+    - A_input_reaches_domain_dispatch
+    - B1_independent_package_boundary_probe
+    - A 与 B1 通过后获取新的 skeleton/B2 实施授权
+    - 创建正式 package skeleton
+    - B2_real_package_skeleton_verification
+    - B2 通过后执行 UTF-8、requirements 编码和乱码检查
+    - py_compile
+    - 岗位名称规范化与字段函数级断言
+    - handled/abstain 招聘插件契约
+    - StaticDomainHost 与 3b profile 纵向契约
+    - abstain 原路径与跨域反例
+    - SDK 与全部 public_tests
+    - production composition root 静态注入
+    - 静态依赖/范围扫描、git diff --check 与 git status --short
+
+stop_conditions:
+  - A 失败：批准输入稳定无法到达 domain dispatch，且只能通过修改 Core 路由、runner 或其他禁止范围解决。
+  - B1 无法使用仓库外临时合成包证明 SDK 顶层公开 API 依赖、离线构建、隔离安装、import 和现有 factory 注入边界。
+  - B1 必须创建或修改正式仓库文件、正式插件目录、requirements.txt、ask_notes.py、生产代码或测试才能完成。
+  - A 或 B1 未通过，或尚未获得新的实施授权，却需要创建正式 package skeleton。
+  - B2 创建正式骨架后发现必须 import app、bootstrap、ai、retrieval、infra、ask_notes 或其他 Core 内部模块。
+  - B2 正式骨架不能在禁止网络和包索引的条件下离线构建、隔离安装或 import。
+  - B2 必须修改 SDK、Host、Port、runner、3b 消费逻辑或 composition factory 才能构建、安装或静态注入。
+  - B2 的 execute 无法保持始终规范 abstain，或 B2 必须提前实现 JD 识别、字段抽取、handled 或招聘规则。
+  - B2 任一验证失败；失败时不得绕过、降低断言或直接进入招聘领域逻辑实现。
+  - 需要修改 SDK、Schema、Host、Port、runner、3b 消费逻辑或 composition factory。
+  - 需要获得 DocMind 文件 Source、RepoState、检索结果、文件路径或历史上下文。
+  - A、B1、B2 或任一后续阶段需要远程模型、本地生成模型、网页、网络 API、包索引或其他真实外部服务。
+  - 无法用确定性位置与锚点规则区分一份 JD 和多份 JD。
+  - handled 需要“模型认为完整/足够明确”等主观置信判断或不可断言阈值。
+  - 必须引入插件多轮状态、PluginInteractionState、OpaqueFocus 或持久化。
+  - 必须引入 Evidence、warnings、非默认 FocusUpdate 或新的 SDK 字段。
+  - 必须建立行业、公司、地域、职位分类或岗位风险词库。
+  - 必须重新引入明显风险项、风险评分、红旗判断或岗位好坏判断。
+  - 必须对技术要求进行模型归纳、核心判断、重要性排序、评级或职责推断。
+  - 合同条款、采购规格、项目说明三类跨域反例无法稳定 abstain。
+  - requirements.txt 无法在保留 UTF-16 LE/CRLF 和既有内容的前提下安全追加本地插件入口。
+  - 实施需要修改 editable_scope.deny 中任一文件，或需要新增 allow 列表外的生产/测试文件。
+
+acceptance_min:
+  - 当前任务卡修订只改变任务卡本身，并清晰授权立即执行 A 与 B1；本轮不执行它们。
+  - A 通过：批准输入经过真实前置守门后可到达 domain dispatch。
+  - B1 通过：临时合成包证明独立包边界可行，且正式插件目录、requirements.txt、ask_notes.py 和其他仓库文件零变化。
+  - A 与 B1 通过后只获得申请新实施授权的资格，不自动创建正式包。
+  - 获得新授权后创建的 B2 正式 skeleton 只实现 protocol 1.0 最小形状，execute 始终返回规范 abstain。
+  - B2 通过：正式 skeleton 可离线构建、隔离安装、import、只依赖 SDK 顶层 API、不 import Core，并可由现有 factory 静态注入。
+  - B2 通过前没有 JD 识别、字段抽取、Markdown handled、招聘领域测试、public runner 边界测试或 production 注入。
+  - B2 通过后才允许正式招聘领域逻辑、领域测试、Core 边界测试与最终 ask_notes.py 静态注入。
+  - 只对具有明确岗位名称与要求栏目锚点的单份单岗位 JD handled。
+  - 80 字规则仅作为保守下限，并与全部其他 handled 断言联合生效。
+  - 同一规范化岗位名称重复仍 handled；不同岗位名称或两个独立 JD 块稳定 abstain。
+  - handled 至少有 4 个有效字段，且必含岗位名称与技术要求。
+  - 输出字段严格限于固定 10 项并保持稳定顺序；缺失字段整行省略。
+  - 技术要求只保留批准要求区域中的原文词句、限定语和顺序，不做“核心”判断。
+  - 所有输出值均可回查到当前 query 原文，原文不存在的信息不被补写。
+  - 明显风险项及任何风险评分、红旗或岗位好坏判断均不存在。
+  - handled 和 abstain 分别严格匹配 output_contract 中的最小 profile。
+  - 主要意图超出抽取范围时整体 abstain，不返回部分字段。
+  - abstain 后原 DocMind question、检索范围、状态和回答路径保持不变。
+  - 插件不访问网络、网页、真实模型、外部服务、DocMind Source 或历史上下文。
+  - 招聘命中、相邻误触发以及合同/采购/项目三类跨域反例全部通过。
+  - 全部样本完全合成且脱敏，插件测试、domain contract、SDK 测试和 public_tests 全部通过。
+  - SDK、Host、Port、runner、3b、composition factory 和所有禁止范围无差异。
+  - 编码、乱码、静态依赖、editable scope 和 git diff --check 检查通过。
+
+implementation_permissions:
+  current_task:
+    allowed:
+      - 只修订 docs/task_card_recruitment_jd_constraints_slice.yaml
+    forbidden:
+      - 执行 A、B1 或 B2
+      - 创建临时验证脚本、正式插件文件、生产代码或测试
+      - 修改 requirements.txt 或 ask_notes.py
+  immediately_after_card_validation:
+    allowed:
+      - A_input_reaches_domain_dispatch
+      - B1_independent_package_boundary_probe
+    repository_writes_allowed: false
+    forbidden:
+      - 创建 packages/docmind-recruitment-plugin
+      - 修改 requirements.txt 或 ask_notes.py
+      - 实现任何招聘领域逻辑
+  after_A_and_B1_pass:
+    automatic_permission: none
+    required_action: 申请或获得新的实施授权
+  after_A_and_B1_pass_and_new_authorization:
+    allowed:
+      - 创建 implementation_scope.phase_scope.B2_real_skeleton 中列出的正式 package skeleton
+      - 执行 B2_real_package_skeleton_verification
+      - 必要时按任务卡规则安全追加 requirements.txt 本地包入口
+    forbidden_until_B2_pass:
+      - JD 识别、字段抽取和 Markdown handled
+      - 招聘领域规则和领域行为测试
+      - public runner/Host 边界测试
+      - ask_notes.py production 静态注入
+  after_B2_pass:
+    allowed:
+      - 正式招聘领域逻辑实现
+      - 插件招聘领域单元测试
+      - StaticDomainHost/runner 边界测试
+      - ask_notes.py 静态注入
+  plugin_implementation_requires_new_user_authorization: true
+  git_add_allowed: false
+  commit_allowed: false
+  push_allowed: false
+  pull_request_allowed: false
+
+suggested_commit_message:
+  allowed_in_current_task: false
+  proposed_for_future_authorization_only:
+    title: "feat(recruitment-plugin): 交付单份 JD 明确约束提取切片"
+    body:
+      - "目标: 对结构化单份招聘 JD 稳定提取原文明示约束，并在不满足严格门槛时保守回落。"
+      - "手段: 通过独立 protocol 1.0 插件返回当前 3b 可直接消费的最小纯 Markdown 结果。"
+      - "验证: 覆盖岗位名称归并、多岗位回落、技术原文忠实性、跨域反例和无外部调用契约。"
