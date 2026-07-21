@@ -32,7 +32,7 @@ inputs:
   change_log_file: ""
   emb_model: BAAI/bge-large-zh-v1.5
   llm_model: gemini-2.5-flash
-  repository_root: /home/kissyu/projects/docmind
+  repository_root: /workspace/docmind
   shell: bash
   python_interpreter: .venv/bin/python
   expected_branch: arch/domain-plugin-spike

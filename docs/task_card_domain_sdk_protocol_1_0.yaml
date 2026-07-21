@@ -29,7 +29,7 @@ inputs:
   change_request: ""
   embedding_model: ""
   llm_model: ""
-  repository_root: /home/kissyu/projects/docmind
+  repository_root: /workspace/docmind
   shell: bash
   python_interpreter: .venv/bin/python
   python_version: "3.12"
