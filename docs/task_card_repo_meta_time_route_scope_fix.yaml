@@ -1,0 +1,733 @@
+version: 1
+
+task_name: repo_meta_time_route_scope_fix
+
+task_goal: >-
+  收窄 Core 的 repo-meta 文件时间路由边界：普通业务正文中的时间、周期和期限问题
+  不得再仅凭宽泛时间词被文件元数据查询抢占；真实的文件或笔记创建、修改、更新、
+  新增、删除、重命名、版本、最新、最早、明确日期/范围与排序查询，以及已有
+  repo-meta 文件结果集短追问必须保持可用。实现采用领域无关的正向意图合取，
+  不加入汽车、合同、课程或其他业务领域黑名单。
+
+task_kind: independent_core_routing_bugfix
+implementation_status: ready_for_implementation_after_preflight
+
+authorization_statement: >-
+  本任务卡提交并获用户采用后，后续实施者可在 preflight 全部通过的前提下，
+  仅修改 editable_scope.default_allow 与满足启用条件后的 conditional_allow。
+  不需要以 after_fix 已通过作为开始修改代码的前置条件；after_fix 是实现完成后的
+  验收记录。任何未列明路径都不因“实现必要”获得隐式授权。
+
+communication_preference:
+  tone: professional
+  language: zh-CN
+  report_order:
+    - 结论
+    - 变更
+    - 验证
+    - 风险
+
+background:
+  audited_commit: d4edf08685c98dfcb25b15d0f51c7b1718315354
+  audited_branch: arch/domain-plugin-spike
+  audit_root: test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/regression_q1_time_route/before_fix
+  audit_records:
+    - test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/regression_q1_time_route/before_fix/audit_summary.md
+    - test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/regression_q1_time_route/before_fix/root_cause_audit.md
+    - test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/regression_q1_time_route/before_fix/route_evidence.md
+    - test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/regression_q1_time_route/before_fix/control_route_evidence.md
+    - test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/regression_q1_time_route/before_fix/corpus_and_index.md
+    - test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/regression_q1_time_route/before_fix/repository_state.md
+  audit_records_policy: >-
+    上述目录仅可读取；不得修改、覆盖、删除或把其中内容作为 tracked 交付。
+  defect_type: Core 通用路由语义边界缺陷
+  not_owned_by:
+    - 招聘 JD 插件
+    - Domain SDK
+    - StaticDomainHost
+    - handled result 消费
+    - 汽车维修领域开发
+    - 日期解析能力扩展
+    - 文件变更历史功能增强
+
+verified_baseline:
+  original_failure:
+    question: "定期保养在什么时间或里程条件下进行？特殊使用条件会带来什么变化？"
+    current_route: repo_meta/time
+    expected_route: normal_retrieval
+    observed_effects:
+      - 未进入 normal retrieval
+      - 检索候选为 0
+      - 未调用 Gemini
+      - 返回最新和最早文件列表
+  confirmed_call_chain:
+    - ask_notes.py::main
+    - app/chat_loop_parts/runner.py::run_chat_loop
+    - app/file_actions/loop.py::handle_file_action_turn
+    - app/dialog/state_machine.py::detect_dialog_event
+    - app/dialog/repo_meta_rules.py::looks_like_repo_time_question
+    - app/retrieval_flow/routing.py::resolve_route
+    - ai/repo_meta/classifier.py::classify_repo_meta_question
+    - ai/repo_meta/classifier_predicates.py::looks_like_time_request
+    - ai/repo_meta/answering_parts/time.py::_answer_time
+  confirmed_root_cause: >-
+    app/dialog/repo_meta_rules.py 中 has_explicit_time_axis 与 has_time_signal
+    使用重叠的宽泛时间词；has_explicit_time_axis and has_time_signal
+    无需文件对象、文件元数据动作或 repo-meta 上下文即可为真。进入 repo-meta 后，
+    classifier 的 looks_like_time_request 与通用 TIME_KEYWORDS 再次宽判为 time。
+  other_confirmed_false_positives:
+    - question: "合同在什么时间到期？"
+      current_route: repo_meta/time
+      expected_route: normal_retrieval
+    - question: "课程每隔多长时间安排一次？"
+      current_route: repo_meta/time
+      expected_route: normal_retrieval
+  current_correct_content_routes:
+    - question: "电池一般多久检查一次？"
+      expected_and_current_route: normal_retrieval
+    - question: "这个项目计划什么时候完成？"
+      expected_and_current_route: normal_retrieval
+    - question: "这份合同文档什么时候到期？"
+      expected_and_current_route: normal_retrieval
+      boundary_reason: >-
+        同时包含“文档”和“什么时候”仍不足以证明文件元数据意图；
+        该问题询问文档正文中的合同期限。
+  confirmed_positive_gap:
+    question: "找出六月以后新增的笔记。"
+    current_route: normal_retrieval
+    expected_route: repo_meta_file_time
+    scope_note: >-
+      本任务只修复路由归属，不扩展“六月以后”的实际日期范围解析或回答过滤。
+
+scope_resolution:
+  decision: >-
+    将文件元数据时间意图定义为领域无关的正向合取，而不是正文业务词反证黑名单。
+    状态机入口与 classifier 必须表达一致语义，且不得改变 runner 的处理顺序。
+  target_semantics:
+    conjunction:
+      file_or_note_scope:
+        examples:
+          - 文件
+          - 文档
+          - 笔记
+          - 资料
+          - 目录
+          - 明确文件扩展名
+          - 已有文件结果集上下文
+      file_metadata_action_or_order:
+        examples:
+          - 创建
+          - 修改
+          - 更新
+          - 新增
+          - 删除
+          - 重命名
+          - 版本
+          - 最新
+          - 最早
+          - 最近文件
+      query_shape:
+        examples:
+          - 询问文件元数据时间
+          - 明确日期或日期范围
+          - 列表
+          - 筛选
+          - 排序
+    route_rule: >-
+      文件或笔记范围 + 文件元数据动作或排序语义 + 时间查询、日期范围、
+      列表或排序形状，才进入 repo-meta 文件时间路由。现有“明确日期 + 文件列表”
+      契约和 repo-meta 文件结果集上下文短追问可作为受控上下文变体保留。
+    insufficient_signals:
+      - 时间
+      - 日期
+      - 多久
+      - 周期
+      - 到期
+      - 什么时候
+    prohibited_implementation_forms:
+      - 保养黑名单
+      - 里程黑名单
+      - 合同黑名单
+      - 课程黑名单
+      - 其他不断累加的业务领域词表
+      - 由 LLM 判断 repo-meta 时间意图
+      - 用 Prompt 或模型参数弥补确定性路由缺陷
+  consistency_requirement: >-
+    detect_dialog_event 的时间 guard 与 classify_repo_meta_question 的 time topic
+    必须共享等价语义。不得出现状态机判为正文、classifier 又仅凭“时间”判为 time，
+    或反向不一致。
+
+editable_scope:
+  default_allow:
+    production:
+      - app/dialog/repo_meta_rules.py
+      - ai/repo_meta/classifier_predicates.py
+    tracked_tests:
+      - test_query_router_repo_meta.py
+      - public_tests/state/test_repo_meta_time_route_contract.py
+    task_card:
+      - docs/task_card_repo_meta_time_route_scope_fix.yaml
+  conditional_allow:
+    - file: ai/repo_meta/classifier.py
+      default_permission: denied
+      enable_only_if:
+        - preflight 证明只改两个默认生产文件后，classifier 的现有 TIME_KEYWORDS 或 RULES 仍会产生状态机/classifier 不一致
+        - 先红的 tracked public contract 能稳定证明该不一致
+        - 修改仅限消除与统一时间 predicate 冲突的宽泛兜底
+      forbidden_even_when_enabled:
+        - 修改非 time topic
+        - 重排整体 classifier
+        - 新增业务领域词
+      record_requirement: >-
+        实施回执必须给出启用该条件授权的失败证据；若 preflight 未证明必要，
+        不得触碰该文件。
+  read_only_supporting_tests:
+    - tests/repo_meta/routing/test_routing_core_meta_rules.py
+    - tests/repo_meta/routing/test_routing_core_router_guards.py
+    - tests/file_actions/test_file_change_event_semantics.py
+  read_only_formal_regressions:
+    - public_tests/file_actions/test_file_change_event_contract.py
+    - public_tests/domain/test_domain_dispatch_port_empty_host.py
+    - public_tests/state/test_dialog_state_transition_contract.py
+    - public_tests/domain/test_recruitment_jd_slice_contract.py
+  public_test_path_decision: >-
+    现有 public state test 只覆盖 apply_event_to_state，现有 public Domain test
+    只覆盖 Host/runner 契约，均不适合混入新的时间意图断言。因此唯一授权新增
+    public_tests/state/test_repo_meta_time_route_contract.py，作为 tracked 的公开路由契约；
+    不授权 public_tests/** 通配范围。
+  deny:
+    - app/chat_loop_parts/runner.py
+    - ask_notes.py
+    - app/chat_loop_llm.py
+    - app/retrieval_flow/**
+    - app/file_actions/**
+    - app/file_flows/**
+    - ai/prompt_builder.py
+    - ai/repo_meta/answering_parts/time.py
+    - retrieval/**
+    - bootstrap/**
+    - packages/docmind-domain-sdk/**
+    - packages/docmind-recruitment-plugin/**
+    - app/domain_dispatch_port.py
+    - app/domain_host/**
+    - public_tests/domain/**
+    - public_tests/file_actions/**
+    - public_tests/retrieval/**
+    - public_tests/state/test_dialog_state_transition_contract.py
+    - tests/**
+    - requirements.txt
+    - .venv/**
+    - test_notes/**
+    - cache/**
+    - README*
+    - WorkState**
+    - .gitignore
+  resolution: >-
+    tests/** 虽可运行作本地辅助回归，但由 .gitignore 排除，不得修改、暂存或作为
+    正式交付证据。正式失败与通过证据必须落在列明的 tracked 根测试和唯一 public
+    路由契约文件中。任何 deny 路径若被证明必改，立即停止并申请新授权。
+
+non_goals:
+  - 招聘 JD 识别、字段抽取、插件规则或插件路由
+  - Domain SDK、Domain Host、StaticDomainHost 或 handled result 语义
+  - 汽车插件、汽车关键词、汽车 Prompt、维修诊断能力或新汽车语料
+  - 自然语言日期范围解析
+  - “上周”的真实日期过滤
+  - file_change_history 的按周、按月或区间过滤
+  - 新的时间计算或日期解析模块
+  - 修复真实入口在全部复用时仍重写语义等价 brain_cache.npz
+  - 修改索引格式、索引可复现性或缓存写入策略
+  - 重写整个状态机或调整 runner 路由顺序
+  - 修改普通 retrieval、Embedding、Gemini、Prompt 或生成配置
+  - 引入 LLM 意图分类器、远程搜索、Grounding、URL Context 或新外部服务
+  - 新增配置开关、业务词典或行业黑名单
+  - 动态插件发现、多插件仲裁、MCP、生命周期或运行时治理
+  - 顺手修复未列入本卡验收的相邻路由问题
+
+preflight_checks:
+  order:
+    - id: repository_state
+      command: >-
+        git branch --show-current &&
+        git rev-parse HEAD &&
+        git status --short &&
+        git diff --check &&
+        git rev-list --left-right --count origin/arch/domain-plugin-spike...HEAD
+      pass: >-
+        分支与授权实施分支一致；开始前无非预期修改；暂存区为空。
+    - id: audited_failure_exists
+      checks:
+        - before_fix 六个指定审计 Markdown 存在且只读
+        - 原始 Q1 在当前实现下仍稳定复现 repo_meta/time
+        - Q1 问题文字逐字符不变
+      pass: 缺陷与审计根因未发生基线漂移
+    - id: corpus_hashes
+      command: >-
+        sha256sum
+        test_notes/automotive_maintenance_adaptation_2026-07-22-eval-corpus/source_notes/*.md
+        test_notes/automotive_maintenance_adaptation_2026-07-22-eval-corpus/controlled_samples/*.md
+      pass: 六个哈希与 before_fix/corpus_and_index.md 完全一致
+    - id: existing_local_green
+      command: >-
+        env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1
+        .venv/bin/python -m pytest -q -p no:cacheprovider
+        tests/repo_meta/routing/test_routing_core_meta_rules.py
+        tests/repo_meta/routing/test_routing_core_router_guards.py
+        tests/file_actions/test_file_change_event_semantics.py
+      pass: 全部通过；这些文件仍保持只读、未跟踪
+    - id: existing_tracked_green
+      command: >-
+        env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1
+        .venv/bin/python -m pytest -q -p no:cacheprovider
+        test_query_router_repo_meta.py
+        public_tests/file_actions/test_file_change_event_contract.py
+        public_tests/domain/test_domain_dispatch_port_empty_host.py
+        public_tests/state/test_dialog_state_transition_contract.py
+      pass: 全部通过
+    - id: create_red_contract
+      action: >-
+        在任何生产修改前，先在唯一授权 tracked 测试路径建立全部先红正反例；
+        运行并保存失败摘要。
+      pass:
+        - 原始 Q1 因当前错误 repo-meta 路由而失败
+        - 合同正文时间因当前错误 repo-meta 路由而失败
+        - 课程周期因当前错误 repo-meta 路由而失败
+        - 六月以后新增笔记因当前错误 normal retrieval 路由而失败
+        - 合同文档到期测试已存在为明确边界；若当前即通过，记录为绿边界而非伪造红测
+    - id: preserve_positive_baseline
+      pass:
+        - 文档创建时间为 repo_meta/time
+        - 最近修改和上周修改进入现有文件历史或文件时间能力
+        - 最近删除进入现有文件历史
+        - 最新和最早文件为 repo_meta/time
+        - 现有明确日期文件列表为 repo_meta/time
+        - repo-meta 文件结果集后的“最近的呢？”短追问保持 repo-meta/time
+    - id: scope_proof
+      pass:
+        - 不需要修改 runner
+        - 不需要修改 ask_notes.py
+        - 不需要修改日期回答器
+        - 不需要修改普通 retrieval
+        - 不需要业务领域黑名单
+      failure: 命中 stop_conditions，不开始生产修改
+    - id: cache_inventory_baseline
+      action: >-
+        在仓库外临时目录保存 app、ai 与 public_tests 下既有
+        *.pyc、*.pyo、*.npz 的相对路径和 SHA-256 清单；不得删除用户既有缓存。
+      pass: 形成可与质量门结束状态比较的只读基线
+  probe_policy: >-
+    preflight 可使用只读代码分析、现有日志、pytest fake/spy 和仓库外临时探针；
+    不得修改问题、语料、索引、Prompt、模型或依赖来制造结果。
+
+test_contract:
+  red_before_implementation:
+    - id: original_automotive_content_time
+      question: "定期保养在什么时间或里程条件下进行？特殊使用条件会带来什么变化？"
+      before: repo_meta/time
+      after: normal_retrieval
+      assertion: 不被 repo-meta handler 消费，并继续原 normal retrieval 路径
+    - id: contract_content_expiry
+      question: "合同在什么时间到期？"
+      before: repo_meta/time
+      after: normal_retrieval
+    - id: recurring_course_time
+      question: "课程每隔多长时间安排一次？"
+      before: repo_meta/time
+      after: normal_retrieval
+    - id: document_content_expiry
+      question: "这份合同文档什么时候到期？"
+      before: normal_retrieval
+      after: normal_retrieval
+      boundary: 含“文档”不等于文件元数据意图
+    - id: note_added_since_month
+      question: "找出六月以后新增的笔记。"
+      before: normal_retrieval
+      after: repo_meta_file_time
+      boundary: 只验路由归属，不验“六月以后”的实际日期过滤
+  green_positive_routes:
+    - question: "这份文档是什么时间创建的？"
+      expected: repo_meta/time
+    - question: "最近修改了哪些文件？"
+      expected: file_change_history_or_existing_file_time_route
+    - question: "上周修改了哪些文件？"
+      expected: file_change_history
+      excluded_assertion: 不断言按上周过滤
+    - question: "最近删除了哪些文件？"
+      expected: file_change_history
+    - question: "最新的文件是什么？"
+      expected: repo_meta/time
+    - question: "最早的文件是什么？"
+      expected: repo_meta/time
+    - question: "3月25号还有其他文件吗？"
+      expected: repo_meta/time
+    - question: "最近的呢？"
+      state_requirement: 上一轮为 repo-meta 文件结果集
+      expected: repo_meta/time
+  green_content_routes:
+    - "电池一般多久检查一次？"
+    - "这个项目计划什么时候完成？"
+    - "这份合同文档什么时候到期？"
+  runner_or_public_contract:
+    primary: public_tests/state/test_repo_meta_time_route_contract.py
+    requirements:
+      - 使用真实 detect_dialog_event 与 classify_repo_meta_question，不复制生产 predicate
+      - 覆盖 fresh state 与 repo-meta 文件结果集 follow-up state
+      - 对正文时间问题断言 normal_retrieval 边界
+      - 对文件元数据问题断言 repo_meta/time 边界
+      - 不调用真实 Ollama、Gemini、网络或外部服务
+    tracked_router_guard: test_query_router_repo_meta.py
+    runner_regression_read_only: public_tests/domain/test_domain_dispatch_port_empty_host.py
+  implementation_invariants:
+    - 文件变更历史 guard 继续早于状态机处理修改、删除历史问题
+    - 普通 normal retrieval 的输入、参数和行为保持不变
+    - RecruitmentJDPlugin 对非 JD 请求继续 abstain
+    - Domain Host、runner 与 handled result 语义保持不变
+    - 状态机与 classifier 对同一文件时间意图给出一致结论
+    - 不以业务领域词决定路由
+
+implementation_plan:
+  - step: 1
+    action: 完成全部 preflight，并建立 tracked 先红契约
+    gate: 未见预期红测或正例基线不绿时停止
+  - step: 2
+    action: >-
+      在 app/dialog/repo_meta_rules.py 收窄确定性时间 guard，
+      用文件范围、元数据动作/排序和查询形状的正向合取替代无对象宽判
+    constraint: 不改变 state machine 顺序，不增加行业反证词
+  - step: 3
+    action: >-
+      在 ai/repo_meta/classifier_predicates.py 对齐 classifier predicate，
+      保留明确日期文件列表和 repo-meta 文件结果集短追问
+    constraint: 不修改日期回答器
+  - step: 4
+    action: >-
+      重新运行 tracked 红测；只有仍能证明 TIME_KEYWORDS/RULES 造成不一致时，
+      才按 conditional_allow 最小修改 ai/repo_meta/classifier.py
+    gate: 无失败证据则不得修改条件性文件
+  - step: 5
+    action: 运行全部质量门、真实 Q1 after_fix 和可选六题回归
+    constraint: 不改写问题、不调参、不覆盖历史记录
+
+quality_gate:
+  environment_contract:
+    interpreter: .venv/bin/python
+    pythonpath: unset
+    bytecode: disabled
+    package_expectation:
+      - docmind-domain-sdk 已以非 editable 方式安装于当前 .venv
+      - docmind-recruitment-plugin 已以非 editable 方式安装于当前 .venv
+    network: 单元与 public tests 不调用真实网络或模型
+  yaml_and_card:
+    command: |
+      env -u PYTHONPATH .venv/bin/python - <<'PY'
+      from pathlib import Path
+      import yaml
+
+      class UniqueKeyLoader(yaml.SafeLoader):
+          pass
+
+      def construct_unique_mapping(loader, node, deep=False):
+          result = {}
+          for key_node, value_node in node.value:
+              key = loader.construct_object(key_node, deep=deep)
+              if key in result:
+                  raise ValueError(f"duplicate YAML key: {key!r}")
+              result[key] = loader.construct_object(value_node, deep=deep)
+          return result
+
+      UniqueKeyLoader.add_constructor(
+          yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+          construct_unique_mapping,
+      )
+      path = Path("docs/task_card_repo_meta_time_route_scope_fix.yaml")
+      yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
+      PY
+  static_compile:
+    command: >-
+      env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1
+      .venv/bin/python -m py_compile
+      app/dialog/repo_meta_rules.py
+      ai/repo_meta/classifier_predicates.py
+      ai/repo_meta/classifier.py
+      test_query_router_repo_meta.py
+      public_tests/state/test_repo_meta_time_route_contract.py
+  targeted_repo_meta_local_support:
+    command: >-
+      env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      tests/repo_meta/routing/test_routing_core_meta_rules.py
+      tests/repo_meta/routing/test_routing_core_router_guards.py
+    evidence_role: 本地辅助回归；不得修改或提交 tests/**
+  targeted_tracked_route:
+    command: >-
+      env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      test_query_router_repo_meta.py
+      public_tests/state/test_repo_meta_time_route_contract.py
+  file_history_regression:
+    command: >-
+      env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      tests/file_actions/test_file_change_event_semantics.py
+      public_tests/file_actions/test_file_change_event_contract.py
+    evidence_role: public_tests 文件为正式证据；tests 文件只作本地辅助
+  runner_and_plugin_regression:
+    command: >-
+      env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      public_tests/domain/test_domain_dispatch_port_empty_host.py
+      public_tests/domain/test_recruitment_jd_slice_contract.py
+      public_tests/domain/test_recruitment_jd_production_wiring_contract.py
+  public_tests_all:
+    command: >-
+      env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1
+      .venv/bin/python -m pytest -q -p no:cacheprovider public_tests
+  tracked_pytest_all:
+    command: >-
+      env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      $(git ls-files '*.py' | rg '(^|/)test_.*\\.py$')
+    pass: 所有 tracked pytest 通过
+  diff_checks:
+    commands:
+      - git diff --check
+      - git diff --name-only
+      - git status --short
+    pass: 仅出现 editable_scope 实际启用的文件
+  encoding_and_newline:
+    command: >-
+      env -u PYTHONPATH .venv/bin/python -c
+      "from pathlib import Path; paths=[Path(p) for p in ['app/dialog/repo_meta_rules.py','ai/repo_meta/classifier_predicates.py','test_query_router_repo_meta.py','public_tests/state/test_repo_meta_time_route_contract.py']]; [p.read_text(encoding='utf-8') for p in paths]; assert all(b'\\0' not in p.read_bytes() and p.read_bytes().endswith(b'\\n') for p in paths)"
+    pass: UTF-8 可解码、无 NUL、末尾换行完整
+  mojibake_scan:
+    command: |
+      env -u PYTHONPATH .venv/bin/python - <<'PY'
+      from pathlib import Path
+
+      paths = [
+          Path("app/dialog/repo_meta_rules.py"),
+          Path("ai/repo_meta/classifier_predicates.py"),
+          Path("ai/repo_meta/classifier.py"),
+          Path("test_query_router_repo_meta.py"),
+          Path("public_tests/state/test_repo_meta_time_route_contract.py"),
+      ]
+      needles = [
+          "AI\u9365\u70b5\u74df",
+          "\u9983",
+          "\u9234\u618b\u7b0d",
+          "\u923f\u72c5\u7b0d",
+          "\u8930\u64b3\u58a0\u6769\u6a3b\u75c5\u93c8",
+          "\u951b?",
+          "\u9286?",
+      ]
+      findings = [
+          (str(path), index, needle)
+          for path in paths
+          for index, line in enumerate(
+              path.read_text(encoding="utf-8").splitlines(),
+              start=1,
+          )
+          for needle in needles
+          if needle in line
+      ]
+      assert not findings, findings
+      PY
+    pass: 0 命中
+  cache_scan:
+    action: >-
+      使用与 preflight 相同的 find、相对路径和 SHA-256 规则重新生成仓库外临时清单，
+      与 cache_inventory_baseline 逐行比较。
+    pass: 两份清单完全一致；不新增、删除或改写用户既有缓存与索引
+  privacy_scan:
+    command: |
+      env -u PYTHONPATH .venv/bin/python - <<'PY'
+      from pathlib import Path
+      import re
+
+      paths = [
+          Path("app/dialog/repo_meta_rules.py"),
+          Path("ai/repo_meta/classifier_predicates.py"),
+          Path("ai/repo_meta/classifier.py"),
+          Path("test_query_router_repo_meta.py"),
+          Path("public_tests/state/test_repo_meta_time_route_contract.py"),
+          Path("docs/task_card_repo_meta_time_route_scope_fix.yaml"),
+      ]
+      patterns = [
+          re.compile("/" + "home/"),
+          re.compile("/" + "Users/"),
+          re.compile(r"[A-Za-z]:\\\\" + r"Users\\\\"),
+          re.compile("AI" + r"za[0-9A-Za-z_-]{20,}"),
+          re.compile("s" + r"k-[0-9A-Za-z_-]{20,}"),
+          re.compile(r"1[3-9][0-9]{9}"),
+      ]
+      findings = [
+          (str(path), index, pattern.pattern)
+          for path in paths
+          for index, line in enumerate(
+              path.read_text(encoding="utf-8").splitlines(),
+              start=1,
+          )
+          for pattern in patterns
+          if pattern.search(line)
+      ]
+      assert not findings, findings
+      PY
+    pass: 0 命中
+  scope_scan:
+    command: >-
+      git diff --name-only |
+      .venv/bin/python -c
+      "import sys; allowed={'app/dialog/repo_meta_rules.py','ai/repo_meta/classifier_predicates.py','ai/repo_meta/classifier.py','test_query_router_repo_meta.py','public_tests/state/test_repo_meta_time_route_contract.py','docs/task_card_repo_meta_time_route_scope_fix.yaml'}; seen={x.strip() for x in sys.stdin if x.strip()}; bad=seen-allowed; assert not bad, sorted(bad)"
+  prohibited_business_term_guard: >-
+    人工复核生产 diff：不得新增以“保养、里程、合同、课程、轮胎、汽车”等业务词
+    参与路由判定的常量、正则或分支。测试问句和任务卡基线描述不受此限制。
+
+after_fix_regression:
+  root: test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/regression_q1_time_route/after_fix
+  git_policy: 本地忽略产物，不暂存、不提交
+  preserve:
+    - test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/regression_q1_time_route/before_fix
+    - test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/runs
+    - test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/final_report.md
+  minimum_files:
+    - repository_state.md
+    - environment.md
+    - q1_input.txt
+    - q1_stdout.txt
+    - q1_stderr.txt
+    - route_evidence.md
+    - comparison.md
+    - regression_summary.md
+  q1:
+    question: "定期保养在什么时间或里程条件下进行？特殊使用条件会带来什么变化？"
+    requirements:
+      - 通过真实 ask_notes.py 默认生产入口
+      - 使用原六文档纯语料
+      - 使用全新进程和会话
+      - 问题逐字符不变
+      - 不修改语料、Prompt、模型或参数
+      - 不事后调参或重答
+      - 保存 stdout、stderr、路由证据和与 before_fix 的比较
+      - 不覆盖 before_fix 或首次行业评测记录
+    cache_write_isolation: >-
+      如默认入口仍会写回语义等价 NPZ，只能复用 before_fix 已采用的仓库外影子缓存
+      隔离方法；不得在本任务中修改缓存写入实现。
+  full_six_question_regression:
+    recommendation: Q1 真实回归通过后执行
+    required_for_core_fix_acceptance: false
+    requirements:
+      - 六题文字与首次正式评测一致
+      - 结果独立保存于 after_fix
+      - 原始失败和首次评测记录保持不变
+      - 不用新结果回写或篡改第一次正式评测
+
+acceptance_min:
+  routing:
+    - 原始 Q1 不再进入 repo_meta/time，并继续 normal retrieval
+    - 合同在什么时间到期进入 normal retrieval
+    - 课程每隔多长时间安排一次进入 normal retrieval
+    - 这份合同文档什么时候到期保持 normal retrieval
+    - 找出六月以后新增的笔记进入 repo-meta 文件时间路由
+    - 文档创建、文件修改、文件删除、最新、最早和明确日期文件列表保持正确路由
+    - repo-meta 文件结果集后的最近短追问保持正确
+  implementation_boundary:
+    - 状态机与 classifier 时间语义一致
+    - 不存在汽车、保养、合同、课程或其他业务词黑名单
+    - runner、ask_notes.py、普通 retrieval、日期回答器均无修改
+    - Domain SDK、Host、招聘插件链和 handled result 语义无修改
+    - 模型、Prompt、依赖、语料、索引无修改
+  tests:
+    - 先红 tracked 契约在修复后全部通过
+    - repo-meta 与 classifier 定向测试通过
+    - 文件操作与历史回归通过
+    - public 路由契约通过
+    - runner 与招聘插件 public 回归通过
+    - 全部 public_tests 通过
+    - 全部 tracked pytest 通过
+    - py_compile、diff、编码、缓存、隐私与范围检查通过
+  real_regression:
+    - after_fix Q1 使用原问题和真实默认入口完成
+    - before_fix 与首次行业评测记录未被覆盖
+  reporting:
+    - 明确列出实际修改文件与 conditional_allow 是否启用
+    - 给出红测、绿测、全量测试和真实回归结果
+    - 不宣称扩展了日期解析、汽车能力或生产级行业能力
+
+privacy_guard:
+  prohibited:
+    - 用户姓名
+    - 本机用户名
+    - 本机绝对路径
+    - API key
+    - Cookie
+    - 登录凭证
+    - 真实车辆或维修记录
+    - 非必要个人资料
+  allowed_examples:
+    - 某公司A
+    - 示例文档甲
+    - name@example.com
+  raw_log_policy: >-
+    after_fix 原始本地日志如自然包含绝对路径，只能保存在 Git 忽略目录；
+    对外 Markdown 使用 <repo> 或相对路径，凭证必须始终打码。
+
+stop_conditions:
+  - 发现非预期用户改动或开始时工作区不干净
+  - 原始 Q1 在实施前不再复现
+  - before_fix 记录缺失、被修改或与当前基线不一致
+  - 六文档语料哈希不一致
+  - 必须修改 app/chat_loop_parts/runner.py
+  - 必须修改 ask_notes.py
+  - 必须修改普通 retrieval
+  - 必须修改 Prompt、Embedding、Gemini 或模型配置
+  - 必须修改 ai/repo_meta/answering_parts/time.py 或其他日期回答器
+  - 必须扩展 file_change_history 的“上周”过滤
+  - 必须新增自然语言日期解析或时间计算模块
+  - 必须加入行业词、业务黑名单或汽车专有规则
+  - 必须修改汽车语料、索引、before_fix 或首次行业评测记录
+  - 状态机与 classifier 无法在默认两个生产文件及有证据的条件性文件内保持一致
+  - 文件创建、修改、删除、最新、最早或明确日期正例大面积回归
+  - repo-meta 文件结果集短追问无法保留
+  - 必须整体重构状态机或改变 runner 路由顺序
+  - 必须修改 Domain SDK、Host、招聘插件或 handled result 链
+  - 必须新增配置开关、联网搜索、远程工具或外部服务
+  - tracked 红测无法稳定复现已审计缺陷
+  - 需要修改 editable_scope.deny 中任何路径
+  - 完整质量门失败且原因无法在授权范围内修复
+  - after_fix 需要改写问题、修改语料或事后调参才能通过
+  - 任一停止条件触发后不得提交部分修复
+
+implementation_permissions:
+  granted_when:
+    - 本任务卡已合入当前实施分支
+    - preflight_checks 全部通过
+    - tracked 先红契约已建立并保存失败摘要
+    - 未命中 stop_conditions
+  allowed_actions:
+    - 在 default_allow 内实施最小 Core 路由修复
+    - 满足并记录条件后启用 ai/repo_meta/classifier.py
+    - 运行本任务卡列出的只读探针与质量门
+    - 创建 Git 忽略的 after_fix 本地回归记录
+  not_granted:
+    - 任何 deny 路径修改
+    - Git add、commit、push 或开 PR；仍需用户另行明确授权
+    - 用“必要修改”扩张路径
+    - 覆盖历史评测或审计记录
+
+deliverables:
+  tracked:
+    - 授权范围内的最小生产修改
+    - test_query_router_repo_meta.py 的必要 tracked 守门测试
+    - public_tests/state/test_repo_meta_time_route_contract.py
+    - 仅在需要记录实施事实时更新本任务卡
+  local_ignored:
+    - after_fix 修复后真实回归记录
+  forbidden:
+    - tests/** 修改或提交
+    - 语料、索引、依赖或环境改动
+
+commit_message:
+  suggested_title: "fix(core): 收窄文件时间路由边界并保留元数据查询"
+  required_body:
+    - "目标: 普通业务时间问题进入正文检索，真实文件元数据时间查询保持可用。"
+    - "手段: 统一状态机与 classifier 的正向意图合取，并补充 tracked 跨域路由契约。"
