@@ -16,6 +16,7 @@ from ai.capability_common import (
 )
 from ai.repo_meta.classifier_predicates import (
     is_deeper_category_summary_request,
+    is_file_result_topic,
     is_semantic_topic_candidate,
     is_size_consistency_request,
     is_topic_overview_request,
@@ -60,21 +61,6 @@ FORMAT_KEYWORDS = (
     "ppt", "pptx",
 )
 
-TIME_KEYWORDS = (
-    "最近",
-    "最近更新",
-    "最近修改",
-    "更新时间",
-    "修改时间",
-    "创建时间",
-    "时间",
-    "日期",
-    "最新文件", "最早文件", "最晚文件", "最旧文件",
-    "最新文档", "最早文档", "最晚文档", "最旧文档",
-    "最新的文件", "最早的文件", "最晚的文件", "最旧的文件",
-    "最新的文档", "最早的文档", "最晚的文档", "最旧的文档",
-)
-
 TIMELINE_REQUEST_KEYWORDS = (
     "时间线",
     "按时间顺序",
@@ -106,7 +92,6 @@ RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("count", COUNT_KEYWORDS),
     ("total_size", TOTAL_SIZE_KEYWORDS),
     ("format", FORMAT_KEYWORDS),
-    ("time", TIME_KEYWORDS),
     ("list_files", LIST_FILE_KEYWORDS),
 )
 
@@ -240,7 +225,11 @@ def classify_repo_meta_question(
         print(f"[repo_meta分类] q={q} -> size_consistency")
         return "size_consistency"
 
-    if looks_like_time_request(q, topic_candidate_valid=topic_candidate_valid):
+    if looks_like_time_request(
+        q,
+        topic_candidate_valid=topic_candidate_valid,
+        has_repo_meta_file_context=is_file_result_topic(last_local_topic),
+    ):
         print(f"[repo_meta分类] q={q} -> time")
         return "time"
 

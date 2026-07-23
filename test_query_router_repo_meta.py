@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 from ai.query_router import route_question
 from ai.query_router import _get_smalltalk_rewrite_timeout_sec
+from ai.repo_meta.classifier import classify_repo_meta_question
+from ai.repo_meta.classifier_predicates import looks_like_time_request
 
 
 class _LoggerStub:
@@ -53,3 +57,33 @@ def test_cross_domain_inventory_question_stays_out_of_scope():
         _LoggerStub(),
     )
     assert result["route"] != "repo_meta"
+
+
+def test_classifier_does_not_bypass_time_predicate():
+    question = "最近合同到期吗？"
+
+    predicate_result = looks_like_time_request(question)
+    classifier_result = classify_repo_meta_question(question)
+
+    assert predicate_result is False
+    assert classifier_result != "time"
+
+
+def test_bare_recent_followup_requires_repo_meta_context():
+    assert classify_repo_meta_question("最近的呢？") != "time"
+
+
+def test_explicit_file_creation_time_stays_time():
+    assert classify_repo_meta_question("这份文档是什么时间创建的？") == "time"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "最近的有哪些？",
+        "最近时间有哪些？",
+        "最近资料显示合同到期了吗？",
+    ],
+)
+def test_classifier_requires_file_time_scope_or_context(question):
+    assert classify_repo_meta_question(question) != "time"
