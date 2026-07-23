@@ -5,9 +5,9 @@ task_name: repo_meta_time_route_scope_fix
 task_goal: >-
   收窄 Core 的 repo-meta 文件时间路由边界：普通业务正文中的时间、周期和期限问题
   不得再仅凭宽泛时间词被文件元数据查询抢占；真实的文件或笔记创建、修改、更新、
-  新增、删除、重命名、版本、最新、最早、明确日期/范围与排序查询，以及已有
-  repo-meta 文件结果集短追问必须保持可用。实现采用领域无关的正向意图合取，
-  不加入汽车、合同、课程或其他业务领域黑名单。
+  新增、删除、重命名、版本、最新、最早、明确日期/范围与排序查询必须保持可用；
+  已有 repo-meta 文件结果集下的排序短追问必须按上下文正确路由。实现采用
+  领域无关的正向意图合取，不加入汽车、合同、课程或其他业务领域黑名单。
 
 task_kind: independent_core_routing_bugfix
 implementation_status: ready_for_implementation_after_preflight
@@ -98,6 +98,33 @@ verified_baseline:
     expected_route: repo_meta_file_time
     scope_note: >-
       本任务只修复路由归属，不扩展“六月以后”的实际日期范围解析或回答过滤。
+  contextual_short_followup_gap:
+    question: "最近的呢？"
+    context: 上一轮已经形成 repo-meta 文件结果集
+    current_state_machine: unknown/None
+    current_classifier: time
+    expected_after:
+      state_machine: repo_meta route hint
+      classifier: time
+      route: repo_meta/time
+    boundary: 只有已有 repo-meta 文件结果集上下文时成立
+  fresh_state_short_followup_boundary:
+    question: "最近的呢？"
+    context: fresh state，没有 repo-meta 文件结果集
+    current_state_machine: unknown/None
+    current_classifier: time
+    expected_after:
+      state_machine: 不产生 repo-meta route hint
+      classifier: 不得认定为文件元数据 time
+      route: 普通对话或 normal retrieval 边界
+    boundary: “最近”不能在无文件上下文时独立触发文件时间路由
+  classifier_fallback_evidence:
+    question: "最近合同到期吗？"
+    looks_like_time_request: false
+    classify_repo_meta_question: time
+    conclusion: >-
+      classifier 的通用 TIME_KEYWORDS/RULES 可绕过 predicate，继续产生 time；
+      后续 tracked 红测稳定复现后，具备启用条件性 classifier 文件的审计依据。
 
 scope_resolution:
   decision: >-
@@ -170,8 +197,14 @@ editable_scope:
   conditional_allow:
     - file: ai/repo_meta/classifier.py
       default_permission: denied
+      preflight_evidence:
+        status: obtained_by_read_only_probe
+        question: "最近合同到期吗？"
+        looks_like_time_request: false
+        classify_repo_meta_question: time
+        implication: 通用 TIME_KEYWORDS/RULES 可绕过收窄后的 predicate
       enable_only_if:
-        - preflight 证明只改两个默认生产文件后，classifier 的现有 TIME_KEYWORDS 或 RULES 仍会产生状态机/classifier 不一致
+        - 已有只读 preflight 证据证明 TIME_KEYWORDS/RULES 存在绕过风险
         - 先红的 tracked public contract 能稳定证明该不一致
         - 修改仅限消除与统一时间 predicate 冲突的宽泛兜底
       forbidden_even_when_enabled:
@@ -179,8 +212,8 @@ editable_scope:
         - 重排整体 classifier
         - 新增业务领域词
       record_requirement: >-
-        实施回执必须给出启用该条件授权的失败证据；若 preflight 未证明必要，
-        不得触碰该文件。
+        该文件仍非默认授权。实施回执必须同时给出上述只读证据和 tracked 红测
+        失败摘要，才可启用；若 tracked 测试不能稳定证明绕过，不得触碰该文件。
   read_only_supporting_tests:
     - tests/repo_meta/routing/test_routing_core_meta_rules.py
     - tests/repo_meta/routing/test_routing_core_router_guards.py
@@ -244,8 +277,30 @@ non_goals:
   - 动态插件发现、多插件仲裁、MCP、生命周期或运行时治理
   - 顺手修复未列入本卡验收的相邻路由问题
 
+preflight_revision:
+  prior_formal_preflight:
+    status: BLOCKED
+    sole_blocker: >-
+      任务卡曾把有 repo-meta 文件结果集上下文的“最近的呢？”误列为修复前既有绿
+      能力；只读探针证明状态机为 unknown/None、classifier 为 time。
+    passed_baselines:
+      - repo-meta 本地辅助测试：50 passed
+      - tracked repo-meta 测试：5 passed
+      - 文件历史测试：7 passed
+      - runner/状态公开契约测试：41 passed
+      - 招聘插件回归：7 passed
+      - public tests：54 passed
+      - tracked pytest：173 passed
+      - 六文档数量与 SHA-256 全部匹配
+      - 原索引两个文件的 SHA-256 全部匹配
+      - before_fix 指定记录完整且可读
+    reuse_policy: >-
+      本次仅修订任务卡，不推翻上述已通过结果；修订后先重跑 focused_rerun。
+      生产代码实施完成后，quality_gate 中的完整测试与完整性检查仍必须全部重跑。
+
 preflight_checks:
-  order:
+  mode_after_card_revision: focused_rerun
+  focused_rerun:
     - id: repository_state
       command: >-
         git branch --show-current &&
@@ -253,71 +308,68 @@ preflight_checks:
         git status --short &&
         git diff --check &&
         git rev-list --left-right --count origin/arch/domain-plugin-spike...HEAD
-      pass: >-
-        分支与授权实施分支一致；开始前无非预期修改；暂存区为空。
-    - id: audited_failure_exists
+      pass: 分支与授权实施分支一致；无非预期修改；暂存区为空
+    - id: card_integrity_and_authorization
       checks:
-        - before_fix 六个指定审计 Markdown 存在且只读
-        - 原始 Q1 在当前实现下仍稳定复现 repo_meta/time
-        - Q1 问题文字逐字符不变
-      pass: 缺陷与审计根因未发生基线漂移
-    - id: corpus_hashes
-      command: >-
-        sha256sum
-        test_notes/automotive_maintenance_adaptation_2026-07-22-eval-corpus/source_notes/*.md
-        test_notes/automotive_maintenance_adaptation_2026-07-22-eval-corpus/controlled_samples/*.md
-      pass: 六个哈希与 before_fix/corpus_and_index.md 完全一致
-    - id: existing_local_green
-      command: >-
-        env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1
-        .venv/bin/python -m pytest -q -p no:cacheprovider
-        tests/repo_meta/routing/test_routing_core_meta_rules.py
-        tests/repo_meta/routing/test_routing_core_router_guards.py
-        tests/file_actions/test_file_change_event_semantics.py
-      pass: 全部通过；这些文件仍保持只读、未跟踪
-    - id: existing_tracked_green
-      command: >-
-        env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1
-        .venv/bin/python -m pytest -q -p no:cacheprovider
-        test_query_router_repo_meta.py
-        public_tests/file_actions/test_file_change_event_contract.py
-        public_tests/domain/test_domain_dispatch_port_empty_host.py
-        public_tests/state/test_dialog_state_transition_contract.py
-      pass: 全部通过
-    - id: create_red_contract
-      action: >-
-        在任何生产修改前，先在唯一授权 tracked 测试路径建立全部先红正反例；
-        运行并保存失败摘要。
-      pass:
-        - 原始 Q1 因当前错误 repo-meta 路由而失败
-        - 合同正文时间因当前错误 repo-meta 路由而失败
-        - 课程周期因当前错误 repo-meta 路由而失败
-        - 六月以后新增笔记因当前错误 normal retrieval 路由而失败
-        - 合同文档到期测试已存在为明确边界；若当前即通过，记录为绿边界而非伪造红测
-    - id: preserve_positive_baseline
-      pass:
-        - 文档创建时间为 repo_meta/time
-        - 最近修改和上周修改进入现有文件历史或文件时间能力
-        - 最近删除进入现有文件历史
-        - 最新和最早文件为 repo_meta/time
-        - 现有明确日期文件列表为 repo_meta/time
-        - repo-meta 文件结果集后的“最近的呢？”短追问保持 repo-meta/time
-    - id: scope_proof
-      pass:
-        - 不需要修改 runner
-        - 不需要修改 ask_notes.py
-        - 不需要修改日期回答器
-        - 不需要修改普通 retrieval
-        - 不需要业务领域黑名单
-      failure: 命中 stop_conditions，不开始生产修改
-    - id: cache_inventory_baseline
-      action: >-
-        在仓库外临时目录保存 app、ai 与 public_tests 下既有
-        *.pyc、*.pyo、*.npz 的相对路径和 SHA-256 清单；不得删除用户既有缓存。
-      pass: 形成可与质量门结束状态比较的只读基线
+        - YAML 可解析且无重复 key
+        - 默认生产文件、条件性文件、tracked 测试和 deny 范围与本卡一致
+        - implementation_status 仍为 ready_for_implementation_after_preflight
+      pass: 授权没有因基线修订而扩大
+    - id: recent_short_followup_context_split
+      checks:
+        - >-
+          有 repo-meta 文件结果集上下文时，“最近的呢？”当前状态机为
+          unknown/None、classifier 为 time，作为 tracked 先红缺口
+        - >-
+          fresh state 时，“最近的呢？”当前不产生 repo-meta route hint；
+          修复目标还要求 classifier 不得把它认定为文件元数据 time
+      pass: 有上下文和无上下文的预期明确、互不混用
+    - id: classifier_generic_rules_bypass
+      checks:
+        - “最近合同到期吗？”的 looks_like_time_request 为 false
+        - 同一问句的 classify_repo_meta_question 为 time
+      pass: 条件性 classifier 文件具有只读证据，但仍须 tracked 红测才可启用
+    - id: tracked_red_test_locations
+      checks:
+        - 现有 tracked 守门文件为 test_query_router_repo_meta.py
+        - 唯一允许新增的公开契约为 public_tests/state/test_repo_meta_time_route_contract.py
+        - 不修改 Git 忽略的 tests/**
+      pass: 真实公开路由边界可由精确授权路径覆盖
+  post_preflight_red_gate:
+    id: create_red_contract
+    action: >-
+      focused_rerun 通过后、任何生产修改前，在唯一授权 tracked 测试路径建立
+      全部先红和相邻绿边界，并保存失败摘要。
+    expected_red:
+      - 原始 Q1 因当前错误 repo-meta 路由而失败
+      - 合同正文时间因当前错误 repo-meta 路由而失败
+      - 课程周期因当前错误 repo-meta 路由而失败
+      - 六月以后新增笔记因当前错误 normal retrieval 路由而失败
+      - >-
+        有 repo-meta 文件结果集上下文时，“最近的呢？”因状态机未产生
+        repo-meta route hint 而失败；classifier 当前为 time，证明两者不一致
+      - >-
+        “最近合同到期吗？”的 looks_like_time_request 为 false，但
+        classify_repo_meta_question 为 time，证明通用 fallback 绕过 predicate
+    adjacent_green:
+      - 这份合同文档什么时候到期保持 normal retrieval
+      - fresh state 的“最近的呢？”保持不产生 repo-meta route hint
+      - 有 repo-meta 文件结果集上下文的“最近的有哪些？”保持 repo_meta/time
+      - 有 repo-meta 文件结果集上下文的“最近时间有哪些？”保持 repo_meta/time
+      - 文档创建时间保持 repo_meta/time
+      - 最近修改、上周修改和最近删除保持现有文件历史或文件时间能力
+      - 最新、最早和现有明确日期文件列表保持 repo_meta/time
+  scope_proof:
+    pass:
+      - 不需要修改 runner
+      - 不需要修改 ask_notes.py
+      - 不需要修改日期回答器
+      - 不需要修改普通 retrieval
+      - 不需要业务领域黑名单
+    failure: 命中 stop_conditions，不开始生产修改
   probe_policy: >-
-    preflight 可使用只读代码分析、现有日志、pytest fake/spy 和仓库外临时探针；
-    不得修改问题、语料、索引、Prompt、模型或依赖来制造结果。
+    focused_rerun 可使用只读代码分析、现有日志、pytest fake/spy 和仓库外临时
+    探针；不得修改问题、语料、索引、Prompt、模型或依赖来制造结果。
 
 test_contract:
   red_before_implementation:
@@ -334,16 +386,30 @@ test_contract:
       question: "课程每隔多长时间安排一次？"
       before: repo_meta/time
       after: normal_retrieval
-    - id: document_content_expiry
-      question: "这份合同文档什么时候到期？"
-      before: normal_retrieval
-      after: normal_retrieval
-      boundary: 含“文档”不等于文件元数据意图
     - id: note_added_since_month
       question: "找出六月以后新增的笔记。"
       before: normal_retrieval
       after: repo_meta_file_time
       boundary: 只验路由归属，不验“六月以后”的实际日期过滤
+    - id: contextual_recent_short_followup
+      question: "最近的呢？"
+      state_requirement: 上一轮已经形成 repo-meta 文件结果集
+      before:
+        state_machine: unknown/None
+        classifier: time
+      after:
+        state_machine: repo-meta route hint
+        classifier: time
+        route: repo_meta/time
+      boundary: 只有已有 repo-meta 文件结果集上下文时成立
+    - id: classifier_generic_time_fallback
+      question: "最近合同到期吗？"
+      before:
+        looks_like_time_request: false
+        classify_repo_meta_question: time
+      after:
+        classify_repo_meta_question: 不得因通用 TIME_KEYWORDS/RULES 返回 time
+      boundary: classifier 不得绕过统一的文件时间 predicate
   green_positive_routes:
     - question: "这份文档是什么时间创建的？"
       expected: repo_meta/time
@@ -360,18 +426,41 @@ test_contract:
       expected: repo_meta/time
     - question: "3月25号还有其他文件吗？"
       expected: repo_meta/time
-    - question: "最近的呢？"
+    - question: "最近的有哪些？"
+      state_requirement: 上一轮为 repo-meta 文件结果集
+      expected: repo_meta/time
+    - question: "最近时间有哪些？"
       state_requirement: 上一轮为 repo-meta 文件结果集
       expected: repo_meta/time
   green_content_routes:
-    - "电池一般多久检查一次？"
-    - "这个项目计划什么时候完成？"
-    - "这份合同文档什么时候到期？"
+    - question: "电池一般多久检查一次？"
+      expected: normal_retrieval
+    - question: "这个项目计划什么时候完成？"
+      expected: normal_retrieval
+    - question: "这份合同文档什么时候到期？"
+      expected: normal_retrieval
+      boundary: 含“文档”不等于文件元数据意图
+  green_negative_routes:
+    - id: fresh_recent_short_followup
+      question: "最近的呢？"
+      state_requirement: fresh state，没有 repo-meta 文件结果集
+      current_route_boundary: 状态机不产生 repo-meta route hint
+      classifier_alignment_gap: 当前 classifier 为 time，由通用 fallback 红测负责修复
+      expected_after:
+        state_machine: 不产生 repo-meta route hint
+        classifier: 不得认定为文件元数据 time
+        route: 普通对话或 normal retrieval 边界
+      boundary: 无上下文的“最近”不能独立触发文件时间路由
   runner_or_public_contract:
     primary: public_tests/state/test_repo_meta_time_route_contract.py
     requirements:
       - 使用真实 detect_dialog_event 与 classify_repo_meta_question，不复制生产 predicate
       - 覆盖 fresh state 与 repo-meta 文件结果集 follow-up state
+      - >-
+        有 repo-meta 文件结果集上下文的“最近的呢？”必须由状态机和 classifier
+        一致判为 repo_meta/time
+      - >-
+        fresh state 的“最近的呢？”不得由状态机或 classifier 判为文件元数据时间请求
       - 对正文时间问题断言 normal_retrieval 边界
       - 对文件元数据问题断言 repo_meta/time 边界
       - 不调用真实 Ollama、Gemini、网络或外部服务
@@ -383,30 +472,42 @@ test_contract:
     - RecruitmentJDPlugin 对非 JD 请求继续 abstain
     - Domain Host、runner 与 handled result 语义保持不变
     - 状态机与 classifier 对同一文件时间意图给出一致结论
+    - 不得只修状态机或只修 classifier
+    - 普通无状态“最近”不得触发 repo-meta 文件时间路由
     - 不以业务领域词决定路由
 
 implementation_plan:
   - step: 1
-    action: 完成全部 preflight，并建立 tracked 先红契约
-    gate: 未见预期红测或正例基线不绿时停止
+    action: 完成 preflight_checks.focused_rerun
+    gate: 上下文分流、classifier 绕过证据、授权或 Git 状态不一致时停止
   - step: 2
     action: >-
-      在 app/dialog/repo_meta_rules.py 收窄确定性时间 guard，
-      用文件范围、元数据动作/排序和查询形状的正向合取替代无对象宽判
-    constraint: 不改变 state machine 顺序，不增加行业反证词
+      建立 post_preflight_red_gate 的 tracked 先红契约，并在仓库外临时目录保存
+      既有 *.pyc、*.pyo、*.npz 的相对路径和 SHA-256 清单
+    gate: 未见预期红测、相邻绿边界不绿或产生仓库内缓存时停止
   - step: 3
     action: >-
-      在 ai/repo_meta/classifier_predicates.py 对齐 classifier predicate，
-      保留明确日期文件列表和 repo-meta 文件结果集短追问
-    constraint: 不修改日期回答器
+      在 app/dialog/repo_meta_rules.py 收窄确定性时间 guard，
+      用文件范围、元数据动作/排序和查询形状的正向合取替代无对象宽判；
+      仅在已有 repo-meta 文件结果集上下文时支持“最近的呢？”排序短追问
+    constraint: 不改变 state machine 顺序，不增加行业反证词
   - step: 4
     action: >-
-      重新运行 tracked 红测；只有仍能证明 TIME_KEYWORDS/RULES 造成不一致时，
-      才按 conditional_allow 最小修改 ai/repo_meta/classifier.py
-    gate: 无失败证据则不得修改条件性文件
+      在 ai/repo_meta/classifier_predicates.py 对齐 classifier predicate，
+      保留明确日期文件列表和有上下文短追问，并拒绝 fresh-state 的孤立“最近”
+    constraint: 不修改日期回答器
   - step: 5
+    action: >-
+      重新运行 tracked 红测；在已有只读证据基础上，只有 tracked 测试仍稳定证明
+      TIME_KEYWORDS/RULES 绕过 predicate 时，才按 conditional_allow 最小修改
+      ai/repo_meta/classifier.py
+    gate: 无 tracked 失败证据则不得启用条件性文件
+  - step: 6
     action: 运行全部质量门、真实 Q1 after_fix 和可选六题回归
     constraint: 不改写问题、不调参、不覆盖历史记录
+  - step: 7
+    action: 审查完整 diff、修改范围、after_fix 比较和缓存清单
+    constraint: 保持未提交状态，等待用户终审与后续提交授权
 
 quality_gate:
   environment_contract:
@@ -629,9 +730,18 @@ acceptance_min:
     - 这份合同文档什么时候到期保持 normal retrieval
     - 找出六月以后新增的笔记进入 repo-meta 文件时间路由
     - 文档创建、文件修改、文件删除、最新、最早和明确日期文件列表保持正确路由
-    - repo-meta 文件结果集后的最近短追问保持正确
+    - >-
+      上一轮已形成 repo-meta 文件结果集时，“最近的呢？”由状态机产生
+      repo-meta route hint，classifier 返回 time，最终进入 repo_meta/time
+    - >-
+      fresh state、没有 repo-meta 文件结果集时，“最近的呢？”不产生 repo-meta
+      route hint，classifier 不把它认定为文件元数据 time
+    - 有 repo-meta 文件结果集上下文的“最近的有哪些？”和“最近时间有哪些？”保持 repo_meta/time
   implementation_boundary:
     - 状态机与 classifier 时间语义一致
+    - 有上下文与 fresh-state 的“最近的呢？”在两层判定中均符合各自边界
+    - 不得只修状态机或只修 classifier
+    - 普通无状态“最近”不得触发 repo-meta 文件时间路由
     - 不存在汽车、保养、合同、课程或其他业务词黑名单
     - runner、ask_notes.py、普通 retrieval、日期回答器均无修改
     - Domain SDK、Host、招聘插件链和 handled result 语义无修改
@@ -687,7 +797,10 @@ stop_conditions:
   - 必须修改汽车语料、索引、before_fix 或首次行业评测记录
   - 状态机与 classifier 无法在默认两个生产文件及有证据的条件性文件内保持一致
   - 文件创建、修改、删除、最新、最早或明确日期正例大面积回归
-  - repo-meta 文件结果集短追问无法保留
+  - >-
+    无法同时让有 repo-meta 文件结果集上下文的“最近的呢？”进入 repo_meta/time，
+    并让 fresh-state 同句保持在 repo-meta 之外
+  - 必须让普通无状态“最近”触发 repo-meta 才能保留上下文短追问
   - 必须整体重构状态机或改变 runner 路由顺序
   - 必须修改 Domain SDK、Host、招聘插件或 handled result 链
   - 必须新增配置开关、联网搜索、远程工具或外部服务
@@ -700,8 +813,8 @@ stop_conditions:
 implementation_permissions:
   granted_when:
     - 本任务卡已合入当前实施分支
-    - preflight_checks 全部通过
-    - tracked 先红契约已建立并保存失败摘要
+    - preflight_checks.focused_rerun 全部通过
+    - preflight_checks.post_preflight_red_gate 已建立并保存失败摘要
     - 未命中 stop_conditions
   allowed_actions:
     - 在 default_allow 内实施最小 Core 路由修复
