@@ -14,9 +14,10 @@ implementation_status: ready_for_implementation_after_preflight
 
 authorization_statement: >-
   本任务卡提交并获用户采用后，后续实施者可在 preflight 全部通过的前提下，
-  仅修改 editable_scope.default_allow 与满足启用条件后的 conditional_allow。
-  不需要以 after_fix 已通过作为开始修改代码的前置条件；after_fix 是实现完成后的
-  验收记录。任何未列明路径都不因“实现必要”获得隐式授权。
+  仅修改 editable_scope.default_allow、满足启用条件后的 conditional_allow，
+  以及仅限本地且永不进入版本控制的 conditional_local_ignored_alignment 精确文件。
+  不需要以 after_fix_v2 已通过作为开始修改代码的前置条件；after_fix_v2 是当前
+  实现完成后的验收记录。任何未列明路径都不因“实现必要”获得隐式授权。
 
 communication_preference:
   tone: professional
@@ -214,8 +215,57 @@ editable_scope:
       record_requirement: >-
         该文件仍非默认授权。实施回执必须同时给出上述只读证据和 tracked 红测
         失败摘要，才可启用；若 tracked 测试不能稳定证明绕过，不得触碰该文件。
+  conditional_local_ignored_alignment:
+    file: tests/repo_meta/routing/test_routing_core_meta_rules.py
+    tracked: false
+    git_ignored: true
+    default_permission: denied
+    enable_only_if:
+      - 最新 tracked 定向契约已经通过
+      - 完整质量门仅因本文件的旧契约与已批准 tracked 契约冲突而阻断
+      - 修改只用于对齐下列 allowed_semantic_updates
+    allowed_semantic_updates:
+      - >-
+        将 fresh state 的“最近时间有哪些？”从文件元数据 time 正例改为
+        不得返回 time；只有真实 repo-meta 文件结果集上下文才允许该短句进入
+        文件时间路由
+      - >-
+        将 last_local_topic=category_summary 时“最近的有哪些？”的旧 time 断言
+        改为不得返回 time；category_summary 不是文件结果 topic
+      - >-
+        保留“最近时间有哪些文件？”返回 time 的显式文件范围正例，
+        由授权生产 predicate 修复，不得删除、反转、跳过或标记 xfail
+    canonical_file_result_topics:
+      - list_files
+      - list_files_with_time
+      - list_files_by_topic
+      - time
+    explicitly_not_file_result_topics:
+      - category_summary
+      - count
+      - summary
+      - normal_retrieval
+    evidence_role: >-
+      仅作为本地辅助质量门的次级证据；正式路由契约仍以
+      test_query_router_repo_meta.py 与
+      public_tests/state/test_repo_meta_time_route_contract.py 为准。
+      本文件不得成为本次修复的唯一或主要验收证据。
+    version_control_policy:
+      - 不得 git add -f
+      - 不得暂存、提交或推送
+      - 不得因本地修改而改变 tracked 交付范围
+    forbidden:
+      - 放宽、删除或绕开 tracked 契约
+      - 使用 xfail、skip、测试名过滤或删除测试获得绿色结果
+      - 根据测试文件来源让生产代码返回不同结果
+      - 修改任何其他 Git 忽略辅助测试
+      - 恢复 fresh state 的“最近时间有哪些？”宽泛 time 判定
+      - 将 category_summary 加入 canonical 文件结果 topic
+      - 修改 runner、ConversationState、状态更新 helper 或调用顺序
+      - 恢复 classifier generic time fallback
+      - 加入汽车、合同、课程或其他业务领域黑名单
+      - 删除本地辅助质量门或把三个失败全部视为无需运行的旧测试
   read_only_supporting_tests:
-    - tests/repo_meta/routing/test_routing_core_meta_rules.py
     - tests/repo_meta/routing/test_routing_core_router_guards.py
     - tests/file_actions/test_file_change_event_semantics.py
   read_only_formal_regressions:
@@ -256,9 +306,11 @@ editable_scope:
     - WorkState**
     - .gitignore
   resolution: >-
-    tests/** 虽可运行作本地辅助回归，但由 .gitignore 排除，不得修改、暂存或作为
-    正式交付证据。正式失败与通过证据必须落在列明的 tracked 根测试和唯一 public
-    路由契约文件中。任何 deny 路径若被证明必改，立即停止并申请新授权。
+    tests/** 默认仍由 .gitignore 排除并禁止修改；唯一例外是
+    conditional_local_ignored_alignment 精确列明的本地辅助文件，且只有满足启用
+    条件时才可在本地对齐契约。该例外不得暂存、提交或作为主要正式交付证据。
+    正式失败与通过证据必须落在列明的 tracked 根测试和唯一 public 路由契约文件中。
+    其他任何 deny 路径若被证明必改，立即停止并申请新授权。
 
 non_goals:
   - 招聘 JD 识别、字段抽取、插件规则或插件路由
@@ -298,6 +350,32 @@ preflight_revision:
       本次仅修订任务卡，不推翻上述已通过结果；修订后先重跑 focused_rerun。
       生产代码实施完成后，quality_gate 中的完整测试与完整性检查仍必须全部重跑。
 
+implementation_progress_revision:
+  status: BLOCKED_pending_local_helper_contract_alignment
+  latest_verified_results:
+    tracked_targeted_contracts: 38 passed
+    file_history: 7 passed
+    runner_and_state: 41 passed
+    recruitment_plugin: 7 passed
+    repo_meta_local_support: 3 failed, 47 passed
+  not_yet_run:
+    - 全部 public tests
+    - 全部 tracked pytest
+    - py_compile
+    - after_fix_v2 真实 Q1 回归
+    - after_fix_v2 六题完整回归
+  blocker: >-
+    Git 忽略的 tests/repo_meta/routing/test_routing_core_meta_rules.py 中两项旧断言
+    与已批准 tracked 契约冲突，另有“最近时间有哪些文件？”显式文件范围正例
+    暴露生产 predicate 尚未补齐。
+  completion_state: 生产实现尚未完成最终验收，不得描述为 completed 或 passed
+  resume_sequence:
+    - 按 conditional_local_ignored_alignment 更新唯一 ignored 辅助测试
+    - 在既有生产授权范围内修复“最近时间有哪些文件？”显式文件正例
+    - 重跑完整质量门
+    - 质量门通过后执行 after_fix_v2 与六题完整回归
+    - 保持未提交实施现场并进行只读人工终审
+
 preflight_checks:
   mode_after_card_revision: focused_rerun
   focused_rerun:
@@ -333,7 +411,9 @@ preflight_checks:
       checks:
         - 现有 tracked 守门文件为 test_query_router_repo_meta.py
         - 唯一允许新增的公开契约为 public_tests/state/test_repo_meta_time_route_contract.py
-        - 不修改 Git 忽略的 tests/**
+        - >-
+          Git 忽略测试默认只读；唯一例外严格受
+          conditional_local_ignored_alignment 约束
       pass: 真实公开路由边界可由精确授权路径覆盖
   post_preflight_red_gate:
     id: create_red_contract
@@ -432,6 +512,9 @@ test_contract:
     - question: "最近时间有哪些？"
       state_requirement: 上一轮为 repo-meta 文件结果集
       expected: repo_meta/time
+    - question: "最近时间有哪些文件？"
+      expected: repo_meta/time
+      boundary: 显式文件范围正例，不依赖历史结果集上下文
   green_content_routes:
     - question: "电池一般多久检查一次？"
       expected: normal_retrieval
@@ -451,6 +534,24 @@ test_contract:
         classifier: 不得认定为文件元数据 time
         route: 普通对话或 normal retrieval 边界
       boundary: 无上下文的“最近”不能独立触发文件时间路由
+    - id: fresh_recent_time_list_question
+      question: "最近时间有哪些？"
+      state_requirement: fresh state，没有 repo-meta 文件结果集
+      expected_after:
+        state_machine: 不产生 repo-meta route hint
+        classifier: 不得认定为文件元数据 time
+        route: 普通对话或 normal retrieval 边界
+      boundary: >-
+        同一句话只有在 canonical 文件结果 topic 对应的真实 repo-meta
+        文件结果集上下文中才能进入文件时间路由
+    - id: non_file_topic_recent_list_question
+      question: "最近的有哪些？"
+      state_requirement: last_local_topic=category_summary
+      expected_after:
+        state_machine: 不产生 repo-meta route hint
+        classifier: 不得因该 topic 认定为文件元数据 time
+        route: 普通对话或 normal retrieval 边界
+      boundary: category_summary 不是 canonical 文件结果 topic
   runner_or_public_contract:
     primary: public_tests/state/test_repo_meta_time_route_contract.py
     requirements:
@@ -503,10 +604,16 @@ implementation_plan:
       ai/repo_meta/classifier.py
     gate: 无 tracked 失败证据则不得启用条件性文件
   - step: 6
-    action: 运行全部质量门、真实 Q1 after_fix 和可选六题回归
-    constraint: 不改写问题、不调参、不覆盖历史记录
+    action: >-
+      按 conditional_local_ignored_alignment 对齐唯一 Git 忽略辅助测试，
+      同时在既有生产授权范围内补齐“最近时间有哪些文件？”显式文件正例
+    constraint: >-
+      不修改其他 ignored 测试，不削弱 tracked 契约，不暂存或提交本地辅助测试
   - step: 7
-    action: 审查完整 diff、修改范围、after_fix 比较和缓存清单
+    action: 运行全部质量门、真实 Q1 after_fix_v2 和六题回归
+    constraint: 不改写问题、不调参、不覆盖 before_fix、after_fix 或首次评测记录
+  - step: 8
+    action: 审查完整 diff、修改范围、after_fix_v2 比较和缓存清单
     constraint: 保持未提交状态，等待用户终审与后续提交授权
 
 quality_gate:
@@ -558,7 +665,14 @@ quality_gate:
       .venv/bin/python -m pytest -q -p no:cacheprovider
       tests/repo_meta/routing/test_routing_core_meta_rules.py
       tests/repo_meta/routing/test_routing_core_router_guards.py
-    evidence_role: 本地辅助回归；不得修改或提交 tests/**
+    requirements:
+      - 按 conditional_local_ignored_alignment 更新后的辅助契约全部通过
+      - “最近时间有哪些文件？”显式文件范围正例通过
+      - 不得排除测试、过滤测试名、删除测试、使用 xfail 或 skip 获取绿色结果
+      - tests/repo_meta/routing/test_routing_core_router_guards.py 保持只读
+    evidence_role: >-
+      本地辅助回归；唯一精确授权文件可本地对齐，但所有 tests/** 均不得暂存、
+      提交或作为正式 tracked 契约的替代证据
   targeted_tracked_route:
     command: >-
       env -u PYTHONPATH PYTHONDONTWRITEBYTECODE=1
@@ -593,8 +707,24 @@ quality_gate:
     commands:
       - git diff --check
       - git diff --name-only
+      - git diff --cached --name-only
       - git status --short
-    pass: 仅出现 editable_scope 实际启用的文件
+    pass: >-
+      tracked diff 仅出现 editable_scope 实际启用的五个交付文件；
+      conditional_local_ignored_alignment 文件不在 tracked 或 staged 输出中
+  local_ignored_delivery_guard:
+    commands:
+      - git check-ignore -v tests/repo_meta/routing/test_routing_core_meta_rules.py
+      - >-
+        if git ls-files --error-unmatch
+        tests/repo_meta/routing/test_routing_core_meta_rules.py >/dev/null 2>&1;
+        then exit 1; fi
+      - >-
+        if git diff --cached --name-only |
+        rg -x 'tests/repo_meta/routing/test_routing_core_meta_rules\\.py';
+        then exit 1; fi
+    pass: >-
+      唯一辅助文件仍被 Git 忽略、未被跟踪、未被暂存；禁止使用 git add -f
   encoding_and_newline:
     command: >-
       env -u PYTHONPATH .venv/bin/python -c
@@ -684,10 +814,11 @@ quality_gate:
     参与路由判定的常量、正则或分支。测试问句和任务卡基线描述不受此限制。
 
 after_fix_regression:
-  root: test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/regression_q1_time_route/after_fix
+  root: test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/regression_q1_time_route/after_fix_v2
   git_policy: 本地忽略产物，不暂存、不提交
   preserve:
     - test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/regression_q1_time_route/before_fix
+    - test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/regression_q1_time_route/after_fix
     - test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/runs
     - test_notes/automotive_maintenance_adaptation_2026-07-22-evaluation/final_report.md
   minimum_files:
@@ -714,11 +845,11 @@ after_fix_regression:
       如默认入口仍会写回语义等价 NPZ，只能复用 before_fix 已采用的仓库外影子缓存
       隔离方法；不得在本任务中修改缓存写入实现。
   full_six_question_regression:
-    recommendation: Q1 真实回归通过后执行
-    required_for_core_fix_acceptance: false
+    requirement: Q1 真实回归通过后执行
+    required_for_core_fix_acceptance: true
     requirements:
       - 六题文字与首次正式评测一致
-      - 结果独立保存于 after_fix
+      - 结果独立保存于 after_fix_v2
       - 原始失败和首次评测记录保持不变
       - 不用新结果回写或篡改第一次正式评测
 
@@ -730,6 +861,7 @@ acceptance_min:
     - 这份合同文档什么时候到期保持 normal retrieval
     - 找出六月以后新增的笔记进入 repo-meta 文件时间路由
     - 文档创建、文件修改、文件删除、最新、最早和明确日期文件列表保持正确路由
+    - “最近时间有哪些文件？”作为显式文件范围查询进入 repo_meta/time
     - >-
       上一轮已形成 repo-meta 文件结果集时，“最近的呢？”由状态机产生
       repo-meta route hint，classifier 返回 time，最终进入 repo_meta/time
@@ -737,6 +869,8 @@ acceptance_min:
       fresh state、没有 repo-meta 文件结果集时，“最近的呢？”不产生 repo-meta
       route hint，classifier 不把它认定为文件元数据 time
     - 有 repo-meta 文件结果集上下文的“最近的有哪些？”和“最近时间有哪些？”保持 repo_meta/time
+    - fresh state 的“最近时间有哪些？”不得进入 repo_meta/time
+    - category_summary 不得激活“最近的有哪些？”文件时间上下文
   implementation_boundary:
     - 状态机与 classifier 时间语义一致
     - 有上下文与 fresh-state 的“最近的呢？”在两层判定中均符合各自边界
@@ -755,9 +889,12 @@ acceptance_min:
     - 全部 public_tests 通过
     - 全部 tracked pytest 通过
     - py_compile、diff、编码、缓存、隐私与范围检查通过
+    - >-
+      唯一授权的 ignored 辅助测试与 tracked 契约对齐后通过，
+      但不进入 tracked、staged 或提交证据
   real_regression:
-    - after_fix Q1 使用原问题和真实默认入口完成
-    - before_fix 与首次行业评测记录未被覆盖
+    - after_fix_v2 Q1 使用原问题和真实默认入口完成
+    - before_fix、after_fix 与首次行业评测记录未被覆盖
   reporting:
     - 明确列出实际修改文件与 conditional_allow 是否启用
     - 给出红测、绿测、全量测试和真实回归结果
@@ -778,7 +915,7 @@ privacy_guard:
     - 示例文档甲
     - name@example.com
   raw_log_policy: >-
-    after_fix 原始本地日志如自然包含绝对路径，只能保存在 Git 忽略目录；
+    after_fix_v2 原始本地日志如自然包含绝对路径，只能保存在 Git 忽略目录；
     对外 Markdown 使用 <repo> 或相对路径，凭证必须始终打码。
 
 stop_conditions:
@@ -805,9 +942,20 @@ stop_conditions:
   - 必须修改 Domain SDK、Host、招聘插件或 handled result 链
   - 必须新增配置开关、联网搜索、远程工具或外部服务
   - tracked 红测无法稳定复现已审计缺陷
-  - 需要修改 editable_scope.deny 中任何路径
+  - >-
+    需要修改 editable_scope.deny 中任何路径，且不属于
+    conditional_local_ignored_alignment 的唯一精确例外
+  - 必须修改 tests/repo_meta/routing/test_routing_core_router_guards.py 或第二个 ignored 辅助测试
+  - 必须修改第六个 tracked 文件
+  - 必须恢复 fresh state 的“最近时间有哪些？”宽泛 time 判定
+  - 必须将 category_summary、count、summary 或 normal_retrieval 加入文件结果 topic
+  - 必须根据 ignored 或 tracked 测试来源让生产代码返回不同结果
+  - 必须修改 runner、ConversationState、状态更新 helper 或调用顺序
+  - “最近时间有哪些文件？”无法在现有生产授权文件内修复
+  - ignored 辅助测试必须暂存或提交才能维持结果
+  - tracked 正式契约与唯一辅助契约仍无法一致
   - 完整质量门失败且原因无法在授权范围内修复
-  - after_fix 需要改写问题、修改语料或事后调参才能通过
+  - after_fix_v2 需要改写问题、修改语料或事后调参才能通过
   - 任一停止条件触发后不得提交部分修复
 
 implementation_permissions:
@@ -820,11 +968,15 @@ implementation_permissions:
     - 在 default_allow 内实施最小 Core 路由修复
     - 满足并记录条件后启用 ai/repo_meta/classifier.py
     - 运行本任务卡列出的只读探针与质量门
-    - 创建 Git 忽略的 after_fix 本地回归记录
+    - >-
+      满足 conditional_local_ignored_alignment 后，仅在本地修改
+      tests/repo_meta/routing/test_routing_core_meta_rules.py
+    - 创建 Git 忽略的 after_fix_v2 本地回归记录
   not_granted:
-    - 任何 deny 路径修改
+    - conditional_local_ignored_alignment 唯一精确例外之外的任何 deny 路径修改
     - Git add、commit、push 或开 PR；仍需用户另行明确授权
     - 用“必要修改”扩张路径
+    - 暂存、提交、推送或 git add -f 任何 tests/** 文件
     - 覆盖历史评测或审计记录
 
 deliverables:
@@ -834,9 +986,15 @@ deliverables:
     - public_tests/state/test_repo_meta_time_route_contract.py
     - 仅在需要记录实施事实时更新本任务卡
   local_ignored:
-    - after_fix 修复后真实回归记录
+    - after_fix_v2 修复后真实回归记录
+  local_only_non_deliverable:
+    - >-
+      tests/repo_meta/routing/test_routing_core_meta_rules.py 的精确契约对齐；
+      仅为本地质量门，不得跟踪、暂存、提交或推送
   forbidden:
-    - tests/** 修改或提交
+    - >-
+      tests/** 修改（conditional_local_ignored_alignment 唯一精确例外除外）
+      或任何 tests/** 暂存、提交、推送
     - 语料、索引、依赖或环境改动
 
 commit_message:
