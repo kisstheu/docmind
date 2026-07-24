@@ -1,0 +1,242 @@
+version: 1
+
+task_name: repo_meta_generic_file_list_scope
+
+task_goal: >-
+  让“当前知识库有哪些文件”等全库范围自然问法稳定进入通用文件列表，
+  形成与用户可见顺序一致的文件结果集，并让集合内容、比较和序号追问
+  只在该文件集合内继续；真实内容主题和文件时间查询保持原有语义。
+
+task_kind: independent_core_routing_bugfix
+implementation_status: authorized_for_implementation
+
+communication_preference:
+  tone: professional
+  language: zh-CN
+  report_order:
+    - 结论
+    - 根因与修复
+    - 用户可见变化
+    - 修改与验证
+    - 提交与风险
+
+baseline:
+  branch: main
+  head: 87b061c317da0451d2ef8fe4546776a766ec2e70
+  remote_alignment: main 与 origin/main 对齐
+  tracked_worktree: clean
+  preflight_commands:
+    - git branch --show-current
+    - git rev-parse HEAD
+    - git status --short --branch
+    - git log --oneline --decorate -10
+
+user_problem:
+  first_turn:
+    question: "当前知识库有哪些文件？"
+    current_topic_candidate: 当前知识库
+    current_classifier_topic: list_files_by_topic
+    possible_answer: 当前知识库里暂时没有明显命中“当前知识库”的文件。
+    expected_classifier_topic: list_files
+  followup_effect:
+    question: "这些文件分别讲了什么？"
+    current_problem: 首轮未形成文件结果集，追问无法稳定进入 result_set_followup
+    expected: 继承首轮可见文件集合并在该范围内检索
+
+root_cause:
+  classifier_order: >-
+    ai/repo_meta/classifier.py 在通用文件列表判断之前提取并接受主题候选；
+    “当前知识库”和“现在”会被结构模式捕获，且现有 topic noise 规则没有
+    将知识库范围和状态修饰语识别为非内容主题。
+  incomplete_generic_shape: >-
+    现有通用文件列表规则主要依赖“有哪些文件/文档”和少量固定模式，
+    未覆盖“知识库里有什么”“现在一共有些什么文件”等结构等价表达。
+  incomplete_topic_shape: >-
+    现有主题提取偏向“有哪些文件”，没有统一覆盖文档、资料、有什么、
+    “关于 X 的文件”和“X 方面有什么资料”等领域无关结构。
+  result_set_boundary: >-
+    list_files 本身会通过 update_state_after_local_answer 从编号回答按顺序
+    写入文件结果集；集合内容追问也已有 result_set_followup 保护。
+    缺口是文件集合序号内容问法没有被识别为结果集追问，也没有把检索范围
+    收窄到指定序号对应文件。
+
+semantic_boundary:
+  generic_inventory:
+    description: >-
+      问句对象是整个知识库、当前库或全部文件集合；范围、时间状态和泛指修饰语
+      在移除后不留下可作为内容主题的核心。
+    scope_modifiers:
+      - 当前
+      - 目前
+      - 现在
+      - 知识库
+      - 当前知识库
+      - 我的知识库
+      - 知识库里
+      - 知识库中
+      - 库里
+      - 所有
+      - 全部
+      - 一共
+      - 都
+    positive_examples:
+      - 当前知识库有哪些文件？
+      - 目前知识库里有些什么？
+      - 知识库中都有什么文档？
+      - 我的知识库有哪些文件？
+      - 现在都有哪些文件？
+      - 列出当前所有文件。
+  topic_inventory:
+    description: >-
+      文件列表结构中存在移除列表措辞后仍有意义的内容主题，必须进入
+      list_files_by_topic，不能因同时出现“有哪些文件”而退化为全库列表。
+    negative_examples_for_generic_rule:
+      - 采购相关有哪些文件？
+      - 项目计划有哪些文档？
+      - 关于合同的文件有哪些？
+      - 招聘方面有什么资料？
+      - 教会课程方面有哪些资料？
+  time_compatibility:
+    description: >-
+      文件创建、修改、更新、日期范围和最早/最新排序继续由既有 time predicate
+      优先判断，不得被通用列表规则抢占。
+    examples:
+      - 最近修改了哪些文件？
+      - 今天有哪些文件发生了变化？
+      - 上周创建了哪些文档？
+      - 最早的文件有哪些？
+
+multi_turn_requirements:
+  - list_files 回答按用户可见顺序写入文件结果集
+  - 空知识库不写入虚假文件结果集
+  - “这些文件分别讲了什么”进入 result_set_followup
+  - “它们各自说了什么”进入 result_set_followup
+  - “对比一下这些文件”只在首轮文件集合内检索
+  - “第二个文件讲了什么”选择首轮第二项
+  - 第二轮综合回答后仍保留原文件集合
+  - “第二个文件再详细说说”仍选择首轮第二项
+  - 沿用现有列表显示和状态容量上限，不改变截断策略
+
+implementation_constraints:
+  - 使用领域无关的问句结构和范围语义，不增加业务领域词表
+  - 不通过不断追加完整句特判完成修复
+  - 时间 predicate 必须先于通用文件列表判定
+  - 只有移除全库范围修饰语后仍存在内容核心，才判为主题查询
+  - 结果集序号从当前文件集合顺序解析，不修改文件排序
+  - 不调用模型判断确定性 repo-meta 分类
+  - 不修改 ConversationState 字段或文件结果集容量
+
+editable_scope:
+  allow:
+    - docs/task_card_repo_meta_generic_file_list_scope.yaml
+    - ai/repo_meta/classifier.py
+    - app/dialog/repo_meta_rules.py
+    - app/dialog/result_set.py
+    - app/dialog/state_machine.py
+    - app/chat_loop_parts/runner.py
+    - public_tests/state/test_repo_meta_generic_file_list_scope_contract.py
+  deny:
+    - retrieval/**
+    - packages/docmind-domain-sdk/**
+    - packages/docmind-recruitment-plugin/**
+    - examples/**
+    - tests/**
+    - test_notes/**
+
+non_goals:
+  - 重写整个 repo-meta 分类器
+  - 引入模型分类
+  - 修改 embedding、召回评分或检索算法
+  - 修改文件排序规则
+  - 扩大结果集容量
+  - 重构 ConversationState
+  - 修改 Domain Plugin、MCP、timeout、retry 或多插件能力
+  - CLI 日志减噪
+  - README 全面更新
+  - CI 建设
+  - 迁移 ignored tests
+
+privacy_guard:
+  - 测试只使用合成文件名和合成内容
+  - 不写入真实人名、公司名、联系方式或本地知识库内容
+  - 不依赖用户本地知识库
+
+test_matrix:
+  generic_file_list:
+    - 当前知识库有哪些文件？
+    - 目前知识库里有什么文件？
+    - 知识库中都有哪些文档？
+    - 我的知识库里都有什么？
+    - 现在有哪些文件？
+    - 列出当前所有文件。
+  topic_file_list:
+    - 采购相关有哪些文件？
+    - 项目计划有哪些文档？
+    - 关于合同的文件有哪些？
+    - 招聘方面有什么资料？
+  file_time:
+    - 最近修改了哪些文件？
+    - 今天创建了哪些文档？
+    - 最早的文件有哪些？
+  adjacent_repo_meta:
+    - 有多少个文件？
+    - 有哪些文件类型？
+    - 知识库有多大？
+  multi_turn:
+    - first: 当前知识库有哪些文件？
+      second: 这些文件分别讲了什么？
+      third: 第二个文件再详细说说。
+  empty_repo:
+    - first: 当前知识库有哪些文件？
+      second: 这些文件分别讲了什么？
+
+verification:
+  targeted:
+    - >-
+      PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider
+      public_tests/state/test_repo_meta_generic_file_list_scope_contract.py
+    - >-
+      PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider
+      public_tests/state/test_repo_meta_time_route_contract.py
+      test_query_router_repo_meta.py
+  public:
+    - >-
+      PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider
+      public_tests
+  full:
+    - >-
+      PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider
+      tests packages/docmind-domain-sdk/tests packages/docmind-recruitment-plugin/tests
+      public_tests test_query_router_repo_meta.py
+  static:
+    - git diff --check
+    - git status --short
+    - git diff --cached --check
+  task_card:
+    - YAML safe_load 可解析
+    - 递归检查无重复键
+    - UTF-8 可解码且无 BOM
+    - 引用的 commit hash 可由 git cat-file 验证
+    - 不含隐私样本、用户绝对路径或 ignored 本地资料路径
+
+acceptance:
+  - 所有通用文件列表正例分类为 list_files 且确定性路由到 repo_meta
+  - 所有真实主题反例分类为 list_files_by_topic
+  - 所有时间兼容样例继续分类为 time
+  - 相邻 repo-meta 能力保持既有分类
+  - 首轮文件结果集顺序与回答一致
+  - 第二轮继承完整首轮文件集合并限制检索范围
+  - 第三轮选择并限制到首轮第二项
+  - 空库不形成可选择结果集且后续安全回退
+  - 新增测试位于 tracked public_tests
+  - 完整回归通过
+  - 最终工作区干净并形成任务卡、实现两个本地提交
+  - 未 push
+
+completion_record_requirements:
+  - 记录实际修改文件和未触碰的非目标
+  - 记录专项、public、完整回归数量与结果
+  - 记录 YAML、编码、commit 引用、隐私和路径扫描结果
+  - 记录两个本地 commit hash、message 和 show --stat
+  - 记录最终 git status --short --branch
+  - 明确未 merge、未 push
