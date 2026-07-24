@@ -4,6 +4,7 @@ import re
 from typing import TYPE_CHECKING
 
 from ai.capability_common import CATEGORY_COUNT_KEYWORDS, CATEGORY_KEYWORDS, normalize_meta_question
+from ai.repo_meta.classifier import parse_file_list_request
 from ai.repo_meta.classifier_predicates import is_file_result_topic, looks_like_time_request
 
 if TYPE_CHECKING:
@@ -34,6 +35,9 @@ def is_system_capability_request(question: str) -> bool:
 
 
 def is_repo_meta_request(question: str) -> bool:
+    if parse_file_list_request(question) is not None:
+        return True
+
     q = normalize_meta_question(question)
     if _looks_like_doc_inventory_listing_request(q):
         return True

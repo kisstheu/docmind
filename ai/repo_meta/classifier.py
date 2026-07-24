@@ -32,18 +32,52 @@ LIST_DETAIL_MODIFIERS = (
     "展开看下", "展开看看",
 )
 
-LIST_BY_TOPIC_PATTERNS = (
-    r"列一个(.+?)的文件",
-    r"列出(.+?)的文件",
-    r"列出(.+?)文件名",
-    r"把(.+?)相关文件列出来",
-    r"把(.+?)的文件列出来",
-    r"把(.+?)文件名列出来",
-    r"把(.+?)相关的文件名列出来",
-    r"(.+?)有哪些文件",
-    r"(.+?)有哪些文件名",
-    r"(.+?)相关文档",
+_FILE_LIST_TOPIC_META_TERMS = {"类型", "格式", "类别", "分类", "方面", "方向", "数量", "大小", "体积", "容量"}
+_FILE_LIST_OBJECT_PATTERN = r"(?:文件名|文档名|资料名|文件|文档|资料)"
+_FILE_LIST_QUESTION_INTENT_PATTERN = r"(?:有些什么|有哪一些|有哪些|有什么|有哪)"
+_FILE_LIST_COMMAND_PATTERN = r"(?:列出来|列一下|列一个|列出|列下|罗列|清单)"
+_FILE_LIST_POLITE_PREFIX_PATTERN = r"(?:(?:请|麻烦|帮我|请帮我|麻烦帮我))?"
+_FILE_LIST_SLOT_PATTERNS = (
+    rf"{_FILE_LIST_POLITE_PREFIX_PATTERN}(?:把)?"
+    rf"{_FILE_LIST_COMMAND_PATTERN}(?P<slot>.*?){_FILE_LIST_OBJECT_PATTERN}",
+    rf"{_FILE_LIST_POLITE_PREFIX_PATTERN}(?:把)?(?P<slot>.*?)"
+    rf"{_FILE_LIST_OBJECT_PATTERN}{_FILE_LIST_COMMAND_PATTERN}",
+    rf"(?P<slot>.*?){_FILE_LIST_QUESTION_INTENT_PATTERN}{_FILE_LIST_OBJECT_PATTERN}",
+    rf"(?P<slot>.*?){_FILE_LIST_OBJECT_PATTERN}{_FILE_LIST_QUESTION_INTENT_PATTERN}",
+    rf"(?P<slot>.+?)(?:相关){_FILE_LIST_OBJECT_PATTERN}",
 )
+_GENERIC_REPOSITORY_SCOPE = (
+    r"(?:(?:当前|目前|现在))?(?:我(?:的)?)?(?:(?:整个|全部|所有))?"
+    r"(?:知识库|库)(?:里|中|内)?(?:(?:一共|总共|全部|所有|都))*"
+)
+_GENERIC_STATUS_SCOPE = (
+    r"(?:(?:当前|目前|现在)(?:(?:一共|总共|全部|所有|都))*|"
+    r"(?:(?:一共|总共|全部|所有|都))+)"
+)
+
+
+def _normalize_file_list_question(question: str) -> str:
+    return re.sub(r"[？?！!，,。.、；;：:\s]+", "", clean_text(question))
+
+
+def _is_generic_repository_scope(slot: str) -> bool:
+    value = (slot or "").strip()
+    if not value:
+        return True
+    return bool(
+        re.fullmatch(_GENERIC_REPOSITORY_SCOPE, value)
+        or re.fullmatch(_GENERIC_STATUS_SCOPE, value)
+    )
+
+
+def _normalize_file_list_slot(slot: str) -> str:
+    value = (slot or "").strip("的里中内上，。！？；：,.!?;: ")
+    value = re.sub(r"^(?:当前|目前|现在)", "", value)
+    value = re.sub(r"^(?:这个|这份|该)", "", value)
+    value = re.sub(r"^(?:关于|有关)", "", value)
+    value = re.sub(r"(?:相关|方面|有关)$", "", value)
+    return value.strip("的里中内上，。！？；：,.!?;: ")
+
 
 COUNT_KEYWORDS = (
     "多少文件", "多少个文件", "文件数量",
@@ -128,16 +162,39 @@ def is_followup_to_list_files(last_topic: str | None, current_question: str) -> 
     return last_topic in {"count", "list_files"} and contains_any(current_question, LIST_FOLLOWUP_KEYWORDS)
 
 
-def extract_topic_from_list_request(question: str) -> str:
-    q = (question or "").strip()
-    for pattern in LIST_BY_TOPIC_PATTERNS:
-        match = re.search(pattern, q)
+def parse_file_list_request(question: str) -> str | None:
+    """Return ``None`` for non-list, ``""`` for repo-wide, or the intact topic."""
+    q = _normalize_file_list_question(question)
+    if not q:
+        return None
+
+    for pattern in _FILE_LIST_SLOT_PATTERNS:
+        match = re.fullmatch(pattern, q)
         if not match:
             continue
-        topic = match.group(1).strip()
-        if topic and topic not in {"文件", "文档", "资料", "内容"}:
+        raw_slot = match.group("slot")
+        if _is_generic_repository_scope(raw_slot):
+            return ""
+        topic = _normalize_file_list_slot(raw_slot)
+        if _is_generic_repository_scope(topic):
+            return ""
+        if topic and topic not in _FILE_LIST_TOPIC_META_TERMS:
             return topic
-    return ""
+        return None
+
+    scope_without_object = re.fullmatch(
+        rf"(?P<slot>.+?){_FILE_LIST_QUESTION_INTENT_PATTERN}",
+        q,
+    )
+    if scope_without_object and _is_generic_repository_scope(scope_without_object.group("slot")):
+        return ""
+
+    return None
+
+
+def extract_topic_from_list_request(question: str) -> str:
+    topic = parse_file_list_request(question)
+    return topic or ""
 
 
 def is_name_content_mismatch_request(question: str) -> bool:
@@ -149,6 +206,9 @@ def is_name_content_mismatch_request(question: str) -> bool:
 
 
 def is_list_files_request(question: str) -> bool:
+    if parse_file_list_request(question) == "":
+        return True
+
     q = normalize_meta_question(clean_text(question))
     has_doc_word = any(x in q for x in ("文件", "文档", "资料"))
     has_list_intent = any(x in q for x in LIST_INTENT_KEYWORDS)
@@ -218,7 +278,8 @@ def classify_repo_meta_question(
         print(f"[repo_meta分类] q={q} -> category_drilldown")
         return "category_drilldown"
 
-    topic_candidate = extract_topic_from_list_request(q)
+    file_list_topic = parse_file_list_request(question)
+    topic_candidate = file_list_topic or ""
     topic_candidate_valid = is_semantic_topic_candidate(topic_candidate) if topic_candidate else False
 
     if is_size_consistency_request(question, last_user_question=last_user_question):
@@ -233,6 +294,10 @@ def classify_repo_meta_question(
         print(f"[repo_meta分类] q={q} -> time")
         return "time"
 
+    if file_list_topic == "":
+        print(f"[repo_meta分类] q={q} -> list_files")
+        return "list_files"
+
     if topic_candidate_valid:
         print(f"[repo_meta分类] q={q} -> list_files_by_topic")
         return "list_files_by_topic"
@@ -241,7 +306,7 @@ def classify_repo_meta_question(
         print(f"[repo_meta分类] q={q} -> count_with_format")
         return "count_with_format"
 
-    if is_list_files_request(q):
+    if is_list_files_request(question):
         print(f"[repo_meta分类] q={q} -> list_files")
         return "list_files"
 

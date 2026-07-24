@@ -20,6 +20,7 @@ from ai.structured_skill_summary import looks_like_structured_skill_summary_requ
 from app.dialog.result_set import (
     build_result_set_followup_query,
     extract_result_set_from_answer,
+    has_single_file_result_reference,
     has_selectable_result_set,
     last_turn_looks_like_enumeration,
     looks_like_result_set_continuation_followup,
@@ -127,6 +128,8 @@ def _looks_like_file_topic_result_set_followup(question: str, state: "Conversati
     ):
         return False
     if is_summary_followup_request(question):
+        return True
+    if has_single_file_result_reference(question):
         return True
     return looks_like_file_set_content_question(question)
 

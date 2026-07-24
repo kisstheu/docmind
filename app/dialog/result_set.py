@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 
 def extract_result_set_from_answer(answer: str, entity_type: str = "文件") -> tuple[list[str], str]:
@@ -111,6 +112,151 @@ RESULT_SET_GROUP_REF_TERMS = [
     "这几个", "这几份", "这两个", "这三", "这两",
     "这些", "它们", "上述", "前面", "上面", "其中",
 ]
+
+_CN_ORDINAL_DIGITS = dict(zip("零一二两三四五六七八九", (0, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9)))
+_ORDINAL_TOKEN = r"[0-9一二两三四五六七八九十]+"
+_FILE_ITEM_TARGET = r"(?:(?:个|份|篇)?(?:文件|文档|资料|记录)|(?:项|条))"
+_SINGLE_FILE_REFERENCE = rf"第(?P<index>{_ORDINAL_TOKEN}){_FILE_ITEM_TARGET}"
+_SELECTION_HELP = (
+    "当前只支持选择单个文件或整个文件集合。"
+    "请改为“第 N 个文件再展开”或“这些文件分别讲了什么”。"
+)
+_FILE_DETAIL_MARKERS = (
+    "内容", "讲", "说", "写", "记录", "详细", "展开",
+    "总结", "概括", "分析", "看看", "看下",
+)
+_ALL_FILE_REFERENCE_PATTERNS = (
+    r"(?:这些|上述|前面|上面)(?:文件|文档|资料|记录|材料|方案|要求)",
+    r"^(?:(?:请|帮我|麻烦|给我))?(?:(?:比较一下|对比一下|比较|对比))?(?:这些|它们|上述)",
+    r"^(?:分别|各自|都)(?:讲|说|写|是|有|总结|概括|分析)",
+    r"^(?:是)?(?:(?:关于|讲|说|写))?什么(?:内容|主题)?(?:的)?$",
+    r"^(?:再)?(?:总结|概括)(?:一下|下|下吧|一下吧)?$",
+    r"^(?:(?:请|帮我|给我))?(?:推荐|选择|挑选)(?:一|1)(?:个|份|项)$",
+)
+
+
+@dataclass(frozen=True)
+class FileResultSetSelection:
+    paths: tuple[str, ...] = ()
+    rejection: str | None = None
+
+
+def _parse_result_set_ordinal(token: str) -> int | None:
+    value = (token or "").strip()
+    if value.isdigit():
+        return int(value)
+    if value in _CN_ORDINAL_DIGITS:
+        return _CN_ORDINAL_DIGITS[value]
+    if value.count("十") == 1:
+        tens, _, ones = value.partition("十")
+        if (not tens or tens in _CN_ORDINAL_DIGITS) and (
+            not ones or ones in _CN_ORDINAL_DIGITS
+        ):
+            return _CN_ORDINAL_DIGITS.get(tens, 1) * 10 + _CN_ORDINAL_DIGITS.get(ones, 0)
+    return None
+
+
+def _compact_result_set_question(question: str) -> str:
+    return re.sub(r"[，。！？、,.!?；;：:\s]+", "", (question or ""))
+
+
+def _extract_file_result_set_index(question: str) -> int | None:
+    match = re.search(_SINGLE_FILE_REFERENCE, _compact_result_set_question(question))
+    if not match:
+        return None
+    ordinal = _parse_result_set_ordinal(match.group("index"))
+    return ordinal if ordinal and ordinal > 0 else None
+
+
+def has_single_file_result_reference(question: str) -> bool:
+    """Return whether the text is a high-confidence single-file follow-up."""
+    if _extract_file_result_set_index(question) is None:
+        return False
+    compact = _compact_result_set_question(question)
+    return any(marker in compact for marker in _FILE_DETAIL_MARKERS)
+
+
+def _looks_like_unsupported_file_selection(question: str) -> bool:
+    compact = _compact_result_set_question(question)
+    if not compact:
+        return False
+    if re.search(rf"(?:前|最后){_ORDINAL_TOKEN}(?:个|份|篇|项|条)(?:文件|文档|资料|记录)?", compact):
+        return True
+    if re.search(rf"除了第{_ORDINAL_TOKEN}", compact):
+        return True
+    return len(re.findall(rf"第{_ORDINAL_TOKEN}(?:个|份|篇|项|条)?", compact)) >= 2
+
+
+def _has_explicit_non_file_ordinal_target(question: str) -> bool:
+    compact = _compact_result_set_question(question)
+    return bool(
+        re.search(
+            rf"(?:(?:第|前|最后){_ORDINAL_TOKEN}(?:个)?)"
+            r"(?:问题|章节|章|变化|版本|步骤)",
+            compact,
+        )
+    )
+
+
+def _looks_like_all_file_result_set_reference(question: str) -> bool:
+    compact = _compact_result_set_question(question)
+    if not compact:
+        return False
+    if any(term in compact for term in ("格式", "类型", "大小", "时间", "日期")):
+        return False
+    return any(re.search(pattern, compact) for pattern in _ALL_FILE_REFERENCE_PATTERNS)
+
+
+def resolve_file_result_set_selection(
+    question: str,
+    visible_paths: list[str] | tuple[str, ...],
+) -> FileResultSetSelection | None:
+    candidates = tuple(
+        str(item or "").strip()
+        for item in visible_paths
+        if str(item or "").strip()
+    )
+    if not candidates:
+        return None
+
+    if _has_explicit_non_file_ordinal_target(question):
+        return None
+
+    if _looks_like_unsupported_file_selection(question):
+        return FileResultSetSelection(rejection=_SELECTION_HELP)
+
+    ordinal = (
+        _extract_file_result_set_index(question)
+        if has_single_file_result_reference(question)
+        else None
+    )
+    if ordinal is not None:
+        if ordinal > len(candidates):
+            return FileResultSetSelection(
+                rejection=(
+                    f"当前结果集中只有 {len(candidates)} 个文件，"
+                    f"请选择第 1～{len(candidates)} 个。"
+                )
+            )
+        return FileResultSetSelection(
+            paths=(candidates[ordinal - 1],),
+        )
+
+    compact = _compact_result_set_question(question)
+    counted_group = re.search(
+        rf"这({_ORDINAL_TOKEN})(?:个|份|篇|项|条)",
+        compact,
+    )
+    if counted_group:
+        count = _parse_result_set_ordinal(counted_group.group(1))
+        if count == len(candidates):
+            return FileResultSetSelection(paths=candidates)
+        return FileResultSetSelection(rejection=_SELECTION_HELP)
+
+    if _looks_like_all_file_result_set_reference(question):
+        return FileResultSetSelection(paths=candidates)
+
+    return None
 
 
 def looks_like_result_set_followup(question: str) -> bool:

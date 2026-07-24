@@ -9,6 +9,10 @@ from ai.repo_meta.category import resolve_repo_content_category_scope
 from ai.structured_skill_summary import summarize_structured_skill_summary_with_remote
 from ai.decision_result import parse_decision_result, render_decision_result
 from app.dialog_state_machine import ConversationState, apply_event_to_state, detect_dialog_event
+from app.dialog.result_set import (
+    has_selectable_result_set,
+    resolve_file_result_set_selection,
+)
 from app.domain_dispatch_port import DomainDispatchPort, dispatch_domain_request
 from app.chat_retrieval_flow import (
     build_retrieval_materials,
@@ -31,6 +35,23 @@ from app.file_actions.loop import handle_file_action_turn
 from infra.file_change_store import FileChangeStore
 from retrieval.search_engine import determine_query_flags
 import app.chat_loop_handlers as _loop_handlers
+
+
+def _visible_file_result_set_paths(state: ConversationState) -> list[str]:
+    if state.last_result_set_entity_type != "文件":
+        return []
+    if not has_selectable_result_set(
+        state.last_result_set_items,
+        state.last_result_set_entity_type,
+        state.last_answer_text or state.last_answer_preview,
+        state.last_result_set_selectable,
+    ):
+        return []
+    return [
+        str(path or "").strip()
+        for path in (state.last_result_set_items or [])
+        if str(path or "").strip()
+    ]
 
 
 def run_chat_loop(
@@ -91,6 +112,43 @@ def run_chat_loop(
                 logger,
                 focused_file=current_focus_file,
             )
+            visible_file_paths = _visible_file_result_set_paths(
+                runtime.conversation_state
+            )
+            file_result_set_selection = resolve_file_result_set_selection(
+                question,
+                visible_file_paths,
+            )
+            if (
+                file_result_set_selection is not None
+                and file_result_set_selection.rejection is not None
+            ):
+                rejection = file_result_set_selection.rejection
+                logger.info("🛡️ [文件结果集选择守门] 本地拒绝")
+                print_answer(rejection, start_qa)
+                append_memory(memory_buffer, question, rejection)
+                runtime.conversation_state = update_state_after_local_answer(
+                    runtime.conversation_state,
+                    question=question,
+                    answer=rejection,
+                    route="normal_retrieval",
+                    local_topic=None,
+                    is_content_answer=False,
+                )
+                continue
+            selected_file_paths = (
+                file_result_set_selection.paths
+                if file_result_set_selection is not None
+                else None
+            )
+            if runtime.conversation_state.last_result_set_entity_type == "文件":
+                query_result_set_items = (
+                    list(selected_file_paths) if selected_file_paths else None
+                )
+                query_result_set_entity = "文件" if selected_file_paths else None
+            else:
+                query_result_set_items = runtime.conversation_state.last_result_set_items
+                query_result_set_entity = runtime.conversation_state.last_result_set_entity_type
             local_answer = runtime.try_handle_contextless_followup(
                 question=question,
                 state=runtime.conversation_state,
@@ -222,16 +280,18 @@ def run_chat_loop(
             runtime.conversation_state.last_user_question = question
             runtime.conversation_state.last_route = "normal_retrieval"
             runtime.conversation_state.last_local_topic = None
-            result_set_summary_answer = _loop_handlers._try_answer_file_result_set_topic_summary(
-                question=question,
-                event_name=event.name,
-                repo_state=repo_state,
-                conversation_state=runtime.conversation_state,
-                model_emb=model_emb,
-                logger=logger,
-                ollama_api_url=ollama_api_url,
-                ollama_model=ollama_model,
-            )
+            result_set_summary_answer = None
+            if selected_file_paths is None or len(selected_file_paths) != 1:
+                result_set_summary_answer = _loop_handlers._try_answer_file_result_set_topic_summary(
+                    question=question,
+                    event_name=event.name,
+                    repo_state=repo_state,
+                    conversation_state=runtime.conversation_state,
+                    model_emb=model_emb,
+                    logger=logger,
+                    ollama_api_url=ollama_api_url,
+                    ollama_model=ollama_model,
+                )
             if result_set_summary_answer:
                 print_answer(result_set_summary_answer, start_qa)
                 append_memory(memory_buffer, question, result_set_summary_answer)
@@ -246,7 +306,11 @@ def run_chat_loop(
             flags = determine_query_flags(question)
             analytic_retrieval = _loop_handlers.looks_like_analytic_retrieval_question(
                 question,
-                has_collection_context=bool(runtime.conversation_state.last_result_set_items),
+                has_collection_context=(
+                    bool(selected_file_paths)
+                    if runtime.conversation_state.last_result_set_entity_type == "文件"
+                    else bool(runtime.conversation_state.last_result_set_items)
+                ),
                 has_selected_candidate=bool(runtime.conversation_state.last_selected_candidate),
             )
             category_scope_label = None
@@ -272,8 +336,8 @@ def run_chat_loop(
                 last_effective_search_query=runtime.conversation_state.last_effective_search_query,
                 last_user_question=runtime.conversation_state.last_content_user_question,
                 last_answer_type=runtime.conversation_state.last_answer_type,
-                last_result_set_items=runtime.conversation_state.last_result_set_items,
-                last_result_set_entity_type=runtime.conversation_state.last_result_set_entity_type,
+                last_result_set_items=query_result_set_items,
+                last_result_set_entity_type=query_result_set_entity,
                 last_selected_candidate=runtime.conversation_state.last_selected_candidate,
                 last_selected_source_files=runtime.conversation_state.last_selected_source_files,
                 last_relevant_indices=last_relevant_indices,
@@ -283,6 +347,15 @@ def run_chat_loop(
             )
             if not flags["skip_retrieval"] and search_query.strip():
                 runtime.conversation_state.last_effective_search_query = search_query.strip()
+            retrieval_allowed_paths = category_scope_paths
+            if selected_file_paths is not None:
+                retrieval_allowed_paths = set(selected_file_paths)
+                if category_scope_paths is not None:
+                    retrieval_allowed_paths.intersection_update(category_scope_paths)
+            if selected_file_paths is not None:
+                logger.info(
+                    f"🎯 [文件结果集范围] 限定为 {len(retrieval_allowed_paths)} 个文件"
+                )
             materials = build_retrieval_materials(
                 question=question,
                 search_query=search_query,
@@ -294,7 +367,7 @@ def run_chat_loop(
                 current_focus_file=current_focus_file,
                 last_relevant_indices=last_relevant_indices,
                 event=event,
-                allowed_paths=category_scope_paths,
+                allowed_paths=retrieval_allowed_paths,
                 scope_label=category_scope_label,
                 selected_source_files=runtime.conversation_state.last_selected_source_files,
             )
@@ -424,7 +497,7 @@ def run_chat_loop(
                 timeline_evidence_text=materials["timeline_evidence_text"],
                 question=question,
                 event_name=event.name,
-                result_set_items=runtime.conversation_state.last_result_set_items,
+                result_set_items=query_result_set_items,
                 selected_candidate=runtime.conversation_state.last_selected_candidate,
                 selected_source_files=runtime.conversation_state.last_selected_source_files,
             )
