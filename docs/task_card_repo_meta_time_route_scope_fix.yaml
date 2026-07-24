@@ -958,6 +958,41 @@ stop_conditions:
   - after_fix_v2 需要改写问题、修改语料或事后调参才能通过
   - 任一停止条件触发后不得提交部分修复
 
+completion_record:
+  status: completed
+  implementation_commit:
+    hash: 0f0c11a
+    subject: "fix(core): 收紧文件时间路由边界"
+  goal_alignment:
+    - 普通正文中的时间、周期与期限问题不再仅凭宽泛时间词进入 repo_meta/time。
+    - 明确文件对象、元数据动作、日期/排序意图与文件结果集上下文正例保持可路由。
+    - 状态机与 classifier 使用领域无关的正向意图边界，没有引入行业黑名单。
+    - runner、Domain SDK、Host、招聘插件与 handled 结果语义未修改。
+  tracked_evidence:
+    - public_tests/state/test_repo_meta_time_route_contract.py
+    - test_query_router_repo_meta.py
+    - >-
+      0f0c11a 的提交仅修改三处 repo-meta 生产判定文件和两份 tracked 契约测试，
+      对应本卡授权的正反例边界。
+  historical_local_acceptance:
+    status: passed
+    evidence_summary:
+      - 定向联合测试：89 passed
+      - repo-meta 本地辅助：50 passed
+      - tracked 路由契约：39 passed
+      - 文件历史：7 passed
+      - runner/状态契约：41 passed
+      - 招聘插件：7 passed
+      - public tests：82 passed
+      - tracked pytest：207 passed
+      - py_compile：通过
+      - 六题完整回归：Q1 至 Q6 全部 PASS，原始 Q1 进入 normal_retrieval
+    evidence_policy: >-
+      after_fix_v2 位于 Git ignored 的本地验收目录，只提供历史真实回归证据；
+      它不进入 Git，也不能成为新 clone 唯一可复现依据。正式复现以 tracked 契约测试、
+      提交内容和任务卡命令为基础。
+    current_task_note: 本次 docs-only 收口不重新运行运行时或全量测试。
+
 implementation_permissions:
   granted_when:
     - 本任务卡已合入当前实施分支

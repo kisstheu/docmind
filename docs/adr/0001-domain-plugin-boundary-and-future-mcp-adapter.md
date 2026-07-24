@@ -2,13 +2,17 @@
 
 - 状态：Proposed
 - 日期：2026-07-14
-- 实施状态：协议 spike 与独立 Domain SDK protocol 1.0 已完成；空 Host 接入尚未开始
+- 当前实施基线：`arch/domain-plugin-spike` 的 `0f0c11a`
+- 实施状态：独立 SDK、Empty/Static Host、最小 handled 消费与招聘 JD 插件默认接线已完成；完整 Host 治理尚未完成
 - 决策范围：领域能力边界、Host、SDK、进程内适配与未来 MCP 适配
-- 非目标：本轮不迁移现有业务逻辑，不实现任何具体领域插件，不改变线上路由或回答行为
+- 当前非目标：不在已交付窄切片中实现完整插件治理、动态发现、多插件仲裁、Source/Evidence 同步、进程隔离或 MCP
 
 ## 1. 决策摘要
 
 DocMind 采用“通用 Core + 领域无关 Host + 中立 SDK/线协议 + 独立领域插件”的架构。
+
+本节描述完整目标架构。当前仓库只交付了其中的窄切片，不能把下述 Host 完整职责
+理解为现有 `StaticDomainHost` 已全部具备的运行时保证。
 
 Core 只负责通用对话调度、Source 范围、序号选择、焦点交互和通用检索降级。Host 负责插件发现、协议校验、生命周期、超时、熔断、调用和降级。SDK 只定义可序列化 DTO 与端口。具体领域插件独立安装，只依赖 SDK/线协议，自行拥有领域 schema、缓存、版本和模型策略。
 
@@ -17,6 +21,32 @@ Core 只负责通用对话调度、Source 范围、序号选择、焦点交互�
 Core 和 Host 均不得静态 import 具体插件。未安装插件、插件未认领、协议不兼容、超时、异常或返回越界证据时，必须沿用原始问题和原始 Source 范围进入通用检索。
 
 首版先以进程内适配器验证端口，不把 Python 对象身份当作协议的一部分。后续 MCP 适配器实现同一端口，DTO 原样映射为 JSON，Core 无需理解具体领域或改写状态模型。
+
+### 1.1 当前实施状态
+
+截至 `0f0c11a`，已完成：
+
+- 独立 `docmind-domain-sdk` protocol 1.0、严格 DTO、Schema 和边界校验；
+- Core 中立 `DomainDispatchPort`、`EmptyDomainHost` 以及 composition root 注入；
+- `StaticDomainHost` 对单个静态插件的一次 `execute` 调用和结果边界校验；
+- Core 对纯 Markdown、默认 `preserve`、无 Evidence/warnings/error 的最小
+  `handled` profile 的直接呈现与旧检索状态收口；
+- 独立 `docmind-recruitment-plugin` 的单份单岗位结构化 JD 明示约束提取；
+- 默认生产启动链创建招聘插件并注入 `StaticDomainHost`；
+- 无插件时由 `EmptyDomainHost` 返回未处理，原问题继续旧的通用检索链。
+
+当前实现仍是静态单插件窄切片：
+
+- `DomainRequest.deadline_ms` 已存在于 protocol 1.0 DTO，但
+  `StaticDomainHost` 当前不强制执行、取消或终止该 deadline；
+- timeout 安全回退、retry、circuit breaker 和完整异常治理属于未来完整 Host 切片；
+- `describe/start/sync_sources/probe/stop` 虽属于 SDK 协议，当前生产 Host 不调用；
+- 动态插件发现、多插件仲裁、完整生命周期、Source/Evidence 同步、richer handled
+  profile、`PluginInteractionState`、插件进程隔离和 MCP 均未完成；
+- 默认生产链目前静态启用招聘插件，尚无插件启用开关或渐进切流治理。
+
+因此，本 ADR 保持 `Proposed`：已交付切片用于验证边界和最小用户可见闭环，完整目标架构
+仍需后续任务逐步落地。
 
 ## 2. 背景与当前问题
 
@@ -29,7 +59,8 @@ DocMind 当前的核心链路已经覆盖通用路由、多轮状态、向量检
 3. 新增领域需要修改主流程并承担全局回归风险；
 4. Core 内部对象成为事实协议，阻断独立进程、MCP 和跨语言实现。
 
-本 ADR 把这些现状视为后续迁移对象，而不是在本轮修改它们。目标约束是迁移完成后的架构门槛；当前仓库尚不满足该门槛。
+本 ADR 把这些现状视为后续迁移对象。已交付窄切片没有迁移这些 Core 领域耦合；
+目标约束仍是完整迁移后的架构门槛，当前仓库尚不满足该门槛。
 
 ## 3. 仓库现状调查
 
@@ -37,12 +68,12 @@ DocMind 当前的核心链路已经覆盖通用路由、多轮状态、向量检
 
 | 链路 | 当前入口 | 推荐扩展点 | 边界要求 |
 | --- | --- | --- | --- |
-| 启动与生命周期 | `ask_notes.py:169-191` 构建 `RepoState` 后直接进入 `run_chat_loop` | 未来 composition root 在索引可用后创建 Host，并注入 `DomainDispatchPort`；退出路径统一 stop | Host 只接收中立 Source 目录适配器，不向插件暴露 `RepoState` |
-| 通用路由守门 | `app/chat_loop_parts/runner.py:84-196` 依次处理事件、系统能力、仓库元信息、闲聊、越界 | 所有通用守门完成且路由仍为 `normal_retrieval` 后，通过注入端口尝试领域认领 | 插件建议不能覆盖 Core 的显式守门结论；Core 不 import Host |
-| 普通检索入口 | `app/chat_loop_parts/runner.py:197-279` 构造查询并调用 `build_retrieval_materials` | 在进入现有检索细节前调用 `DomainDispatchPort.dispatch`；未处理时原样继续当前路径 | 降级必须保留原问题、Source 范围和现有通用行为 |
+| 启动与生命周期 | `ask_notes.py` 在索引可用后创建默认静态 Host 并注入 `run_chat_loop` | 当前只创建招聘插件和 `StaticDomainHost`；未来补充启停、健康检查与统一 stop | Host 只接收中立 DTO，不向插件暴露 `RepoState` |
+| 通用路由守门 | `app/chat_loop_parts/runner.py` 先处理事件、系统能力、仓库元信息、闲聊和越界 | 守门完成后通过注入端口执行领域 dispatch；当前静态 Host 不调用 `probe` | 插件结果不能覆盖 Core 的显式守门结论；Core 不 import 具体 Host 或插件 |
+| 普通检索入口 | `app/chat_loop_parts/runner.py` 的 `normal_retrieval` 前置 dispatch 点 | 最小 handled profile 直接呈现；其余结果和异常继续当前检索路径 | 降级保留原问题和现有通用行为；当前 `source_scope` 仍为空 |
 | Source 范围 | `app/retrieval_flow/materials.py:47-98` 将路径约束映射到 chunk 索引 | 增加 `SourceCatalog`/`SourceSync` 适配层，将内部文件与文本转换为 `SourceRef`/`SourceSnapshot` | 适配在 Host 一侧完成，插件不接收路径数组、chunk 索引或内部对象 |
 | 结果集交互 | `app/dialog/result_set.py:116-165,305-358` 判断集合追问并拼查询 | 保留领域无关的“集合、序号、选中项”语义，插件结果直接提供 `OpaqueFocus` | Core 不推断插件实体类型，不从回答文本反解析领域记录 |
-| 状态写回 | `app/dialog/state_machine.py:134-166` 与 `app/chat_state_helpers.py:159-447` | 增加单一的 `PluginInteractionState`，只保存不透明焦点 | 不保存领域字段、插件 schema 行或插件缓存内容 |
+| 状态写回 | 当前最小 handled 后重置旧 `ConversationState` 和 runner 局部焦点 | 未来增加单一 `PluginInteractionState`，只保存不透明焦点 | 当前不消费 richer `FocusUpdate`，也不保存领域字段、插件 schema 行或插件缓存内容 |
 | 模型调用 | `app/chat_loop_parts/runner.py` 最终生成、`ai/query_router.py` 本地路由、`app/retrieval_flow/routing.py` 概括 | 领域插件自行决定其内部模型策略；Core 只保留通用模型路径 | 不向插件传递当前模型 client；若未来共享模型，另建可序列化 broker 协议 |
 
 ### 3.2 当前容易耦合领域规则的入口
@@ -275,6 +306,10 @@ OpaqueFocus
 
 ## 11. 调用、失败与降级
 
+本节规定完整 Host 的目标行为。当前 `StaticDomainHost` 只覆盖单插件 `execute` 和结果
+边界校验，Core-facing dispatch helper 将调用异常映射为未处理；当前尚未实现本节中的
+发现、生命周期、Source 同步、`probe`、超时执行、retry 或 circuit breaker。
+
 ### 11.1 启动
 
 1. Core 建立通用索引；
@@ -314,9 +349,13 @@ Host 不按领域名、插件 ID、实体后缀或字段词表写分支。active
 
 连续失败触发按插件维度的短时熔断；熔断不能关闭通用检索。
 
-## 12. 第一个纵向切片（仅定义，不实现）
+特别地，protocol 1.0 的 `DomainRequest.deadline_ms` 当前只是随请求传递的 DTO 字段。
+现有 `StaticDomainHost` 不据此建立计时器，也不提供可强制取消的超时保证。超时后安全
+回退普通检索仍是未来完整 Host 的验收目标，不是当前窄切片已经具备的能力。
 
-验收对话：
+## 12. 第一个纵向切片愿景与当前最小实现
+
+最初 ADR 用以下三轮对话定义完整纵向切片愿景：
 
 1. “有哪些岗位？”
 2. “这些岗位分别来自哪些公司？”
@@ -332,43 +371,41 @@ Host 不按领域名、插件 ID、实体后缀或字段词表写分支。active
 
 Core 不需要知道第 1 轮 collection 是岗位，也不需要知道第 2 轮 collection 是公司。它只保证显示顺序与 `OpaqueFocus[]` 顺序一致，并把结构化序号解析结果传回同一插件。领域名词由插件在 `probe/execute` 内理解。
 
-### 12.2 插件未来拥有的能力
+当前已交付的招聘插件只处理**单轮 query 中直接提供的、具有明确结构锚点的单份单岗位
+JD**，提取原文明示约束并返回最小纯 Markdown handled profile；不满足严格门槛时
+`abstain` 并回落旧链路。它不实现上述三轮集合交互愿景。
 
-- 招聘材料识别；
-- 岗位与公司结构化记录；
+### 12.2 完整纵向切片仍需的能力
+
+- 超出当前 query 的招聘 Source 识别与同步；
+- 可跨轮引用的岗位与公司结构化记录；
 - 岗位—公司关系；
 - 字段级 Evidence；
 - 低置信度、冲突和缺失字段；
 - 推荐和详细分析；
 - 自有 schema、索引缓存、版本迁移和 opaque ID 兼容。
 
-### 12.3 本切片不包含
+### 12.3 历史范围与当前边界
 
-- 不实现招聘插件；
+- 协议 spike 阶段不实现招聘插件、也不改变生产行为；该历史限制已由后续独立任务解除；
+- 当前已实现招聘 JD 最小插件并静态接入默认生产启动链；
 - 不迁移现有 Core 规则；
-- 不为了三轮对话修改 prompt、路由、召回或状态；
-- 不承诺当前分支可通过这三轮验收；
+- 不为了上述三轮对话修改 prompt、路由、召回或状态；
+- 当前不承诺通过上述完整三轮集合交互验收；
 - 不把示例领域字段加入 SDK 或 Host。
 
-## 13. 最小目录草案
+## 13. 当前目录与未来扩展
 
 ```text
 docmind repository
 ├── bootstrap/
-│   └── domain_composition.py        # future: creates Host and injects neutral port
+│   └── domain_composition.py        # current: creates Empty/Static Host
 ├── app/
-│   ├── domain_dispatch_port.py      # future: Core-facing neutral port only
-│   └── domain_host/                 # future: concrete neutral orchestration
-│       ├── host.py
-│       ├── discovery.py
-│       ├── lifecycle.py
-│       ├── validation.py
-│       ├── state_bridge.py
-│       └── adapters/
-│           ├── in_process.py
-│           └── mcp.py
+│   ├── domain_dispatch_port.py      # current: Core-facing neutral port
+│   └── domain_host/
+│       └── host.py                  # current: EmptyDomainHost / StaticDomainHost
 ├── packages/
-│   └── docmind-domain-sdk/          # separately publishable neutral package
+│   ├── docmind-domain-sdk/          # current: independently buildable neutral package
 │       ├── pyproject.toml
 │       ├── scripts/                  # Schema、编码与 wheel 内容检查
 │       ├── tests/                    # SDK 自有契约测试
@@ -379,23 +416,33 @@ docmind repository
 │           ├── errors.py
 │           ├── py.typed
 │           └── schemas/protocol-1.0.schema.json
+│   └── docmind-recruitment-plugin/  # current: independent recruitment plugin package
+│       ├── pyproject.toml
+│       ├── tests/
+│       └── src/docmind_recruitment_plugin/
+│           ├── plugin.py
+│           ├── recognition.py
+│           ├── extraction.py
+│           └── rendering.py
 └── docs/
     ├── adr/
     └── spikes/domain_plugin_protocol/
 
-independent plugin distribution
-├── pyproject.toml                   # declares docmind.domain_plugins.v1 entry point
-└── src/provider_package/
-    ├── bootstrap.py
-    ├── plugin.py
-    ├── schema/
-    ├── storage/
-    └── migrations/
+future Host extensions
+├── discovery.py
+├── lifecycle.py
+├── state_bridge.py
+└── adapters/
+    ├── in_process.py
+    └── mcp.py
 ```
 
 具体领域插件目录不进入 Core 包，也不由 Core 仓库 import。SDK 即使暂存于同一 monorepo，也必须能独立构建和发布。
 
-`app/domain_dispatch_port.py` 是 Core 可见的中立 application port；`bootstrap/domain_composition.py` 可以依赖具体 Host 并完成注入。Core 运行模块不得从 `app/domain_host/` import 实现类。本目录仅为后续草案，本轮不创建这些生产文件。
+`app/domain_dispatch_port.py` 是 Core 可见的中立 application port；
+`bootstrap/domain_composition.py` 依赖具体 Host 并完成注入。Core 运行模块不从
+`app/domain_host/` 或具体插件包 import 实现类。动态发现、生命周期、状态桥和 MCP
+adapter 仍只是未来目录方向，当前尚未创建。
 
 ## 14. 从进程内实现迁移到 MCP Server
 
@@ -461,15 +508,16 @@ independent plugin distribution
 
 1. **协议 spike（已完成）**：ADR、严格 DTO、JSON 往返、额外字段拒绝、Source 越界拒绝；未接生产逻辑。
 2. **独立 SDK（已完成 protocol 1.0）**：草案已提取为可单独构建和安装的 `docmind-domain-sdk`，包含 protocol 1.0 JSON Schema；当前未发布到制品仓库。
-3. **空 Host 接入（尚未开始）**：只接发现、生命周期和熔断；没有插件时运行结果必须与当前通用路径一致。
-4. **Source 边界**：增加中立 `SourceCatalog/SourceSync` 适配器，确保插件只见 DTO；覆盖增量、删除、版本变化和权限裁剪。
-5. **不透明状态**：增加 `PluginInteractionState` 和通用序号解析；先影子写入，不删除旧状态。
-6. **中立契约插件**：用合成数据验证发现、同步、claim、execute、失败、超时、卸载和降级，不加入领域字段。
-7. **外部领域插件**：在独立发布物中实现第一个纵向切片；插件内部完成材料识别、结构化、关系和证据。
-8. **影子运行**：领域插件结果不直接回答，先对比现有路径；满足命中、相邻误触发和跨域反例，且至少覆盖招聘、合同、采购三类异质样本。
-9. **逐步切流**：通过环境开关启用 Host 回答；插件失败必须有“应走通用检索且不丢回答”的回归。
-10. **清理 Core 耦合**：只在插件能力稳定后删除现有领域规则、回答解析和领域状态；执行 Core 禁词/import 扫描及全量回归。
-11. **MCP 适配**：用同一契约测试把插件迁到本地 stdio MCP server，再评估远程运行。
+3. **空 Host 接入（已完成）**：composition root 可注入 `EmptyDomainHost`；没有插件时运行结果与原通用路径一致。
+4. **静态单插件调用（已完成窄切片）**：`StaticDomainHost` 每轮调用一次 `execute`，校验结果边界；尚无 `probe`、生命周期和超时执行。
+5. **最小 handled 消费（已完成窄切片）**：纯 Markdown、默认 `preserve`、无 Evidence/warnings/error 的结果可直接回答；其他 profile 回落旧链路。
+6. **首个外部领域插件（已完成窄切片）**：独立招聘 JD 插件实现单份单岗位明示约束提取，并静态接入默认生产启动链。
+7. **Source 与 Evidence 边界（尚未开始）**：增加中立 `SourceCatalog/SourceSync` 适配器，覆盖增量、删除、版本变化、权限裁剪和 Evidence 呈现。
+8. **完整 Host 失败治理（尚未开始）**：实现并验证 deadline 强制执行、timeout 安全回退、retry、circuit breaker、完整生命周期和异常矩阵。
+9. **richer handled 与不透明状态（尚未开始）**：消费非默认 `FocusUpdate`、Evidence 和 warnings，增加 `PluginInteractionState` 与通用序号解析。
+10. **发现、仲裁与切流治理（尚未开始）**：动态发现、多插件认领冲突、默认插件启用开关、影子运行和渐进切流。
+11. **清理 Core 耦合（尚未开始）**：只在插件能力稳定后删除现有领域规则、回答解析和领域状态；执行 Core 禁词/import 扫描及全量回归。
+12. **MCP 适配（尚未开始）**：用同一契约测试把插件迁到本地 stdio MCP server，再评估远程运行和进程隔离。
 
 最终 Core 门槛包括：
 
@@ -498,8 +546,9 @@ independent plugin distribution
 - `SourceSyncResult` 返回越界 ID 或 accepted/rejected 交叉 ID 时会被拒绝；
 - 进程内实现满足与未来 transport 共用的 `DomainPlugin` 端口。
 
-SDK 与薄 smoke 均未接入生产代码，不改变当前行为。仓库中不再保留第二份
-可执行协议定义。
+薄 smoke 本身不接生产代码；SDK 已经通过中立 Port、Empty/Static Host 和招聘插件接入
+生产链。只有符合最小 handled profile 的招聘结果会改变当前轮回答，未处理、异常、
+非法结果和无插件路径继续原通用检索。仓库中不再保留第二份可执行协议定义。
 
 ## 19. 风险与待后续决策
 

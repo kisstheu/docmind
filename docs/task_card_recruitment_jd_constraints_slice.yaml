@@ -890,6 +890,48 @@ acceptance_min:
   - SDK、Host、Port、runner、3b、composition factory 和所有禁止范围无差异。
   - 编码、乱码、静态依赖、editable scope 和 git diff --check 检查通过。
 
+completion_record:
+  status: completed_for_approved_slice
+  historical_snapshot_policy: >-
+    本卡前文保留任务制定时的 baseline、A/B1 授权与分阶段门槛；本记录补充后续实际
+    交付，不把历史阶段描述改写成当前事实。
+  phase_results:
+    A_input_reaches_domain_dispatch: passed
+    B1_independent_package_boundary_probe: passed
+    B2_real_package_skeleton_verification: passed
+  implementation_commits:
+    - hash: a10c154
+      subject: "feat(recruitment-plugin): 建立 protocol 1.0 插件骨架"
+      result: 建立可独立安装、只依赖 SDK 顶层 API、可由 StaticDomainHost 注入的正式插件包骨架
+    - hash: 3e46409
+      subject: "feat(recruitment-plugin): 交付单份 JD 明确约束提取"
+      result: 实现单份单岗位结构化 JD 的确定性明示约束提取、稳定 Markdown handled 与保守 abstain
+    - hash: d4edf08
+      subject: "feat(recruitment-plugin): 接入默认启动链"
+      result: 由 ask_notes.py 默认生产 composition 创建招聘插件并注入现有 StaticDomainHost
+  current_scope:
+    - A/B1 预检、正式插件包、B2 骨架复验、JD 最小领域逻辑和默认生产接线均已完成。
+    - 插件只处理当前 query 中具有严格结构锚点的单份单岗位 JD；不满足门槛时 abstain。
+  preserved_non_goals:
+    - 通用招聘智能体、岗位好坏判断或模型推理
+    - DocMind 文件 Source 同步、Evidence、持久化与文件操作
+    - 插件多轮状态、PluginInteractionState、动态发现与多插件治理
+  tracked_evidence:
+    - packages/docmind-recruitment-plugin/tests/test_plugin_contract.py
+    - public_tests/domain/test_recruitment_jd_slice_contract.py
+    - public_tests/domain/test_recruitment_jd_production_wiring_contract.py
+  historical_distribution_evidence:
+    status: passed
+    scope: >-
+      历史本地交付记录证明 SDK 与招聘插件 wheel 在仓库外离线构建，并以非 editable
+      方式安装后完成无 PYTHONPATH import；该 ignored 本地记录不是新 clone 的强制依赖。
+    current_task_note: 本次 docs-only 收口不重新构建 wheel、安装制品或运行 twine。
+  later_integrated_acceptance:
+    status: passed
+    evidence_summary: >-
+      分支后续 after_fix_v2 本地验收记录为招聘插件 7 passed、public tests 82 passed、
+      tracked pytest 207 passed；这些是历史结果，本次不重新运行运行时测试。
+
 implementation_permissions:
   current_task:
     allowed:

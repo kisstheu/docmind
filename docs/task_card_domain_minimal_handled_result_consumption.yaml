@@ -329,6 +329,31 @@ acceptance_min:
   - 没有新增远程/本地模型调用、route、状态字段、PluginInteractionState、插件多轮机制、用户提示、默认日志或异常吞没路径。
   - 只修改批准的 runner、tracked 契约测试和本任务卡，git diff --check 通过。
 
+completion_record:
+  status: completed
+  implementation_commit:
+    hash: 85b0e25
+    subject: "feat(domain-dispatch): 消费最小 handled 结果"
+  completed_scope:
+    - 最小纯 Markdown handled profile 已在 runner 唯一 dispatch 点接入。
+    - 命中时直接呈现 answer_markdown、追加普通 memory，并收口旧 Core 检索控制状态。
+    - 非 handled、端口异常、非法或 non-DomainResult 返回值继续回落原链路。
+    - 合法但带 Evidence、warnings 或非默认 FocusUpdate 的 richer profile 仍不消费并回落。
+  preserved_non_goals:
+    - deadline 强制执行、timeout、retry 与 circuit breaker
+    - 完整插件生命周期、动态发现与多插件仲裁
+    - Evidence、Source 同步、richer FocusUpdate 与插件多轮状态
+  tracked_evidence:
+    - public_tests/domain/test_domain_dispatch_port_empty_host.py
+    - >-
+      85b0e25 的提交记录明确覆盖直接消费、未处理回落、相邻结果边界、跨轮状态
+      收口及 pending action 优先级。
+  later_integrated_acceptance:
+    status: passed
+    evidence_summary: >-
+      分支后续 after_fix_v2 本地验收记录为 public tests 82 passed、tracked pytest
+      207 passed；这些是历史集成结果，本次 docs-only 收口不重新运行运行时测试。
+
 future_tasks:
   - 非默认 FocusUpdate 与 OpaqueFocus 的正式消费语义另立任务。
   - SourceCatalog/SourceSync、Evidence revision 校验后的呈现与引用格式。
