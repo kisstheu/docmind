@@ -1,0 +1,245 @@
+version: 1
+
+task_name: result_set_item_focus_continuation_and_ordinal_correction
+
+task_goal: >-
+  修复文件结果集在单项展开后的后续消费链路：单项焦点能够跨轮延续，
+  原始有序结果集继续保留可选号能力，后续“第 N 个文件”与双文件比较
+  能在结果集解析层稳定收窄范围；序号越界需要本地确定性拒绝，越界后的
+  纠正表达应优先按结果集上下文处理，而不能被文件重命名意图抢占。
+
+task_kind: independent_result_set_state_and_ordinal_fix
+implementation_status: authorized_for_implementation
+
+baseline:
+  branch: main
+  head: 7af4cdb340558d5b50211eaa80b1e6a5b72f9a0c
+  remote_alignment: main 与 origin/main 对齐
+  tracked_worktree: clean
+  related_completed_task_card:
+    - docs/task_card_repo_meta_generic_file_list_scope.yaml
+    - docs/task_card_result_set_detail_followup_generation_fallback.yaml
+  preflight_commands:
+    - git status --short --branch
+    - git log --oneline --decorate -5
+
+user_problem:
+  reproduction:
+    - 当前知识库有哪些文件？
+    - 这些文件分别讲了什么？
+    - 第二个文件再详细说说。
+    - 这个岗位对学历、开发年限和AI项目经验分别有什么要求？
+    - 这些要求里，哪些是硬门槛，哪些更像优先项？
+    - 第五个文件也详细说说。
+    - 它和第二个文件相比，哪个更偏客户项目交付？
+    - 那第十四个文件呢？它最看重什么？
+    - 第二十个文件再详细说说。
+    - 那就改成第十个文件。
+    - Python里的生成器和普通函数有什么区别？
+  confirmed_upstream_state: >-
+    第三轮单文件展开已能正确选择原结果集第二项，并将检索范围限定为该单文件；
+    该修复已完成，且本任务不得回滚或重写这一路径。
+  observed_failure_modes:
+    - 单项展开后，当前选中焦点仅停留在 runner 局部变量，后续轮次无法稳定继承。
+    - 原始 last_result_set_items 虽保留，但在部分写回路径上被 last_result_set_selectable 降级为不可选。
+    - runner 在未显式重新选号时，会把传入检索层的结果集范围清空。
+    - 第 N 个文件加内容问题、双文件比较、越界与越界纠正表达的解析覆盖不足。
+    - “改成第十个文件”会被文件重命名守门优先识别，导致结果集纠正链路被抢占。
+
+root_cause:
+  unified_root: >-
+    系统把原始有序结果集、当前单项焦点、当前内容焦点、可继续选号资格、
+    以及是否应退出旧上下文混在同一套状态与消费逻辑中，导致后续轮次
+    无法稳定地区分“继续在原集合中选项”和“对当前选中项做内容追问”。
+  state_loss: >-
+    last_result_set_items 可以保存原始集合，但当前选中的单项缺少稳定会话字段；
+    current_focus_file 只在 runner 局部传播，无法跨轮成为结果集焦点语义。
+  range_loss: >-
+    runner 在文件结果集场景下会把 query_result_set_items 替换成本轮显式选号，
+    未重新选号时等价于把原始集合从检索和提示约束中移除。
+  ordinal_gap: >-
+    现有单文件序号解析只覆盖“第 N 个文件 + 固定内容 marker”的高置信样式，
+    对“第十四个文件呢？它最看重什么？”这类内容型追问覆盖不足。
+  correction_conflict: >-
+    越界后的“改成第十个文件”缺少结果集纠正优先级守门，因此会先进入 rename
+    语义，而不是回到结果集序号选择层。
+
+semantic_boundary:
+  original_result_set:
+    description: >-
+      首轮通用列表或集合回答形成的有序文件集合，保留原始顺序与完整候选项，
+      供后续序号选择、双文件比较和越界纠正继续使用。
+  current_result_set_focus:
+    description: >-
+      当前从原始结果集中选中的单项文件，表示“正在围绕哪一个文件展开”。
+      它与原始集合并存，但语义独立，不能用来替代原集合。
+  content_followup_anchor:
+    description: >-
+      当前文件内容追问的语义锚点，来源于当前焦点文件与上一轮内容语义，
+      但上一轮回答文本只能作为语义辅助，不能充当新的事实证据。
+  ordinal_selection:
+    description: >-
+      “第 N 个文件”及其等价表达在结果集解析层确定性落到原始有序集合中的
+      具体项，再把选中项写回当前结果集焦点。
+  comparison_scope:
+    description: >-
+      “它和第二个文件相比”这类比较问句应先解析出两个明确文件，再把检索
+      范围收窄到这两个文件，不得扩大到整个集合。
+  correction_scope:
+    description: >-
+      序号越界后的纠正表达应优先理解为结果集序号修正，而不是文件改名意图；
+      只有在缺少结果集纠正上下文或明确文件名改名语义时，才进入 rename。
+  independent_question:
+    description: >-
+      诸如“Python里的生成器和普通函数有什么区别？”的独立问题必须退出旧
+      结果集上下文，回到当前知识库的正常证据约束。
+
+state_contract:
+  proposed_field: last_result_set_focus_file
+  semantics: >-
+    表示当前从原始文件结果集中选中的单项文件。该字段与 last_result_set_items
+    并存，但不替代原集合，且不等同于 selected_candidate 或 current_focus_file 的
+    通用检索焦点。
+  write_points:
+    - 单项展开成功并进入当前文件内容追问时写入。
+    - 第 N 个文件内容追问成功解析后写入。
+    - 双文件比较中当前指代项解析后写入。
+    - 越界纠正后成功切换到合法序号时写入。
+  carry_points:
+    - 当前文件内容追问继续沿用。
+    - 结构化归纳、比较和说明类问句继续沿用。
+    - 原集合仍可继续选号时，保留 last_result_set_items 和当前焦点并行存在。
+  clear_points:
+    - 创建新的文件结果集时清空。
+    - 用户明确回到整个集合时清空。
+    - 独立新问题退出旧上下文时清空。
+    - 焦点文件被重命名、删除或不可用时清空。
+    - 现有明确清理文件结果集上下文的场景继续清空。
+
+implementation_constraints:
+  - 先补 tracked 红测，再改生产代码。
+  - 保持单文件展开生成回退修复不退化。
+  - 不修改 embedding、召回评分、文件排序和索引逻辑。
+  - 不修改远程 Prompt 系统。
+  - 不通过硬编码完整测试句或具体文件名通过验收。
+  - 不让所有后续问题永久继承旧结果集。
+  - 不把上一轮模型回答当事实证据。
+  - 结果集纠正优先级必须通过上下文和状态守门实现，不靠大量固定短语。
+  - 真实文件改名能力必须继续可用。
+
+editable_scope:
+  allow:
+    - docs/task_card_result_set_item_focus_continuation_and_ordinal_correction.yaml
+    - app/chat_loop_parts/runner.py
+    - app/dialog/state_machine.py
+    - app/dialog/result_set.py
+    - app/chat_state_helpers.py
+    - app/file_actions/requests.py
+    - app/file_flows/rename.py
+    - public_tests/state/test_repo_meta_generic_file_list_scope_contract.py
+  deny:
+    - docs/task_card_repo_meta_generic_file_list_scope.yaml
+    - docs/task_card_result_set_detail_followup_generation_fallback.yaml
+    - retrieval/**
+    - packages/docmind-domain-sdk/**
+    - packages/docmind-recruitment-plugin/**
+    - examples/**
+    - tests/**
+    - test_notes/**
+
+non_goals:
+  - 修改 embedding、召回评分、文件排序和索引逻辑
+  - 修改远程 Prompt 系统
+  - 回滚单文件展开生成回退修复
+  - 大规模 ConversationState 重构
+  - 把上一轮模型回答当事实证据
+  - 让所有后续问题永久继承旧结果集
+  - 通过硬编码具体文件名、岗位名称或完整测试问句通过验收
+  - 修改真实文件改名能力的业务语义
+  - 增加与本任务无关的功能
+
+privacy_guard:
+  - 测试只使用合成文件名、合成文本和离线替身。
+  - 不写入真实公司名、人名、联系方式或用户知识库内容。
+  - 不依赖本地私有资料或绝对路径样本。
+
+test_matrix:
+  focus_continuation:
+    - 当前知识库有哪些文件？
+    - 这些文件分别讲了什么？
+    - 第二个文件再详细说说。
+    - 这个岗位对学历、开发年限和AI项目经验分别有什么要求？
+  content_followup:
+    - 这些要求里，哪些是硬门槛，哪些更像优先项？
+  focus_switch:
+    - 第五个文件也详细说说。
+    - 它和第二个文件相比，哪个更偏客户项目交付？
+  ordinal_selection:
+    - 那第十四个文件呢？它最看重什么？
+    - 第二十个文件再详细说说。
+  ordinal_correction:
+    - 第二十个文件再详细说说。
+    - 那就改成第十个文件。
+  rename_regression:
+    - 把“旧名称.txt”改成“新名称.txt”
+  independence:
+    - Python里的生成器和普通函数有什么区别？
+  non_regression:
+    - 原文件列表、集合综合回答和序号选择保持既有行为。
+    - 单文件展开生成回退修复不退化。
+    - 普通集合归纳不会错误收缩到当前单项。
+
+verification:
+  task_card:
+    - UTF-8 可解码且无 BOM
+    - yaml.safe_load 可解析
+    - 递归检查无重复键
+    - 不含真实身份信息、真实知识库内容或用户绝对路径
+  targeted:
+    - >-
+      PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider
+      public_tests/state/test_repo_meta_generic_file_list_scope_contract.py
+  public:
+    - >-
+      PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider public_tests
+  full:
+    - >-
+      PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider
+      tests packages/docmind-domain-sdk/tests packages/docmind-recruitment-plugin/tests
+      public_tests test_query_router_repo_meta.py
+  static:
+    - git diff --check
+    - git diff --cached --check
+    - rg -n "result_set_focus_file|第十四个文件|第二十个文件|改成第十个文件" app public_tests docs -S
+  cli:
+    - 使用合成索引与离线模型替身运行真实 CLI 多轮复现
+
+  acceptance:
+  - 单项展开后，“这个岗位”仍限定当前文件。
+  - “这些要求”继续使用当前文件证据。
+  - 第二项切换到第五项后，原集合仍保留。
+  - 当前焦点正确更新为第五项。
+  - “它和第二个文件相比”只允许两个文件。
+  - 后续仍可选择第十四项。
+  - '"第十四个文件 + 最看重什么" 可被识别。'
+  - 第二十项本地越界，不检索、不生成。
+  - 越界后的“改成第十个文件”按序号纠正。
+  - 真实改名仍进入 rename。
+  - 独立新问题退出旧上下文。
+  - 普通集合归纳不会错误缩到当前单项。
+  - 没有当前焦点时，“这个岗位”不会随意猜测。
+  - 当前焦点清理后不会复活。
+  - 原单文件展开生成回退契约不退化。
+  - 原文件列表、集合综合回答和序号选择契约不退化。
+  - 新增测试位于 tracked public_tests 或有明确理由的新 tracked 公共测试文件。
+  - 完整回归通过，且最终不 push。
+
+completion_record_requirements:
+  - 记录任务卡路径、核心边界和根因。
+  - 记录红测、定向测试、公共测试与全量回归结果。
+  - 记录真实 CLI 的关键日志与范围结论。
+  - 记录 YAML、编码、重复键、隐私和路径扫描结果。
+  - 记录实际修改文件和未触碰的非目标。
+  - 记录两个本地 commit hash、message 和 git show --stat。
+  - 记录最终 git status --short --branch。
+  - 明确未 push。
