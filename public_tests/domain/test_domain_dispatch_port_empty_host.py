@@ -356,7 +356,6 @@ def _run_turn(
         lambda **_kwargs: None if generate else "受控本地结果",
     )
     monkeypatch.setattr(runner, "maybe_build_file_location_answer", lambda **_kwargs: None)
-    monkeypatch.setattr(runner, "looks_like_focused_file_content_question", lambda _q: False)
     monkeypatch.setattr(runner, "maybe_build_direct_lookup_answer", lambda **_kwargs: None)
     monkeypatch.setattr(
         runtime,

@@ -24,9 +24,59 @@ _FILE_SET_CONTENT_TERMS = (
     "讲了什么", "讲什么", "说了什么", "说什么", "记录了什么", "记录什么",
     "主要记录", "大致说", "主要涉及什么",
 )
-_FOCUSED_FILE_CONTENT_TERMS = (
-    "说了啥", "说了什么", "讲了啥", "讲了什么", "什么内容", "内容是什么",
-    "总结一下", "总结下", "概括一下", "概括下", "主要写了什么", "写了什么",
+_FOCUS_REFERENCE_PREFIXES = (
+    "它",
+    "其",
+    "这个",
+    "那个",
+    "这些",
+    "那些",
+    "其中",
+    "这里",
+    "这里面",
+    "上述",
+    "前述",
+    "前面提到的",
+    "刚才这个",
+)
+_STRONG_FOCUS_REFERENCE_PREFIXES = (
+    "它",
+    "其",
+    "这些",
+    "那些",
+    "其中",
+    "这里",
+    "这里面",
+    "上述",
+    "前述",
+    "前面提到的",
+    "刚才这个",
+)
+_GENERAL_QUESTION_MARKERS = (
+    "一般",
+    "通常",
+    "普遍",
+    "一般来说",
+    "通常情况下",
+    "原则上",
+    "应该如何",
+    "应当如何",
+)
+_SELF_CONTAINED_QUESTION_OPERATORS = (
+    "为什么",
+    "为何",
+    "怎么",
+    "怎样",
+    "如何",
+    "什么区别",
+    "有何区别",
+    "有什么不同",
+    "是否",
+    "能否",
+    "多久",
+    "多少",
+    "是什么",
+    "有哪些",
 )
 
 
@@ -46,13 +96,62 @@ def looks_like_file_set_content_question(question: str) -> bool:
     return True
 
 
-def looks_like_focused_file_content_question(question: str) -> bool:
+def has_explicit_focus_reference(question: str) -> bool:
+    """Return whether the question explicitly refers back to the active object."""
     q = re.sub(r"[，。！？?.!?\s]+", "", (question or ""))
     if not q:
         return False
     if re.search(r"(?:哪些|哪个|哪几|哪张|哪份).*(?:文件|文档|截图|资料|记录)", q):
         return False
-    return any(term in q for term in _FOCUSED_FILE_CONTENT_TERMS)
+    q = re.sub(r"^(?:请问|请|那么|再问一下)", "", q)
+    if any(q.startswith(prefix) for prefix in _FOCUS_REFERENCE_PREFIXES):
+        return True
+    return q.startswith("该") and not q.startswith(("该如何", "该怎么", "该怎样"))
+
+
+def looks_like_standalone_question(question: str) -> bool:
+    """Identify self-contained questions that should leave an old file focus."""
+    q = re.sub(r"[，。！？?.!?\s]+", "", (question or ""))
+    if not q:
+        return False
+    reference_text = re.sub(r"^(?:请问|请|那么|再问一下)", "", q)
+    if any(
+        reference_text.startswith(prefix)
+        for prefix in _STRONG_FOCUS_REFERENCE_PREFIXES
+    ):
+        return False
+    if any(marker in q for marker in _GENERAL_QUESTION_MARKERS):
+        return True
+    if has_explicit_focus_reference(question):
+        return False
+    if re.search(r"(?:是什么意思|是何含义|如何定义|怎么定义)$", q):
+        return True
+    if re.match(r"^(?:比较|对比).+(?:和|与|跟|及).+", q):
+        return True
+    for operator in _SELF_CONTAINED_QUESTION_OPERATORS:
+        position = q.find(operator)
+        if position >= 2:
+            return True
+    return False
+
+
+def looks_like_standalone_general_question(question: str) -> bool:
+    """Compatibility alias for the broader standalone-question guard."""
+    return looks_like_standalone_question(question)
+
+
+def looks_like_focused_file_content_question(question: str) -> bool:
+    """Compatibility helper for content-answer preference, not focus inheritance."""
+    q = re.sub(r"[，。！？?.!?\s]+", "", (question or ""))
+    if not q:
+        return False
+    if re.search(r"(?:哪些|哪个|哪几|哪张|哪份).*(?:文件|文档|截图|资料|记录)", q):
+        return False
+    return (
+        has_explicit_focus_reference(question)
+        or is_summary_followup_request(question)
+        or bool(re.search(r"(?:说了|讲了|写了).*(?:什么|啥)|(?:里面|其中).*(?:什么内容)", q))
+    )
 
 
 def _normalize_lookup_token(text: str) -> str:

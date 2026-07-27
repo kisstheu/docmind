@@ -22,6 +22,7 @@ from app.file_flows.rename import (
     normalize_target_filename,
     resolve_source_file,
 )
+from app.dialog.result_set import _looks_like_result_set_ordinal_correction
 
 
 def handle_organize_request_action(
@@ -148,6 +149,13 @@ def handle_rename_request_action(
     notes_dir: Path,
 ) -> tuple[bool, ConversationState, str | None]:
     if not is_rename_request(question):
+        return False, state, current_focus_file
+
+    if (
+        state.last_result_set_entity_type == "文件"
+        and bool(state.last_result_set_items)
+        and _looks_like_result_set_ordinal_correction(question)
+    ):
         return False, state, current_focus_file
 
     source_hint = resolve_source_file(

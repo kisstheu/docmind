@@ -5,7 +5,11 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.context_anchor import is_context_dependent_question
-from app.chat_text.file_lookup import looks_like_file_set_content_question
+from app.chat_text.file_lookup import (
+    has_explicit_focus_reference,
+    looks_like_file_set_content_question,
+    looks_like_standalone_general_question,
+)
 from app.dialog.repo_meta_rules import (
     extract_content_lookup_target,
     is_list_format_modifier,
@@ -20,7 +24,7 @@ from ai.structured_skill_summary import looks_like_structured_skill_summary_requ
 from app.dialog.result_set import (
     build_result_set_followup_query,
     extract_result_set_from_answer,
-    has_single_file_result_reference,
+    has_explicit_single_file_result_reference,
     has_selectable_result_set,
     last_turn_looks_like_enumeration,
     looks_like_result_set_continuation_followup,
@@ -33,6 +37,7 @@ from app.dialog.task_semantics import (
 )
 from app.dialog_utils import (
     is_action_request,
+    is_content_followup_question,
     is_smalltalk_message,
     is_followup_question,
     is_judgment_request,
@@ -129,7 +134,7 @@ def _looks_like_file_topic_result_set_followup(question: str, state: "Conversati
         return False
     if is_summary_followup_request(question):
         return True
-    if has_single_file_result_reference(question):
+    if has_explicit_single_file_result_reference(question):
         return True
     return looks_like_file_set_content_question(question)
 
@@ -156,6 +161,7 @@ class ConversationState:
     last_result_set_summary_text: str | None = None
     last_result_set_summary_level: int = 0
     last_result_set_selectable: bool | None = None
+    last_result_set_focus_file: str | None = None
     last_selected_candidate: str | None = None
     last_selected_source_files: list[str] | None = None
 
@@ -227,6 +233,9 @@ def detect_dialog_event(
         has_selected_candidate=True,
     ):
         return DialogEvent(name="content_followup", route_hint="normal_retrieval")
+
+    current_result_set_focus_file = focused_file or state.last_result_set_focus_file
+    is_standalone_general_question = looks_like_standalone_general_question(question)
     if answer_mode == "selected_detail":
         return DialogEvent(name="selected_candidate_followup", route_hint="normal_retrieval")
     if answer_mode == "decision":
@@ -296,8 +305,30 @@ def detect_dialog_event(
         and state.last_result_set_entity_type == "文件"
         and bool(state.last_result_set_items)
         and not is_summary_followup_request(question)
+        and not current_result_set_focus_file
     ):
         return DialogEvent(name="synthesis_request", route_hint="normal_retrieval")
+
+    if (
+        current_result_set_focus_file
+        and prev_route in {"normal_retrieval", "repo_meta"}
+        and not is_standalone_general_question
+        and (
+            is_content_followup_question(question)
+            or has_explicit_focus_reference(question)
+            or is_context_dependent_question(question, state.last_effective_search_query)
+        )
+        and not looks_like_file_set_content_question(question)
+        and not has_explicit_single_file_result_reference(question)
+        and not looks_like_result_set_comparison_followup(question)
+    ):
+        if prev_q:
+            return DialogEvent(
+                name="content_followup",
+                route_hint="normal_retrieval",
+                merged_query=f"{prev_q} {question}",
+            )
+        return DialogEvent(name="content_followup", route_hint="normal_retrieval")
 
     # === 4. 动作请求
     if is_action_request(question):
@@ -369,7 +400,11 @@ def detect_dialog_event(
         return DialogEvent(name="result_set_followup", route_hint="normal_retrieval")
 
     # === 8. 内容追问继承
-    if prev_route == "normal_retrieval" and is_context_dependent_question(question, state.last_effective_search_query):
+    if (
+        prev_route == "normal_retrieval"
+        and not is_standalone_general_question
+        and is_context_dependent_question(question, state.last_effective_search_query)
+    ):
         if prev_q:
             return DialogEvent(
                 name="content_followup",
@@ -405,6 +440,7 @@ def apply_event_to_state(state: ConversationState, event: DialogEvent) -> Conver
         last_result_set_summary_text=state.last_result_set_summary_text,
         last_result_set_summary_level=state.last_result_set_summary_level,
         last_result_set_selectable=state.last_result_set_selectable,
+        last_result_set_focus_file=state.last_result_set_focus_file,
         last_selected_candidate=state.last_selected_candidate,
         last_selected_source_files=state.last_selected_source_files,
 

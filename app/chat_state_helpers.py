@@ -18,12 +18,18 @@ from app.chat_state_company_utils import (
     looks_like_real_company_name,
     normalize_company_item,
 )
-from app.dialog_utils import is_summary_followup_request
-from app.dialog.result_set import has_selectable_result_set
+from app.context_anchor import is_context_dependent_question
+from app.dialog_utils import is_summary_followup_request, is_content_followup_question
+from app.dialog.result_set import (
+    has_explicit_single_file_result_reference,
+    has_selectable_result_set,
+    looks_like_result_set_comparison_followup,
+)
 from app.dialog.task_semantics import is_detail_explanation_request
 from app.chat_text.file_lookup import (
+    has_explicit_focus_reference,
     looks_like_file_set_content_question,
-    looks_like_focused_file_content_question,
+    looks_like_standalone_general_question,
 )
 
 FOLLOWUP_EVENT_NAMES = {
@@ -153,6 +159,7 @@ def update_state_after_local_answer(
         state.last_result_set_summary_text = None
         state.last_result_set_summary_level = 0
         state.last_result_set_selectable = bool(file_items)
+        state.last_result_set_focus_file = None
 
     return state
 
@@ -172,8 +179,10 @@ def update_state_after_retrieval_answer(
     prev_result_set_summary_text = state.last_result_set_summary_text
     prev_result_set_summary_level = state.last_result_set_summary_level
     prev_result_set_selectable = state.last_result_set_selectable
+    prev_result_set_focus_file = state.last_result_set_focus_file
     is_followup_turn = _is_followup_turn(question, event_name=event_name)
     is_synthesis_answer = (event_name or "").strip() == "synthesis_request"
+    is_focus_related_event = (event_name or "").strip() in FOLLOWUP_EVENT_NAMES
 
     state.last_user_question = question
     state.last_route = "normal_retrieval"
@@ -203,12 +212,34 @@ def update_state_after_retrieval_answer(
         logger.debug("🧪 [选择状态] 本轮未形成可靠选择，不写入推荐焦点")
 
     inferred_answer_type = infer_answer_type(question, answer_text)
-    answer_type = None if is_synthesis_answer else inferred_answer_type
+    is_result_set_comparison_answer = (
+        prev_result_set_entity_type == "文件"
+        and bool(prev_result_set_items)
+        and looks_like_result_set_comparison_followup(question)
+    )
+    is_result_set_item_answer = (
+        prev_result_set_entity_type == "文件"
+        and bool(prev_result_set_items)
+        and bool(focused_file)
+        and not is_result_set_comparison_answer
+        and has_explicit_single_file_result_reference(question)
+    )
+    answer_type = (
+        None
+        if is_synthesis_answer or is_result_set_comparison_answer or is_result_set_item_answer
+        else inferred_answer_type
+    )
     state.last_answer_type = answer_type
     if is_synthesis_answer and inferred_answer_type is not None:
         logger.debug(
             f"🧪 [answer_type识别] 综合回答忽略文本外观类型={inferred_answer_type}，保持内容焦点"
         )
+    elif is_result_set_item_answer and inferred_answer_type is not None:
+        logger.debug(
+            f"🧪 [answer_type识别] 结果集单项内容回答忽略文本外观类型={inferred_answer_type}"
+        )
+
+    current_result_set_focus_file = focused_file or prev_result_set_focus_file
 
     if answer_type == "enumeration_company":
         company_items: list[str] = []
@@ -274,6 +305,7 @@ def update_state_after_retrieval_answer(
         state.last_result_set_summary_text = None
         state.last_result_set_summary_level = 0
         state.last_result_set_selectable = has_selectable_result_set(file_items, "文件", answer_text)
+        state.last_result_set_focus_file = None
         if not state.last_result_set_selectable and file_items == prev_result_set_items:
             state.last_result_set_selectable = prev_result_set_selectable
 
@@ -293,6 +325,7 @@ def update_state_after_retrieval_answer(
         state.last_result_set_items = person_items
         state.last_result_set_entity_type = "人物"
         state.last_result_set_selectable = has_selectable_result_set(person_items, "人物", answer_text)
+        state.last_result_set_focus_file = None
         if not state.last_result_set_selectable and person_items == prev_result_set_items:
             state.last_result_set_selectable = prev_result_set_selectable
 
@@ -346,6 +379,22 @@ def update_state_after_retrieval_answer(
             and prev_result_set_entity_type == "文件"
             and is_detail_explanation_request(question)
         )
+        preserve_file_focus_context = (
+            prev_result_set_entity_type == "文件"
+            and bool(prev_result_set_items)
+            and bool(current_result_set_focus_file)
+            and is_focus_related_event
+            and not looks_like_standalone_general_question(question)
+            and not looks_like_file_set_content_question(question)
+            and (
+                (event_name or "").strip() == "content_followup"
+                or is_content_followup_question(question)
+                or has_explicit_focus_reference(question)
+                or has_explicit_single_file_result_reference(question)
+                or is_detail_explanation_request(question)
+                or is_context_dependent_question(question, state.last_effective_search_query)
+            )
+        )
         preserve_file_result_set_on_summary_followup = (
             prev_result_set_entity_type == "文件"
             and bool(prev_result_set_items)
@@ -369,6 +418,7 @@ def update_state_after_retrieval_answer(
             state.last_result_set_summary_text = None
             state.last_result_set_summary_level = 0
             state.last_result_set_selectable = False
+            state.last_result_set_focus_file = None
             logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={state.last_answer_type}")
             logger.debug(f"🧪 [候选集合提取] file_items={fallback_file_items}")
         elif preserve_source_file_refs:
@@ -380,8 +430,18 @@ def update_state_after_retrieval_answer(
             state.last_result_set_entity_type = None
             state.last_answer_type = None
             state.last_result_set_selectable = False
+            state.last_result_set_focus_file = None
             logger.debug("🧪 [状态保留] 分析回答仅保留来源文件候选，不视为文件结果集")
             logger.debug(f"🧪 [候选集合提取] analytic_source_file_items={fallback_file_items}")
+        elif preserve_file_focus_context:
+            state.last_result_set_items = prev_result_set_items
+            state.last_result_set_entity_type = prev_result_set_entity_type
+            state.last_result_set_selectable = prev_result_set_selectable
+            state.last_result_set_focus_file = current_result_set_focus_file
+            state.last_answer_type = None
+            logger.debug(
+                f"🧪 [状态保留] 当前文件焦点延续 focus={state.last_result_set_focus_file}"
+            )
         elif (
             keep_result_set_context
             or preserve_result_set_on_result_set_followup
@@ -392,6 +452,7 @@ def update_state_after_retrieval_answer(
         ):
             state.last_result_set_items = prev_result_set_items
             state.last_result_set_entity_type = prev_result_set_entity_type
+            state.last_result_set_focus_file = current_result_set_focus_file or prev_result_set_focus_file
             if preserve_file_scope_on_detail_followup:
                 state.last_answer_type = None
                 logger.debug("🧪 [状态保留] 文件结果集展开回答保留原范围，不写成文件枚举")
@@ -429,20 +490,39 @@ def update_state_after_retrieval_answer(
             state.last_result_set_items = None
             state.last_result_set_entity_type = None
             state.last_result_set_selectable = False
+            state.last_result_set_focus_file = None
             logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
 
     if state.last_result_set_entity_type != "文件":
         state.last_result_set_summary_text = None
         state.last_result_set_summary_level = 0
 
-    if focused_file and looks_like_focused_file_content_question(question):
-        state.last_answer_type = None
-        state.last_result_set_items = None
-        state.last_result_set_entity_type = None
-        state.last_result_set_selectable = False
-        state.last_result_set_summary_text = None
-        state.last_result_set_summary_level = 0
-        logger.debug(f"🧪 [文件焦点状态] focus={focused_file} | 清除旧结果集，保留单文件内容语义")
+    should_write_result_set_focus = (
+        bool(focused_file)
+        and not looks_like_standalone_general_question(question)
+        and (
+            (event_name or "").strip() == "content_followup"
+            or has_explicit_focus_reference(question)
+            or has_explicit_single_file_result_reference(question)
+        )
+    )
+    if should_write_result_set_focus:
+        if (
+            state.last_result_set_entity_type == "文件"
+            and state.last_result_set_items
+            and (prev_result_set_focus_file or is_focus_related_event)
+        ):
+            state.last_result_set_focus_file = focused_file
+            logger.debug(f"🧪 [文件焦点状态] focus={focused_file} | 保留结果集并延续单文件内容语义")
+        else:
+            state.last_answer_type = None
+            state.last_result_set_items = None
+            state.last_result_set_entity_type = None
+            state.last_result_set_selectable = False
+            state.last_result_set_focus_file = None
+            state.last_result_set_summary_text = None
+            state.last_result_set_summary_level = 0
+            logger.debug(f"🧪 [文件焦点状态] focus={focused_file} | 清除旧结果集，保留单文件内容语义")
 
     logger.debug(
         f"🧠 [状态写回] "

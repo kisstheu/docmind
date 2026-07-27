@@ -104,7 +104,7 @@ RESULT_SET_CONTINUATION_PATTERNS = [
 RESULT_SET_COMPARISON_TERMS = [
     "不同", "区别", "差异", "异同",
     "相同", "一样", "一致",
-    "对比", "比较",
+    "对比", "比较", "相比", "相较",
 ]
 
 
@@ -117,16 +117,16 @@ _CN_ORDINAL_DIGITS = dict(zip("零一二两三四五六七八九", (0, 1, 2, 2, 
 _ORDINAL_TOKEN = r"[0-9一二两三四五六七八九十]+"
 _FILE_ITEM_TARGET = r"(?:(?:个|份|篇)?(?:文件|文档|资料|记录)|(?:项|条))"
 _SINGLE_FILE_REFERENCE = rf"第(?P<index>{_ORDINAL_TOKEN}){_FILE_ITEM_TARGET}"
+_BARE_SINGLE_RESULT_REFERENCE = (
+    rf"^(?:(?:那|那么|就|那就))?第(?P<index>{_ORDINAL_TOKEN})"
+    r"(?:个)?(?:呢|怎么样|如何)?$"
+)
 _SELECTION_HELP = (
     "当前只支持选择单个文件或整个文件集合。"
     "请改为“第 N 个文件再展开”或“这些文件分别讲了什么”。"
 )
-_FILE_DETAIL_MARKERS = (
-    "内容", "讲", "说", "写", "记录", "详细", "展开",
-    "总结", "概括", "分析", "看看", "看下",
-)
 _ALL_FILE_REFERENCE_PATTERNS = (
-    r"(?:这些|上述|前面|上面)(?:文件|文档|资料|记录|材料|方案|要求)",
+    r"(?:这些|上述|前面|上面)(?:文件|文档|资料|记录|材料)",
     r"^(?:(?:请|帮我|麻烦|给我))?(?:(?:比较一下|对比一下|比较|对比))?(?:这些|它们|上述)",
     r"^(?:分别|各自|都)(?:讲|说|写|是|有|总结|概括|分析)",
     r"^(?:是)?(?:(?:关于|讲|说|写))?什么(?:内容|主题)?(?:的)?$",
@@ -161,19 +161,52 @@ def _compact_result_set_question(question: str) -> str:
 
 
 def _extract_file_result_set_index(question: str) -> int | None:
-    match = re.search(_SINGLE_FILE_REFERENCE, _compact_result_set_question(question))
+    compact = _compact_result_set_question(question)
+    match = re.search(_SINGLE_FILE_REFERENCE, compact)
+    if not match:
+        match = re.fullmatch(_BARE_SINGLE_RESULT_REFERENCE, compact)
     if not match:
         return None
     ordinal = _parse_result_set_ordinal(match.group("index"))
     return ordinal if ordinal and ordinal > 0 else None
 
 
-def has_single_file_result_reference(question: str) -> bool:
-    """Return whether the text is a high-confidence single-file follow-up."""
-    if _extract_file_result_set_index(question) is None:
-        return False
-    compact = _compact_result_set_question(question)
-    return any(marker in compact for marker in _FILE_DETAIL_MARKERS)
+def has_explicit_single_file_result_reference(question: str) -> bool:
+    """Return whether the text explicitly selects one item from a file result set."""
+    return (
+        _extract_file_result_set_index(question) is not None
+        and not _has_explicit_non_file_ordinal_target(question)
+    )
+
+
+def file_result_set_display_name(path: str) -> str:
+    """Return a prompt-safe file name without exposing parent directories."""
+    normalized = str(path or "").strip().replace("\\", "/")
+    return normalized.rsplit("/", 1)[-1]
+
+
+def materialize_single_file_result_set_question(
+    question: str,
+    selected_file_path: str,
+) -> str:
+    """Replace a resolved ordinal reference with the selected file name."""
+    if not has_explicit_single_file_result_reference(question):
+        return question
+    display_name = file_result_set_display_name(selected_file_path)
+    if not display_name:
+        return question
+
+    replacement = f"文件《{display_name}》"
+    full_reference = (
+        rf"(?:(?:那|那么)\s*)?第\s*{_ORDINAL_TOKEN}\s*"
+        rf"(?:(?:个|份|篇)?\s*(?:文件|文档|资料|记录)|(?:项|条))"
+    )
+    materialized, count = re.subn(full_reference, replacement, question, count=1)
+    if count:
+        return materialized
+
+    bare_reference = rf"(?:(?:那|那么)\s*)?第\s*{_ORDINAL_TOKEN}\s*(?:个)?"
+    return re.sub(bare_reference, replacement, question, count=1)
 
 
 def _looks_like_unsupported_file_selection(question: str) -> bool:
@@ -198,6 +231,46 @@ def _has_explicit_non_file_ordinal_target(question: str) -> bool:
     )
 
 
+def _looks_like_result_set_ordinal_correction(question: str) -> bool:
+    compact = _compact_result_set_question(question)
+    if not compact:
+        return False
+    if not any(term in compact for term in ("改成", "改为", "换成", "换为", "切成")):
+        return False
+    return _extract_file_result_set_index(question) is not None
+
+
+def build_corrected_result_set_request(
+    correction_question: str,
+    previous_question: str | None,
+    previous_answer: str | None,
+) -> str | None:
+    """Rebuild a rejected result-set request with the corrected ordinal."""
+    if not _looks_like_result_set_ordinal_correction(correction_question):
+        return None
+    if not previous_question or not has_explicit_single_file_result_reference(previous_question):
+        return None
+    if not re.search(
+        r"当前结果集中只有\s*\d+\s*个文件，请选择第\s*1[～~-]\d+\s*个",
+        previous_answer or "",
+    ):
+        return None
+
+    correction_match = re.search(
+        _SINGLE_FILE_REFERENCE,
+        _compact_result_set_question(correction_question),
+    )
+    if not correction_match:
+        return None
+    replacement = f"第{correction_match.group('index')}"
+    return re.sub(
+        rf"第\s*{_ORDINAL_TOKEN}",
+        replacement,
+        previous_question,
+        count=1,
+    )
+
+
 def _looks_like_all_file_result_set_reference(question: str) -> bool:
     compact = _compact_result_set_question(question)
     if not compact:
@@ -207,9 +280,22 @@ def _looks_like_all_file_result_set_reference(question: str) -> bool:
     return any(re.search(pattern, compact) for pattern in _ALL_FILE_REFERENCE_PATTERNS)
 
 
+def _looks_like_focused_content_reference(question: str) -> bool:
+    compact = _compact_result_set_question(question)
+    return bool(
+        re.match(
+            r"(?:这些|上述|前面|上面)"
+            r"(?!(?:文件|文档|资料|记录|材料))",
+            compact,
+        )
+    )
+
+
 def resolve_file_result_set_selection(
     question: str,
     visible_paths: list[str] | tuple[str, ...],
+    *,
+    focus_file: str | None = None,
 ) -> FileResultSetSelection | None:
     candidates = tuple(
         str(item or "").strip()
@@ -227,10 +313,34 @@ def resolve_file_result_set_selection(
 
     ordinal = (
         _extract_file_result_set_index(question)
-        if has_single_file_result_reference(question)
+        if (
+            has_explicit_single_file_result_reference(question)
+            or _looks_like_result_set_ordinal_correction(question)
+            or (focus_file is not None and looks_like_result_set_comparison_followup(question))
+        )
         else None
     )
     if ordinal is not None:
+        if focus_file and looks_like_result_set_comparison_followup(question):
+            normalized_focus = re.sub(r"[^a-z0-9\u4e00-\u9fa5]+", "", focus_file.lower())
+            focus_candidate = None
+            for item in candidates:
+                normalized_item = re.sub(r"[^a-z0-9\u4e00-\u9fa5]+", "", item.lower())
+                if normalized_item == normalized_focus or normalized_item.endswith(normalized_focus) or normalized_focus.endswith(normalized_item):
+                    focus_candidate = item
+                    break
+            if focus_candidate is not None:
+                if ordinal > len(candidates):
+                    return FileResultSetSelection(
+                        rejection=(
+                            f"当前结果集中只有 {len(candidates)} 个文件，"
+                            f"请选择第 1～{len(candidates)} 个。"
+                        )
+                    )
+                target = candidates[ordinal - 1]
+                if focus_candidate == target:
+                    return FileResultSetSelection(paths=(target,))
+                return FileResultSetSelection(paths=(focus_candidate, target))
         if ordinal > len(candidates):
             return FileResultSetSelection(
                 rejection=(
@@ -253,7 +363,10 @@ def resolve_file_result_set_selection(
             return FileResultSetSelection(paths=candidates)
         return FileResultSetSelection(rejection=_SELECTION_HELP)
 
-    if _looks_like_all_file_result_set_reference(question):
+    if (
+        _looks_like_all_file_result_set_reference(question)
+        and not (focus_file and _looks_like_focused_content_reference(question))
+    ):
         return FileResultSetSelection(paths=candidates)
 
     return None
