@@ -15,6 +15,8 @@ from ai.repo_meta.classifier import (
 )
 from app import chat_loop as chat_runtime
 import app.chat_loop_parts.runner as chat_runner
+from app.chat_loop_handlers import try_handle_retrieval_force_local_or_empty_context
+from app.chat_loop_handlers.guards import looks_like_analytic_retrieval_question
 from app.chat_state_helpers import update_state_after_local_answer
 from app.dialog.result_set import resolve_file_result_set_selection
 from app.dialog.state_machine import ConversationState, detect_dialog_event
@@ -25,6 +27,18 @@ from retrieval.repo_index_types import RepoState
 class _LoggerStub:
     def debug(self, *_args, **_kwargs):
         return None
+
+    info = debug
+    warning = debug
+    error = debug
+
+
+class _RecordingLogger(_LoggerStub):
+    def __init__(self):
+        self.messages: list[str] = []
+
+    def debug(self, message, *_args, **_kwargs):
+        self.messages.append(str(message))
 
     info = debug
     warning = debug
@@ -50,6 +64,17 @@ class _ClientStub:
         self.models = _ModelsStub()
 
 
+class _DetailModelsStub(_ModelsStub):
+    def generate_content(self, *, model, contents, config=None):
+        self.calls.append(contents)
+        return SimpleNamespace(text="根据当前受限片段，已展开说明其中的合成知识内容。")
+
+
+class _DetailClientStub:
+    def __init__(self):
+        self.models = _DetailModelsStub()
+
+
 def _repo_state(paths: list[str]):
     now = datetime(2026, 7, 24, 12, 0, 0)
     return SimpleNamespace(
@@ -69,9 +94,10 @@ def _repo_state(paths: list[str]):
     )
 
 
-def _indexed_repo_state(paths: list[str]) -> RepoState:
+def _indexed_repo_state(paths: list[str], chunks: list[str] | None = None) -> RepoState:
     now = datetime(2026, 7, 24, 12, 0, 0)
-    chunks = [f"{path} 的合成知识内容。" for path in paths]
+    chunks = list(chunks) if chunks is not None else [f"{path} 的合成知识内容。" for path in paths]
+    assert len(chunks) == len(paths)
     return RepoState(
         docs=chunks,
         doc_records=[
@@ -288,6 +314,7 @@ def _run_turns(
     questions: list[str],
     repo_paths: list[str],
     state: ConversationState,
+    repo_chunks: list[str] | None = None,
 ):
     inputs = iter([*questions, "q"])
     allowed_paths: list[object] = []
@@ -295,6 +322,7 @@ def _run_turns(
     real_materials = chat_runner.build_retrieval_materials
     real_query = chat_runner.build_search_query
     client = _ClientStub()
+    logger = _LoggerStub()
 
     monkeypatch.setattr(chat_runtime, "_read_user_question", lambda **_kwargs: next(inputs))
     monkeypatch.setattr(chat_runtime, "_flush_pending_tty_input_unix", lambda: False)
@@ -324,13 +352,13 @@ def _run_turns(
     monkeypatch.setattr(chat_runner, "build_retrieval_materials", capture_materials)
     monkeypatch.setattr(chat_runner, "build_search_query", capture_query)
     chat_runtime.run_chat_loop(
-        _indexed_repo_state(repo_paths),
+        _indexed_repo_state(repo_paths, repo_chunks),
         _EmbeddingStub(),
         client,
         "offline-model",
         "http://127.0.0.1:9",
         "offline-model",
-        _LoggerStub(),
+        logger,
         notes_dir=tmp_path / "notes",
         change_log_file=tmp_path / "changes.db",
         domain_dispatch_port=EmptyDomainHost(),
@@ -385,6 +413,79 @@ def test_runner_does_not_inherit_old_file_set_for_independent_question(
     assert query_sets == [None]
 
 
+@pytest.mark.parametrize(
+    "question",
+    [
+        "第二个文件再详细说说。",
+        "第二个文件展开讲讲。",
+        "第二个文件具体分析。",
+        "第二个文件深入说明。",
+    ],
+)
+def test_selected_file_expansion_uses_generation_without_expanding_scope(
+    monkeypatch,
+    tmp_path,
+    question,
+):
+    visible = ["资料甲.md", "记录乙.txt", "说明丙.pdf"]
+    assert looks_like_analytic_retrieval_question(question) is True
+
+    allowed, query_sets, client = _run_turns(
+        monkeypatch,
+        tmp_path,
+        questions=[question],
+        repo_paths=[*visible, "隐藏丁.md"],
+        state=_selectable_file_state(visible),
+    )
+
+    assert allowed == [{"记录乙.txt"}]
+    assert query_sets == [["记录乙.txt"]]
+    assert len(client.models.calls) == 1
+    assert "记录乙.txt" in client.models.calls[0]
+    assert "隐藏丁.md" not in client.models.calls[0]
+    assert chat_runtime.conversation_state.last_answer_type is None
+    assert chat_runtime.conversation_state.last_result_set_items == visible
+
+
+def test_failed_simple_local_fallback_does_not_consume_generation_turn():
+    repo_state = SimpleNamespace(
+        paths=["材料甲.md"],
+        chunk_paths=["材料甲.md"],
+        chunk_texts=["材料甲包含可供生成回答的背景段落。"],
+    )
+
+    answer = try_handle_retrieval_force_local_or_empty_context(
+        route="normal_retrieval",
+        question="它的负责人是谁？",
+        event_name="result_set_followup",
+        search_query="负责人",
+        relevant_indices=[0],
+        repo_state=repo_state,
+        materials={"context_text": "【参考片段】材料甲.md | 背景段落", "inventory_candidates_text": ""},
+        logger=_LoggerStub(),
+    )
+
+    assert answer is None
+
+
+def test_successful_simple_lookup_stays_local_without_generation(
+    monkeypatch,
+    tmp_path,
+):
+    paths = ["资料甲.md", "记录乙.txt"]
+    allowed, _query_sets, client = _run_turns(
+        monkeypatch,
+        tmp_path,
+        questions=["哪份文件提到了 RAG？"],
+        repo_paths=paths,
+        state=ConversationState(),
+        repo_chunks=["资料甲使用 RAG 检索。", "记录乙包含其他说明。"],
+    )
+
+    assert allowed == [None]
+    assert client.models.calls == []
+
+
 def test_runner_rejects_out_of_range_then_keeps_set_for_valid_choice(
     monkeypatch,
     tmp_path,
@@ -428,14 +529,14 @@ def test_runner_rejects_unsupported_selection_without_retrieval_or_model(
     assert chat_runtime.conversation_state.last_result_set_items == paths
 
 
-def test_real_three_turn_cli_lists_then_scopes_then_selects_second(
+def test_real_three_turn_cli_lists_then_scopes_second_file_for_generation(
     monkeypatch,
     tmp_path,
     capsys,
 ):
     paths = ["资料甲.md", "记录乙.txt", "说明丙.pdf"]
     inputs = iter(
-        ["当前知识库有哪些文件？", "这些文件分别讲了什么？", "第2条再展开。", "q"]
+        ["当前知识库有哪些文件？", "这些文件分别讲了什么？", "第二个文件再详细说说。", "q"]
     )
     monkeypatch.setattr(chat_runtime, "_read_user_question", lambda **_kwargs: next(inputs))
     monkeypatch.setattr(chat_runtime, "_flush_pending_tty_input_unix", lambda: False)
@@ -444,14 +545,24 @@ def test_real_three_turn_cli_lists_then_scopes_then_selects_second(
         "app.retrieval_flow.query.rewrite_search_query",
         lambda question, *_args, **_kwargs: question,
     )
+    allowed_paths: list[object] = []
+    real_materials = chat_runner.build_retrieval_materials
+
+    def capture_materials(**kwargs):
+        allowed_paths.append(kwargs["allowed_paths"])
+        return real_materials(**kwargs)
+
+    monkeypatch.setattr(chat_runner, "build_retrieval_materials", capture_materials)
+    client = _DetailClientStub()
+    logger = _RecordingLogger()
     chat_runtime.run_chat_loop(
         _indexed_repo_state(paths),
         _EmbeddingStub(),
-        _ClientStub(),
+        client,
         "offline-model",
         "http://127.0.0.1:9",
         "offline-model",
-        _LoggerStub(),
+        logger,
         notes_dir=tmp_path / "notes",
         change_log_file=tmp_path / "changes.db",
         domain_dispatch_port=EmptyDomainHost(),
@@ -460,4 +571,15 @@ def test_real_three_turn_cli_lists_then_scopes_then_selects_second(
     assert "1. 资料甲.md" in output
     assert "2. 记录乙.txt" in output
     assert "3. 说明丙.pdf" in output
+    assert "根据当前受限片段，已展开说明其中的合成知识内容。" in output
+    assert allowed_paths == [set(paths), {"记录乙.txt"}]
+    assert len(client.models.calls) == 2
+    detail_prompt = client.models.calls[-1]
+    detail_evidence = detail_prompt.split("【参考片段】:", 1)[1].split("【用户最新提问】", 1)[0]
+    assert "记录乙.txt" in detail_evidence
+    assert "资料甲.md" not in detail_evidence
+    assert "说明丙.pdf" not in detail_evidence
+    assert any("[文件结果集范围] 限定为 1 个文件" in message for message in logger.messages)
+    assert any("[远程模型生成] 进入生成阶段" in message for message in logger.messages)
+    assert chat_runtime.conversation_state.last_answer_type is None
     assert chat_runtime.conversation_state.last_result_set_items == paths

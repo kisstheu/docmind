@@ -196,9 +196,7 @@ def maybe_build_direct_lookup_answer(
         items = []
     if not items:
         if force_local_evidence:
-            if _extract_content_lookup_target(question):
-                return None
-            return "根据当前检索片段，暂未提取到稳定的可核对内容。请补充更具体的问题后重试。"
+            return None
         if allow_followup_inference and focus_terms:
             focus_tip = "、".join(focus_terms[:3])
             return f"当前检索片段未直接命中“{focus_tip}”相关证据，先不给出推断；可补充更完整关键词后再查。"

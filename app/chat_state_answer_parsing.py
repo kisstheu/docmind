@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from app.dialog.task_semantics import is_detail_explanation_request
+
 EXPANSION_MARKERS = ["\u66f4\u591a", "\u8fd8\u6709", "\u7ee7\u7eed", "\u518d\u6765", "\u8865\u5145"]
 NO_NEW_PATTERNS = [
     "\u6ca1\u6709\u53d1\u73b0\u5176\u4ed6",
@@ -166,7 +168,7 @@ def infer_answer_type(user_question: str, answer_text: str) -> str | None:
     a = (answer_text or "").strip()
     numbered_lines = re.findall(r"(?:^|\n)\s*(?:\d+[.\u3001]|[-*•])\s*", a)
 
-    if _looks_like_analytic_content_question(q):
+    if _looks_like_analytic_content_question(q) or is_detail_explanation_request(q):
         return None
 
     if any(x in q for x in ("\u516c\u53f8\u540d", "\u516c\u53f8\u540d\u79f0", "\u4f01\u4e1a\u540d\u79f0", "\u5355\u4f4d\u540d\u79f0", "\u7ec4\u7ec7\u540d\u79f0")):

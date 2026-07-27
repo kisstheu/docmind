@@ -20,6 +20,7 @@ from app.chat_state_company_utils import (
 )
 from app.dialog_utils import is_summary_followup_request
 from app.dialog.result_set import has_selectable_result_set
+from app.dialog.task_semantics import is_detail_explanation_request
 from app.chat_text.file_lookup import (
     looks_like_file_set_content_question,
     looks_like_focused_file_content_question,
@@ -340,6 +341,11 @@ def update_state_after_retrieval_answer(
             and prev_result_set_entity_type == "文件"
             and bool(prev_result_set_items)
         )
+        preserve_file_scope_on_detail_followup = (
+            preserve_result_set_on_result_set_followup
+            and prev_result_set_entity_type == "文件"
+            and is_detail_explanation_request(question)
+        )
         preserve_file_result_set_on_summary_followup = (
             prev_result_set_entity_type == "文件"
             and bool(prev_result_set_items)
@@ -380,12 +386,16 @@ def update_state_after_retrieval_answer(
             keep_result_set_context
             or preserve_result_set_on_result_set_followup
             or preserve_file_scope_on_synthesis
+            or preserve_file_scope_on_detail_followup
             or preserve_file_result_set_on_summary_followup
             or preserve_file_result_set_on_no_evidence_followup
         ):
             state.last_result_set_items = prev_result_set_items
             state.last_result_set_entity_type = prev_result_set_entity_type
-            if preserve_file_scope_on_content_question or preserve_file_scope_on_synthesis:
+            if preserve_file_scope_on_detail_followup:
+                state.last_answer_type = None
+                logger.debug("🧪 [状态保留] 文件结果集展开回答保留原范围，不写成文件枚举")
+            elif preserve_file_scope_on_content_question or preserve_file_scope_on_synthesis:
                 state.last_answer_type = None
                 if preserve_file_scope_on_synthesis:
                     state.last_result_set_selectable = False

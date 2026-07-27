@@ -6,7 +6,11 @@ from app.context_anchor import is_context_dependent_question
 from app.dialog.state_machine import ConversationState
 from app.dialog_utils import is_followup_question, is_summary_followup_request
 from app.chat_text.file_lookup import looks_like_file_set_content_question
-from app.dialog.task_semantics import classify_answer_mode, is_complex_answer_mode
+from app.dialog.task_semantics import (
+    classify_answer_mode,
+    is_complex_answer_mode,
+    is_detail_explanation_request,
+)
 
 CONTEXTLESS_FOLLOWUP_REPLY = (
     "这个问题缺少明确主语或上下文，我先不调用远程模型。"
@@ -140,6 +144,8 @@ def looks_like_analytic_retrieval_question(
         has_selected_candidate=has_selected_candidate,
     )
     if is_complex_answer_mode(answer_mode):
+        return True
+    if is_detail_explanation_request(question):
         return True
     if is_summary_followup_request(question):
         return True

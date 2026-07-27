@@ -25,8 +25,10 @@ _EVIDENCE_TARGETS = (
     "位置", "出处", "来源", "第一个", "第一条", "第1个", "第1条",
 )
 _DETAIL_FOLLOWUPS = (
-    "详细分析", "详细说", "详细讲", "展开分析", "展开说", "展开讲",
-    "具体分析", "深入分析", "细说", "再分析", "分析一下", "分析下",
+    "详细分析", "详细说", "详细讲", "详细说明",
+    "展开分析", "展开说", "展开讲",
+    "具体分析", "具体说明", "深入分析", "深入说明",
+    "细说", "再分析", "分析一下", "分析下",
 )
 
 
@@ -83,6 +85,10 @@ def is_collection_synthesis_request(question: str, *, has_collection_context: bo
 def is_selected_candidate_detail_request(question: str, *, has_selected_candidate: bool = False) -> bool:
     if not has_selected_candidate:
         return False
+    return is_detail_explanation_request(question)
+
+
+def is_detail_explanation_request(question: str) -> bool:
     q = _normalize(question)
     if not q or len(q) > 24:
         return False
@@ -127,6 +133,7 @@ __all__ = [
     "is_collection_synthesis_request",
     "is_comparison_or_ranking_request",
     "is_complex_answer_mode",
+    "is_detail_explanation_request",
     "is_recommendation_request",
     "is_selected_candidate_detail_request",
 ]
