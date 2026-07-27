@@ -1,0 +1,185 @@
+version: 1
+
+task_name: result_set_detail_followup_generation_fallback
+
+task_goal: >-
+  修复文件结果集已选定单个文件后的展开型追问：在当前单文件检索证据存在时，
+  不让简单检索本地兜底的失败性占位答案提前结束链路，应保留受当前文件范围约束的
+  生成式回答机会；同时不把展开型问句或生成答案误写为新的文件枚举状态。
+
+task_kind: independent_result_set_answer_consumption_bugfix
+implementation_status: authorized_for_implementation
+
+communication_preference:
+  tone: professional
+  language: zh-CN
+  report_order:
+    - 结果
+    - 根因与实际消费路径
+    - 修改与验证
+    - 范围审查
+    - 提交与风险
+
+baseline:
+  branch: main
+  head: a234644e95304ffd1740cdb24618aef3b9800877
+  remote_alignment: main 与 origin/main 对齐
+  tracked_worktree: clean
+  related_completed_task_card: docs/task_card_repo_meta_generic_file_list_scope.yaml
+  preflight_commands:
+    - git branch --show-current
+    - git rev-parse HEAD
+    - git status --short --branch
+    - git log --oneline --decorate -10
+
+user_problem:
+  reproduction:
+    - 当前知识库有哪些文件？
+    - 这些文件分别讲了什么？
+    - 第二个文件再详细说说。
+  confirmed_upstream_state: >-
+    第三轮已正确解析第二个文件、将结果集范围收缩为该单文件，并检索到该文件 chunk。
+  erroneous_terminal_behavior: >-
+    normal_retrieval 的简单检索本地兜底返回“暂未提取到稳定的可核对内容”占位文本；
+    调用方将其作为非空本地答案直接消费，未进入远程生成。
+  state_side_effect: >-
+    该问句或失败回答随后被 answer type 推断为 enumeration_file；它不是新的文件列表，
+    因而不应写回该类型或重建文件枚举状态。
+
+root_cause:
+  trigger: >-
+    is_simple_retrieval_turn 对结果集追问默认允许本地证据回答；展开型单文件追问没有
+    被通用展开语义识别为复杂生成请求。
+  consumption: >-
+    maybe_build_direct_lookup_answer 在 force_local_evidence 模式下，对未提取到结构化直答
+    证据返回失败性占位字符串；try_handle_retrieval_force_local_or_empty_context 以非空字符串
+    判定成功并让 runner 直接 print、append_memory 和 update_state_after_retrieval_answer。
+  state_inference: >-
+    update_state_after_retrieval_answer 依据问题与回答外观推断 answer_type；展开型追问若被
+    前述占位路径终结，会被错误纳入文件枚举保留/回退分支。
+
+semantic_boundary:
+  expansion_request:
+    description: >-
+      语义是要求对当前对象进行解释、展开或分析，而不是定位、枚举或抽取单一可核对字段。
+    examples:
+      - 再详细说说
+      - 展开讲讲
+      - 具体分析
+      - 深入说明
+  scoped_generation:
+    description: >-
+      仅在已有结果集选择已解析为单个文件且该范围检索存在证据时，展开请求可继续生成；
+      生成材料、检索候选和来源不得扩大至结果集外文件。
+  simple_lookup:
+    description: >-
+      可由本地证据稳定直答的定位、枚举或映射问题仍在本地终结，不额外调用生成模型。
+  independent_question:
+    description: 独立新问题不得因为旧文件结果集而继承范围或生成材料。
+  state_writeback:
+    description: 展开型追问不是文件枚举，不得将 last_answer_type 写为 enumeration_file。
+
+implementation_constraints:
+  - 沿真实 runner、guard、本地直答 helper 与状态写回路径定位并修复
+  - 先补 tracked 红测，再修改生产代码
+  - 使用领域无关的展开意图或现有结构信息，不硬编码具体文件名或完整复现句
+  - 本地失败性占位文本不得以非空字符串语义冒充成功本地答案
+  - 不把所有单文件问题一律升级为远程生成
+  - 不重构 ConversationState、检索器、状态机或 Prompt 系统
+  - 保持 selected_file_paths 与检索 allowed_paths 的既有单文件交集约束
+
+editable_scope:
+  allow:
+    - docs/task_card_result_set_detail_followup_generation_fallback.yaml
+    - app/chat_loop_handlers/guards.py
+    - app/chat_loop_handlers/__init__.py
+    - app/chat_text/lookup_answer_main.py
+    - app/chat_state_helpers.py
+    - app/chat_state_answer_parsing.py
+    - app/dialog/task_semantics.py
+    - public_tests/state/test_repo_meta_generic_file_list_scope_contract.py
+  deny:
+    - docs/task_card_repo_meta_generic_file_list_scope.yaml
+    - retrieval/**
+    - packages/docmind-domain-sdk/**
+    - packages/docmind-recruitment-plugin/**
+    - examples/**
+    - tests/**
+    - test_notes/**
+
+non_goals:
+  - 修改文件列表路由、结果集解析或序号选择规则
+  - 修改 embedding、召回评分、文件排序或结果集容量
+  - 所有单文件问题强制远程生成
+  - 引入业务领域词表、文件名特判或模型意图分类
+  - 重构普通本地直答能力或 Prompt 系统
+  - 修改 Domain Plugin、MCP、timeout、retry、README 或 CI
+
+privacy_guard:
+  - 测试只使用合成文件名、合成文本和离线模型替身
+  - 不写入真实公司名、人名、联系方式、用户知识库内容或用户数据目录绝对路径
+  - 任务卡与测试均不依赖本地私有资料
+
+test_matrix:
+  scoped_expansion_generation:
+    - 第二个文件再详细说说。
+    - 第二个文件展开讲讲。
+    - 第二个文件具体分析。
+    - 第二个文件深入说明。
+  scope_and_state:
+    - 单文件结果集范围只包含用户选择的第二项
+    - 生成材料与模型调用不含结果集外文件
+    - 展开型追问不写回 enumeration_file
+  local_answer_consumption:
+    - 普通简单检索成功时本地直答且不调用生成模型
+    - 本地失败性占位答案不提前终结，继续生成
+  isolation_and_regression:
+    - 独立新问题不继承旧结果集
+    - 文件列表、集合综合回答和序号选择保持既有行为
+
+verification:
+  task_card:
+    - UTF-8 可解码且无 BOM
+    - yaml.safe_load 可解析
+    - 递归检查无重复键
+    - 不含真实身份信息、用户内容或用户数据目录绝对路径
+  targeted:
+    - >-
+      PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider
+      public_tests/state/test_repo_meta_generic_file_list_scope_contract.py
+  public:
+    - >-
+      PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider public_tests
+  full:
+    - >-
+      PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider
+      tests packages/docmind-domain-sdk/tests packages/docmind-recruitment-plugin/tests
+      public_tests test_query_router_repo_meta.py
+  static:
+    - python -m py_compile app/chat_loop_handlers/guards.py app/chat_loop_handlers/__init__.py app/chat_state_helpers.py
+    - git diff --check
+    - git diff --cached --check
+  cli:
+    - 使用合成索引与离线模型替身运行三轮 CLI 复现
+
+acceptance:
+  - 单文件结果集的展开型追问进入受范围约束的生成路径
+  - 展开、分析和深入说明等同义表达均不被简单本地兜底提前结束
+  - 生成仅使用所选单文件的检索证据
+  - 普通简单检索成功仍本地直答且不重复调用生成模型
+  - 本地失败性占位回答不作为成功终点消费
+  - 独立新问题不继承旧结果集
+  - 展开型问句不写回 enumeration_file
+  - 原有文件列表、集合综合回答和序号选择测试不退化
+  - 新增测试位于 tracked public_tests
+  - 完整回归通过，最终工作区干净并形成任务卡、实现两个本地提交
+  - 未 push
+
+completion_record_requirements:
+  - 记录任务卡路径、核心边界、根因与实际消费路径
+  - 记录红测与正反向测试、定向/public/完整回归结果
+  - 记录 YAML、编码、重复键、隐私和路径扫描结果
+  - 记录真实 CLI 的选中文件、范围、生成、状态写回关键日志
+  - 记录范围审查、实际修改文件和未触碰的非目标
+  - 记录两个本地 commit hash、message、git show --stat --oneline HEAD
+  - 记录最终 git status --short --branch，并明确未 push
