@@ -708,6 +708,54 @@ def test_runner_uses_one_visible_scope_for_retrieval_and_query_context(
     assert "隐藏丁.md" not in allowed[0]
 
 
+def test_runner_and_retrieval_state_writeback_share_question_scope_instances(
+    monkeypatch,
+    tmp_path,
+):
+    paths = ["资料甲.md", "记录乙.txt", "说明丙.pdf"]
+    built_signals = []
+    built_decisions = []
+    consumed_facts = []
+    real_analyze = chat_runner.analyze_question_signals
+    real_decide = chat_runner.decide_file_result_set_scope
+    real_update = chat_runner.update_state_after_retrieval_answer
+
+    def capture_analyze(*args, **kwargs):
+        signals = real_analyze(*args, **kwargs)
+        built_signals.append(signals)
+        return signals
+
+    def capture_decide(*args, **kwargs):
+        assert kwargs["signals"] is built_signals[-1]
+        decision = real_decide(*args, **kwargs)
+        built_decisions.append(decision)
+        return decision
+
+    def capture_update(*args, **kwargs):
+        consumed_facts.append(
+            (kwargs["question_signals"], kwargs["scope_decision"])
+        )
+        return real_update(*args, **kwargs)
+
+    monkeypatch.setattr(chat_runner, "analyze_question_signals", capture_analyze)
+    monkeypatch.setattr(chat_runner, "decide_file_result_set_scope", capture_decide)
+    monkeypatch.setattr(chat_runner, "update_state_after_retrieval_answer", capture_update)
+
+    _run_turns(
+        monkeypatch,
+        tmp_path,
+        questions=["第二个文件再详细说说。"],
+        repo_paths=paths,
+        state=_selectable_file_state(paths),
+    )
+
+    assert len(built_signals) == 1
+    assert len(built_decisions) == 1
+    assert consumed_facts == [(built_signals[0], built_decisions[0])]
+    assert consumed_facts[0][0] is built_signals[0]
+    assert consumed_facts[0][1] is built_decisions[0]
+
+
 @pytest.mark.parametrize(
     "question",
     ["比较 Python 和 Java。", "请把采购风险做个表。", "总结一下人工智能的发展。"],

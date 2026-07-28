@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 
 from ai.decision_result import parse_decision_result
 from app.chat_state_answer_parsing import (
@@ -18,19 +19,13 @@ from app.chat_state_company_utils import (
     looks_like_real_company_name,
     normalize_company_item,
 )
-from app.context_anchor import is_context_dependent_question
-from app.dialog_utils import is_summary_followup_request, is_content_followup_question
-from app.dialog.result_set import (
-    has_explicit_single_file_result_reference,
-    has_selectable_result_set,
-    looks_like_result_set_comparison_followup,
+from app.dialog.question_scope import (
+    QuestionSignals,
+    ScopeDecision,
+    analyze_question_signals,
+    decide_file_result_set_scope,
 )
-from app.dialog.task_semantics import is_detail_explanation_request
-from app.chat_text.file_lookup import (
-    has_explicit_focus_reference,
-    looks_like_file_set_content_question,
-    looks_like_standalone_general_question,
-)
+from app.dialog.result_set import has_selectable_result_set
 
 FOLLOWUP_EVENT_NAMES = {
     "content_followup",
@@ -43,6 +38,50 @@ FOLLOWUP_EVENT_NAMES = {
     "decision_request",
     "selected_candidate_followup",
 }
+
+_MISSING_QUESTION_SCOPE_FACT = object()
+
+
+def _resolve_question_scope_facts(
+    *,
+    state,
+    question: str,
+    event_name: str | None,
+    focused_file: str | None,
+    question_signals: QuestionSignals | object,
+    scope_decision: ScopeDecision | object,
+) -> tuple[QuestionSignals, ScopeDecision]:
+    missing_signals = question_signals is _MISSING_QUESTION_SCOPE_FACT
+    missing_scope = scope_decision is _MISSING_QUESTION_SCOPE_FACT
+    if missing_signals != missing_scope:
+        raise TypeError(
+            "question_signals and scope_decision must be provided together"
+        )
+    if missing_signals:
+        warnings.warn(
+            "Direct state-helper calls must pass QuestionSignals and ScopeDecision; "
+            "the compatibility analysis path is deprecated.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        resolved_signals = analyze_question_signals(
+            question,
+            last_effective_search_query=state.last_effective_search_query,
+        )
+        resolved_scope = decide_file_result_set_scope(
+            question,
+            signals=resolved_signals,
+            state=state,
+            current_focus_file=focused_file,
+            event_name=(event_name or "").strip(),
+        )
+        return resolved_signals, resolved_scope
+    if not isinstance(question_signals, QuestionSignals):
+        raise TypeError("question_signals must be a QuestionSignals instance")
+    if not isinstance(scope_decision, ScopeDecision):
+        raise TypeError("scope_decision must be a ScopeDecision instance")
+    return question_signals, scope_decision
+
 
 def _extract_selected_candidate(question: str, answer_text: str) -> str | None:
     from app.dialog.task_semantics import is_recommendation_request
@@ -172,7 +211,18 @@ def update_state_after_retrieval_answer(
     event_name: str | None = None,
     focused_file: str | None = None,
     decision_result=None,
+    *,
+    question_signals: QuestionSignals | object = _MISSING_QUESTION_SCOPE_FACT,
+    scope_decision: ScopeDecision | object = _MISSING_QUESTION_SCOPE_FACT,
 ):
+    question_signals, scope_decision = _resolve_question_scope_facts(
+        state=state,
+        question=question,
+        event_name=event_name,
+        focused_file=focused_file,
+        question_signals=question_signals,
+        scope_decision=scope_decision,
+    )
     prev_result_set_items = list(state.last_result_set_items) if state.last_result_set_items else None
     prev_result_set_entity_type = state.last_result_set_entity_type
     prev_answer_type = state.last_answer_type
@@ -215,14 +265,14 @@ def update_state_after_retrieval_answer(
     is_result_set_comparison_answer = (
         prev_result_set_entity_type == "文件"
         and bool(prev_result_set_items)
-        and looks_like_result_set_comparison_followup(question)
+        and question_signals.result_set_comparison_followup
     )
     is_result_set_item_answer = (
         prev_result_set_entity_type == "文件"
         and bool(prev_result_set_items)
         and bool(focused_file)
         and not is_result_set_comparison_answer
-        and has_explicit_single_file_result_reference(question)
+        and question_signals.explicit_single_file_result_reference
     )
     answer_type = (
         None
@@ -367,7 +417,7 @@ def update_state_after_retrieval_answer(
         preserve_file_scope_on_content_question = (
             preserve_result_set_on_result_set_followup
             and prev_result_set_entity_type == "文件"
-            and looks_like_file_set_content_question(question)
+            and question_signals.file_set_content_question
         )
         preserve_file_scope_on_synthesis = (
             is_synthesis_answer
@@ -377,28 +427,29 @@ def update_state_after_retrieval_answer(
         preserve_file_scope_on_detail_followup = (
             preserve_result_set_on_result_set_followup
             and prev_result_set_entity_type == "文件"
-            and is_detail_explanation_request(question)
+            and question_signals.detail_explanation_request
         )
         preserve_file_focus_context = (
             prev_result_set_entity_type == "文件"
             and bool(prev_result_set_items)
             and bool(current_result_set_focus_file)
             and is_focus_related_event
-            and not looks_like_standalone_general_question(question)
-            and not looks_like_file_set_content_question(question)
+            and not question_signals.standalone_general_question
+            and not question_signals.file_set_content_question
             and (
-                (event_name or "").strip() == "content_followup"
-                or is_content_followup_question(question)
-                or has_explicit_focus_reference(question)
-                or has_explicit_single_file_result_reference(question)
-                or is_detail_explanation_request(question)
-                or is_context_dependent_question(question, state.last_effective_search_query)
+                scope_decision.has_single_focus_scope
+                or (event_name or "").strip() == "content_followup"
+                or question_signals.content_followup_question
+                or question_signals.explicit_focus_reference
+                or question_signals.explicit_single_file_result_reference
+                or question_signals.detail_explanation_request
+                or question_signals.context_dependent_question
             )
         )
         preserve_file_result_set_on_summary_followup = (
             prev_result_set_entity_type == "文件"
             and bool(prev_result_set_items)
-            and is_summary_followup_request(question)
+            and question_signals.summary_followup_request
         )
         preserve_file_result_set_on_no_evidence_followup = (
             prev_result_set_entity_type == "文件"
@@ -499,11 +550,12 @@ def update_state_after_retrieval_answer(
 
     should_write_result_set_focus = (
         bool(focused_file)
-        and not looks_like_standalone_general_question(question)
+        and not question_signals.standalone_general_question
         and (
-            (event_name or "").strip() == "content_followup"
-            or has_explicit_focus_reference(question)
-            or has_explicit_single_file_result_reference(question)
+            scope_decision.has_single_focus_scope
+            or (event_name or "").strip() == "content_followup"
+            or question_signals.explicit_focus_reference
+            or question_signals.explicit_single_file_result_reference
         )
     )
     if should_write_result_set_focus:

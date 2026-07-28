@@ -9,13 +9,14 @@ from ai.repo_meta.category import resolve_repo_content_category_scope
 from ai.structured_skill_summary import summarize_structured_skill_summary_with_remote
 from ai.decision_result import parse_decision_result, render_decision_result
 from app.dialog_state_machine import ConversationState, apply_event_to_state, detect_dialog_event
+from app.dialog.question_scope import (
+    analyze_question_signals,
+    decide_file_result_set_scope,
+)
 from app.dialog.result_set import (
     build_corrected_result_set_request,
     file_result_set_display_name,
-    has_selectable_result_set,
-    looks_like_result_set_comparison_followup,
     materialize_single_file_result_set_question,
-    resolve_file_result_set_selection,
 )
 from app.domain_dispatch_port import DomainDispatchPort, dispatch_domain_request
 from app.chat_retrieval_flow import (
@@ -30,10 +31,6 @@ from app.chat_state_helpers import (
     update_state_after_local_answer,
     update_state_after_retrieval_answer,
 )
-from app.chat_text.file_lookup import (
-    looks_like_file_set_content_question,
-    looks_like_standalone_general_question,
-)
 from app.chat_text.core import normalize_colloquial_question
 from app.chat_text.file_lookup import maybe_build_file_location_answer
 from app.chat_text.lookup_answer_main import maybe_build_direct_lookup_answer
@@ -42,24 +39,6 @@ from app.file_actions.loop import handle_file_action_turn
 from infra.file_change_store import FileChangeStore
 from retrieval.search_engine import determine_query_flags
 import app.chat_loop_handlers as _loop_handlers
-
-
-def _visible_file_result_set_paths(state: ConversationState) -> list[str]:
-    if state.last_result_set_entity_type != "文件":
-        return []
-    if not has_selectable_result_set(
-        state.last_result_set_items,
-        state.last_result_set_entity_type,
-        state.last_answer_text or state.last_answer_preview,
-        state.last_result_set_selectable,
-    ):
-        return []
-    return [
-        str(path or "").strip()
-        for path in (state.last_result_set_items or [])
-        if str(path or "").strip()
-    ]
-
 
 def run_chat_loop(
     repo_state,
@@ -124,6 +103,12 @@ def run_chat_loop(
                     f"{question} -> {corrected_result_set_question}"
                 )
                 question = corrected_result_set_question
+            question_signals = analyze_question_signals(
+                question,
+                last_effective_search_query=(
+                    runtime.conversation_state.last_effective_search_query
+                ),
+            )
             prev_content_user_question = runtime.conversation_state.last_content_user_question
             event = detect_dialog_event(
                 question,
@@ -131,28 +116,20 @@ def run_chat_loop(
                 logger,
                 focused_file=current_focus_file,
             )
-            standalone_general_question = looks_like_standalone_general_question(question)
-            if standalone_general_question:
-                current_focus_file = None
-            effective_focus_file = (
-                current_focus_file
-                or runtime.conversation_state.last_result_set_focus_file
-            )
-            if standalone_general_question:
-                effective_focus_file = None
-            visible_file_paths = _visible_file_result_set_paths(
-                runtime.conversation_state
-            )
-            file_result_set_selection = resolve_file_result_set_selection(
+            scope_decision = decide_file_result_set_scope(
                 question,
-                visible_file_paths,
-                focus_file=effective_focus_file,
+                signals=question_signals,
+                state=runtime.conversation_state,
+                current_focus_file=current_focus_file,
+                event_name=event.name,
             )
+            if scope_decision.clear_current_focus:
+                current_focus_file = None
             if (
-                file_result_set_selection is not None
-                and file_result_set_selection.rejection is not None
+                scope_decision.file_result_set_selection is not None
+                and scope_decision.file_result_set_selection.rejection is not None
             ):
-                rejection = file_result_set_selection.rejection
+                rejection = scope_decision.file_result_set_selection.rejection
                 logger.info("🛡️ [文件结果集选择守门] 本地拒绝")
                 print_answer(rejection, start_qa)
                 append_memory(memory_buffer, question, rejection)
@@ -165,57 +142,6 @@ def run_chat_loop(
                     is_content_answer=False,
                 )
                 continue
-            selected_file_paths = (
-                file_result_set_selection.paths
-                if file_result_set_selection is not None
-                else None
-            )
-            selected_result_set_item_turn = bool(
-                selected_file_paths is not None
-                and len(selected_file_paths) == 1
-            )
-            result_set_comparison_turn = bool(
-                selected_file_paths is not None
-                and len(selected_file_paths) == 2
-                and looks_like_result_set_comparison_followup(question)
-            )
-            requires_result_set_generation = (
-                selected_result_set_item_turn
-                or result_set_comparison_turn
-            )
-            result_scope_paths = None
-            if selected_file_paths is not None:
-                result_scope_paths = list(selected_file_paths)
-            elif (
-                effective_focus_file
-                and runtime.conversation_state.last_result_set_entity_type == "文件"
-                and event.name == "content_followup"
-                and not looks_like_file_set_content_question(question)
-            ):
-                result_scope_paths = [effective_focus_file]
-            if runtime.conversation_state.last_result_set_entity_type == "文件":
-                if result_scope_paths is not None:
-                    query_result_set_items = result_scope_paths
-                    query_result_set_entity = "文件"
-                elif event.name in {
-                    "result_set_followup",
-                    "result_set_expansion_followup",
-                } and runtime.conversation_state.last_result_set_items:
-                    query_result_set_items = runtime.conversation_state.last_result_set_items
-                    query_result_set_entity = "文件"
-                elif (
-                    event.name in {"synthesis_request", "structured_request", "structured_skill_summary"}
-                    and runtime.conversation_state.last_result_set_focus_file
-                    and runtime.conversation_state.last_result_set_items
-                ):
-                    query_result_set_items = runtime.conversation_state.last_result_set_items
-                    query_result_set_entity = "文件"
-                else:
-                    query_result_set_items = None
-                    query_result_set_entity = None
-            else:
-                query_result_set_items = runtime.conversation_state.last_result_set_items
-                query_result_set_entity = runtime.conversation_state.last_result_set_entity_type
             local_answer = runtime.try_handle_contextless_followup(
                 question=question,
                 state=runtime.conversation_state,
@@ -348,18 +274,13 @@ def run_chat_loop(
             runtime.conversation_state.last_route = "normal_retrieval"
             runtime.conversation_state.last_local_topic = None
             result_set_summary_answer = None
-            has_single_focus_scope = bool(
-                result_scope_paths
-                and len(result_scope_paths) == 1
-                and effective_focus_file
-                and result_scope_paths[0] == effective_focus_file
-                and event.name == "content_followup"
-                and not looks_like_file_set_content_question(question)
-            )
             if (
-                not requires_result_set_generation
-                and (selected_file_paths is None or len(selected_file_paths) != 1)
-                and not has_single_focus_scope
+                not scope_decision.requires_result_set_generation
+                and (
+                    scope_decision.selected_file_paths is None
+                    or len(scope_decision.selected_file_paths) != 1
+                )
+                and not scope_decision.has_single_focus_scope
             ):
                 result_set_summary_answer = _loop_handlers._try_answer_file_result_set_topic_summary(
                     question=question,
@@ -381,15 +302,17 @@ def run_chat_loop(
                     logger,
                     event_name=event.name,
                     focused_file=current_focus_file,
+                    question_signals=question_signals,
+                    scope_decision=scope_decision,
                 )
                 continue
             flags = determine_query_flags(question)
             analytic_retrieval = (
-                requires_result_set_generation
+                scope_decision.requires_result_set_generation
                 or _loop_handlers.looks_like_analytic_retrieval_question(
                     question,
                     has_collection_context=(
-                        bool(selected_file_paths)
+                        bool(scope_decision.selected_file_paths)
                         if runtime.conversation_state.last_result_set_entity_type == "文件"
                         else bool(runtime.conversation_state.last_result_set_items)
                     ),
@@ -419,8 +342,12 @@ def run_chat_loop(
                 last_effective_search_query=runtime.conversation_state.last_effective_search_query,
                 last_user_question=runtime.conversation_state.last_content_user_question,
                 last_answer_type=runtime.conversation_state.last_answer_type,
-                last_result_set_items=query_result_set_items,
-                last_result_set_entity_type=query_result_set_entity,
+                last_result_set_items=(
+                    list(scope_decision.query_result_set_items)
+                    if scope_decision.query_result_set_items is not None
+                    else None
+                ),
+                last_result_set_entity_type=scope_decision.query_result_set_entity,
                 last_selected_candidate=runtime.conversation_state.last_selected_candidate,
                 last_selected_source_files=runtime.conversation_state.last_selected_source_files,
                 last_relevant_indices=last_relevant_indices,
@@ -431,16 +358,16 @@ def run_chat_loop(
             if not flags["skip_retrieval"] and search_query.strip():
                 runtime.conversation_state.last_effective_search_query = search_query.strip()
             retrieval_allowed_paths = category_scope_paths
-            if result_scope_paths is not None:
-                retrieval_allowed_paths = set(result_scope_paths)
+            if scope_decision.result_scope_paths is not None:
+                retrieval_allowed_paths = set(scope_decision.result_scope_paths)
                 if category_scope_paths is not None:
                     retrieval_allowed_paths.intersection_update(category_scope_paths)
-            if result_scope_paths is not None:
+            if scope_decision.result_scope_paths is not None:
                 logger.info(
                     f"🎯 [文件结果集范围] 限定为 {len(retrieval_allowed_paths)} 个文件"
                 )
-                if len(result_scope_paths) == 1:
-                    current_focus_file = result_scope_paths[0]
+                if len(scope_decision.result_scope_paths) == 1:
+                    current_focus_file = scope_decision.result_scope_paths[0]
             materials = build_retrieval_materials(
                 question=question,
                 search_query=search_query,
@@ -457,19 +384,23 @@ def run_chat_loop(
                 selected_source_files=runtime.conversation_state.last_selected_source_files,
             )
             current_focus_file = materials["current_focus_file"]
-            if result_scope_paths is not None and len(result_scope_paths) == 1:
-                current_focus_file = result_scope_paths[0]
+            if (
+                scope_decision.result_scope_paths is not None
+                and len(scope_decision.result_scope_paths) == 1
+            ):
+                current_focus_file = scope_decision.result_scope_paths[0]
             last_relevant_indices = materials["relevant_indices"]
             focused_file_content_followup = bool(
                 current_focus_file
                 and event.name == "content_followup"
-                and result_scope_paths
-                and len(result_scope_paths) == 1
+                and scope_decision.result_scope_paths
+                and len(scope_decision.result_scope_paths) == 1
             )
-            if requires_result_set_generation:
+            if scope_decision.requires_result_set_generation:
                 logger.info(
                     "🛝 [结果集内容生成守门] "
-                    f"selected={len(selected_file_paths or ())}，跳过证据摘录型本地回答"
+                    f"selected={len(scope_decision.selected_file_paths or ())}，"
+                    "跳过证据摘录型本地回答"
                 )
                 related_records_answer = None
             else:
@@ -489,11 +420,13 @@ def run_chat_loop(
                     logger,
                     event_name=event.name,
                     focused_file=current_focus_file,
+                    question_signals=question_signals,
+                    scope_decision=scope_decision,
                 )
                 continue
             local_file_locator_answer = (
                 None
-                if requires_result_set_generation
+                if scope_decision.requires_result_set_generation
                 or analytic_retrieval
                 or focused_file_content_followup
                 else maybe_build_file_location_answer(
@@ -524,11 +457,13 @@ def run_chat_loop(
                     logger,
                     event_name=event.name,
                     focused_file=current_focus_file,
+                    question_signals=question_signals,
+                    scope_decision=scope_decision,
                 )
                 continue
             local_entity_mapping_answer = (
                 None
-                if requires_result_set_generation
+                if scope_decision.requires_result_set_generation
                 or analytic_retrieval
                 or focused_file_content_followup
                 else maybe_build_direct_lookup_answer(
@@ -576,10 +511,12 @@ def run_chat_loop(
                     logger,
                     event_name=event.name,
                     focused_file=current_focus_file,
+                    question_signals=question_signals,
+                    scope_decision=scope_decision,
                 )
                 continue
             fallback_local_answer = None
-            if not requires_result_set_generation:
+            if not scope_decision.requires_result_set_generation:
                 fallback_local_answer = runtime.try_handle_retrieval_force_local_or_empty_context(
                     route=route,
                     question=question,
@@ -613,13 +550,22 @@ def run_chat_loop(
                     logger,
                     event_name=event.name,
                     focused_file=current_focus_file,
+                    question_signals=question_signals,
+                    scope_decision=scope_decision,
                 )
                 continue
             generation_question = question
             generation_focus_file = current_focus_file
-            generation_result_set_items = query_result_set_items
-            if selected_result_set_item_turn and selected_file_paths:
-                selected_file_path = selected_file_paths[0]
+            generation_result_set_items = (
+                list(scope_decision.query_result_set_items)
+                if scope_decision.query_result_set_items is not None
+                else None
+            )
+            if (
+                scope_decision.selected_result_set_item_turn
+                and scope_decision.selected_file_paths
+            ):
+                selected_file_path = scope_decision.selected_file_paths[0]
                 selected_file_name = file_result_set_display_name(selected_file_path)
                 generation_question = materialize_single_file_result_set_question(
                     question,
@@ -672,6 +618,8 @@ def run_chat_loop(
                 event_name=event.name,
                 focused_file=current_focus_file,
                 decision_result=decision_result,
+                question_signals=question_signals,
+                scope_decision=scope_decision,
             )
         except Exception as e:
             err = str(e)
