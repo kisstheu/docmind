@@ -1,0 +1,227 @@
+version: 1
+
+task_name: question_signals_and_scope_decision_first_slice
+
+task_goal: >-
+  在完全保持现有 CLI、状态写回、检索范围和 Prompt 行为的前提下，
+  将正常检索轮中由 runner 与检索回答状态写回共同消费的问句事实物化为
+  不可变 QuestionSignals，并将 runner 已形成的文件结果集作用域决定物化为
+  不可变 ScopeDecision，使生产链使用同一轮、同一实例的结构化事实。
+
+task_kind: dialog_responsibility_boundary_refactor
+implementation_status: authorized_for_implementation
+
+baseline:
+  branch: main
+  head: c975d1fd7228df06e23435ff2cccb255f4c3165f
+  remote_alignment: main 与 origin/main 对齐
+  tracked_worktree: clean
+  preflight_commands:
+    - git status --short --branch
+    - git log -5 --oneline --decorate
+  targeted_tests:
+    command: >-
+      .venv/bin/python -m pytest -q
+      public_tests/state/test_repo_meta_generic_file_list_scope_contract.py
+      tests/state/test_answer_type_inference.py
+      public_tests/domain/test_domain_dispatch_port_empty_host.py
+    result: 167 passed
+  full_tests:
+    command: .venv/bin/python -m pytest -q
+    result: 648 passed
+
+background:
+  problem: >-
+    runner 在序号纠正后分别计算独立问题、文件集合内容问法、当前焦点、
+    文件结果集选择、比较、检索范围和查询结果集上下文；检索回答写回随后又从
+    同一自然语言问句调用多项 predicate，重复判断是否保留文件集合和单项焦点。
+    同一轮语义事实缺少稳定传递边界，存在调用时序与重复推断漂移风险。
+  current_duplicate_locations:
+    - >-
+      app/chat_loop_parts/runner.py 在 detect_dialog_event() 前后直接调用
+      looks_like_standalone_general_question()、
+      looks_like_file_set_content_question()、
+      looks_like_result_set_comparison_followup()，并分散形成选择和作用域局部变量。
+    - >-
+      app/chat_state_helpers.py 的 update_state_after_retrieval_answer() 再次调用
+      比较、显式单项、独立问题、文件集合内容、显式焦点、内容追问、详情展开、
+      概括追问和上下文依赖 predicate，以决定结果集与焦点写回。
+  production_entry: >-
+    ask_notes.py 调用 app.chat_loop.run_chat_loop() 门面，实际执行
+    app/chat_loop_parts/runner.py::run_chat_loop()；本切片在序号纠正完成后分析问句，
+    保持 app.dialog.state_machine.detect_dialog_event() 的现有调用与分类语义。
+
+minimum_data_structures:
+  question_signals:
+    immutable: true
+    source_question: 仅分析序号纠正后的本轮 question，不保存 raw question 或 generation question
+    fields:
+      - standalone_general_question
+      - file_set_content_question
+      - explicit_focus_reference
+      - explicit_single_file_result_reference
+      - result_set_comparison_followup
+      - content_followup_question
+      - detail_explanation_request
+      - summary_followup_request
+      - context_dependent_question
+  scope_decision:
+    immutable: true
+    fields:
+      - clear_current_focus
+      - effective_focus_file
+      - visible_file_paths
+      - file_result_set_selection
+      - selected_file_paths
+      - selected_result_set_item_turn
+      - result_set_comparison_turn
+      - requires_result_set_generation
+      - result_scope_paths
+      - query_result_set_items
+      - query_result_set_entity
+      - has_single_focus_scope
+    inputs:
+      - QuestionSignals
+      - ConversationState 的当前只读字段
+      - runner 循环局部 current_focus_file
+      - 当前 event.name
+
+consumer_migration:
+  included:
+    - runner 在正常检索生产链每轮只构造一次 QuestionSignals。
+    - runner 在 event 产生后只构造一次 ScopeDecision，并应用 clear_current_focus。
+    - runner 后续检索、查询、生成守门与状态写回只读取两个对象的字段。
+    - update_state_after_retrieval_answer() 强制显式接收同一轮同一实例的两个对象。
+    - 更新 tracked 生产链回归调用，显式构造或传递对应事实对象。
+  excluded:
+    - detect_dialog_event() 内部 predicate 的进一步迁移
+    - retrieval/search_engine.py 的问句意图与焦点判断迁移
+    - 其他本地回答、路由、文件动作、Prompt 构造消费者的全面迁移
+    - app/dialog/result_set.py 的拆分或 FileResultSetSelection 重写
+
+compatibility_boundary:
+  reason: >-
+    仓库的 tests/ 按项目规则属于 gitignored 且禁止提交的本地回归目录；
+    当前其中有旧式直接调用 update_state_after_retrieval_answer() 的测试，
+    无法把调用迁移作为本次可提交交付物。
+  behavior: >-
+    生产 runner 必须显式传入 QuestionSignals 与 ScopeDecision。
+    仅当旧式非生产调用完全缺少两个参数时，状态写回入口允许通过独立适配分支
+    构造兼容事实并发出 DeprecationWarning；不得以默认 None 静默重新推断，
+    也不得允许只传其中一个对象。
+  removal_condition: >-
+    后续在 tests/ 调用契约可迁移或该本地回归目录治理完成后，删除兼容适配分支；
+    本次不修改或提交 tests/。
+
+invariants:
+  - 不改变任何问句词表、正则、predicate 实现或自然语言分类边界。
+  - 不改变 detect_dialog_event() 的调用顺序、输入和事件语义。
+  - 不改变序号选择、整集合选择、双文件比较与越界拒绝文案。
+  - 不改变独立新问题清除循环局部焦点和退出旧结果集的行为。
+  - 不改变单文件内容追问继承焦点、保留原有序结果集的状态行为。
+  - 不改变 build_search_query() 接收的结果集 items/entity。
+  - 不改变 category scope 与 result scope 的后续交集时序。
+  - 不改变 retrieval_allowed_paths、检索排序或 search_engine 行为。
+  - 不改变 generation question 物化、Prompt 文案或 Prompt 上下文。
+  - 不改变 ConversationState 字段、memory_buffer 或回答文本解析协议。
+  - QuestionSignals 与 ScopeDecision 均使用 frozen dataclass 和 tuple 承载集合。
+  - 不以减少 runner.py 或其他文件的代码行数作为验收条件。
+
+non_goals:
+  - 修改问句正则、关键词、predicate 语义或回答文案
+  - 拆分 result_set.py、runner.py 或 chat_state_helpers.py
+  - 重写 FileResultSetSelection
+  - 修改 ConversationState 字段或持久状态生命周期
+  - 清理 memory_buffer 或改变独立问题保留历史聊天的行为
+  - 修改 Prompt、生成模型、路由分类、检索排序或 search_engine
+  - 修改 detect_dialog_event、领域插件或招聘插件
+  - 实现完整全局 ScopeDecision 架构
+  - 以大规模减行、import 整理或无关格式化作为交付内容
+
+acceptance_scenarios:
+  question_signals:
+    - 独立新问题
+    - 文件集合内容问题
+    - 显式“它/这个文件”焦点指代
+    - 显式单项序号
+    - 结果集比较
+    - 详情展开
+    - 结果集概括
+    - 依赖上一搜索查询的上下文追问
+  scope_decision:
+    - 无可选择文件结果集
+    - 整个文件集合选择
+    - 单项显式序号选择
+    - 当前焦点与另一序号项比较
+    - 越界本地拒绝
+    - 独立新问题清除 effective focus
+    - content_followup 继承单文件焦点
+    - result_set_followup 提供原集合给查询构造
+    - synthesis 与 structured 事件在已有焦点时保留完整集合查询上下文
+    - 单焦点内容追问形成 has_single_focus_scope
+  production_chain:
+    - runner 与状态写回消费同一份 QuestionSignals 和 ScopeDecision
+    - 比较回答保留原单项焦点
+    - 单项内容回答保留原结果集
+    - 越界拒绝保留原结果集
+    - 序号纠正不进入 rename
+    - 独立新问题退出旧结果集
+    - 单文件展开进入生成且不被摘录型本地回答截断
+
+test_scope:
+  unit:
+    - 新增 QuestionSignals predicate 物化测试
+    - 新增 ScopeDecision 纯决定测试
+  regression:
+    - public_tests/state/test_repo_meta_generic_file_list_scope_contract.py
+    - tests/state/test_answer_type_inference.py
+    - public_tests/domain/test_domain_dispatch_port_empty_host.py
+    - 通过调用替身断言生产 runner 向状态写回传递同一对象实例
+  quality_gate:
+    - 本任务新增及修改的单元测试
+    - 结果集、状态、路由相关公共测试
+    - public_tests/state/test_repo_meta_generic_file_list_scope_contract.py
+    - 全量 pytest
+    - git diff --check
+
+rollback_boundary:
+  docs_commit: >-
+    任务卡为独立提交，可单独保留或回退，不依赖实现代码。
+  implementation_commit: >-
+    新模块、runner 迁移、状态写回签名调整与对应测试集中在单一实现提交；
+    回退该提交恢复原分散推断路径，不涉及状态迁移、数据文件或配置变更。
+
+follow_up_not_in_this_slice:
+  - 让 detect_dialog_event() 消费 QuestionSignals
+  - 让 search_engine 与路由守门消费统一问句事实
+  - 迁移本地回答、文件动作和其他状态消费者
+  - 进一步澄清 raw、effective、search 与 generation question 类型边界
+  - 拆分 runner.py、result_set.py 和 chat_state_helpers.py
+  - 扩展为跨所有域和所有结果集类型的全局 ScopeDecision
+
+privacy_guard:
+  - 测试仅使用合成文件名、合成文本与离线替身。
+  - 不写入真实公司名、人名、联系方式、用户知识库内容或用户绝对路径。
+  - 不依赖 test_notes 或其他本地私有资料。
+
+verification:
+  task_card:
+    - UTF-8 可解码且无 BOM
+    - yaml.safe_load 可解析
+    - 递归检查无重复键
+    - git diff --check
+  implementation:
+    - .venv/bin/python -m py_compile app/dialog/question_scope.py app/chat_loop_parts/runner.py app/chat_state_helpers.py
+    - .venv/bin/python -m pytest -q <本任务新增及修改测试>
+    - .venv/bin/python -m pytest -q <结果集、状态、路由相关公共测试>
+    - .venv/bin/python -m pytest -q public_tests/state/test_repo_meta_generic_file_list_scope_contract.py
+    - .venv/bin/python -m pytest -q
+    - git diff --check
+
+acceptance:
+  - 正常检索生产链每轮只构造一次 QuestionSignals 和 ScopeDecision。
+  - runner 与 update_state_after_retrieval_answer() 接收同一对象实例。
+  - 状态写回不再直接调用任务列出的九类重复 predicate。
+  - 所有既有 CLI、状态、Prompt 与测试契约保持不变。
+  - 全量回归通过，形成任务卡与实现两个本地提交。
+  - 最终工作区干净且未 push。
