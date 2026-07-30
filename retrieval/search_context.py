@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import List
 
-from retrieval.chunking import expand_neighbor_chunks
+from retrieval.chunking import (
+    expand_neighbor_chunks,
+    select_seed_and_neighbor_chunks,
+)
 from retrieval.query_utils import classify_org_candidate, extract_company_candidates
 
 
@@ -16,16 +19,30 @@ def build_context_text(relevant_indices: List[int], repo_state, logger) -> str:
         chunk_meta=repo_state.chunk_meta,
         neighbor=1,
     )
+    filtered_indices = select_seed_and_neighbor_chunks(
+        seed_indices=relevant_indices,
+        chunk_paths=repo_state.chunk_paths,
+        chunk_meta=repo_state.chunk_meta,
+        neighbor=1,
+        per_file_limit=3,
+    )
 
-    file_chunk_count = {}
-    filtered_indices = []
-    for idx in expanded_indices:
-        p = repo_state.chunk_paths[idx]
-        file_chunk_count.setdefault(p, 0)
-        if file_chunk_count[p] >= 3:
-            continue
-        filtered_indices.append(idx)
-        file_chunk_count[p] += 1
+    def describe_indices(indices):
+        return [
+            (
+                repo_state.chunk_paths[idx],
+                repo_state.chunk_meta[idx]["chunk_id"],
+            )
+            for idx in indices
+        ]
+
+    seed_index_set = set(relevant_indices)
+    logger.debug(
+        "上下文候选角色: "
+        f"seed={describe_indices(relevant_indices)} | "
+        f"neighbor={describe_indices([idx for idx in expanded_indices if idx not in seed_index_set])}"
+    )
+    logger.debug(f"上下文每文件预算后: {describe_indices(filtered_indices)}")
 
     context_blocks = []
     for idx in filtered_indices:
@@ -95,4 +112,3 @@ def build_inventory_candidates_text(question: str, repo_state, inventory_target_
             lines.extend([f"- {x}" for x in generic_names[:20]])
 
     return "\n".join(lines) + "\n\n" if lines else ""
-
