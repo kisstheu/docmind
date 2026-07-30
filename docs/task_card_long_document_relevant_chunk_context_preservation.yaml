@@ -1,0 +1,287 @@
+version: 1
+
+task_name: long_document_relevant_chunk_context_preservation
+
+task_goal: >-
+  修复长文档中已经进入初始相关性召回的精确章节，在邻块扩展、去重和
+  每文件上下文预算处理后被较早章节替换、未进入最终生成上下文的通用缺陷。
+  相关性负责决定必须保留的证据，文档顺序只负责决定最终展示顺序。
+
+task_kind: independent_general_retrieval_context_selection_fix
+implementation_status: authorized_for_implementation
+
+baseline:
+  branch: main
+  expected_head: 608bd5708ab2266cafb3506a06634799f901669e
+  expected_origin_main: 608bd5708ab2266cafb3506a06634799f901669e
+  expected_ahead_behind: [0, 0]
+  expected_worktree: clean_including_untracked
+  full_test_command: .venv/bin/python -m pytest
+  full_test_result: 671 passed, 25 warnings
+  preflight_commands:
+    - git status --short --branch
+    - git log -6 --oneline --decorate
+    - git rev-parse HEAD
+    - git rev-parse origin/main
+    - git rev-list --left-right --count origin/main...HEAD
+
+background:
+  defect: >-
+    初始相似度与混合打分已经把长文档后部的精确章节排在相关候选前列，
+    但上下文组装先把 seed 与物理邻块合并成无角色集合，再按全局 chunk
+    数组索引排序，并按该顺序执行每文件三块预算。较早章节、目录或文件头
+    因索引更小而先占满预算，原本高相关的后部 seed 没有进入 Prompt。
+  frozen_evidence:
+    first_run:
+      report: test_notes/medical_public_smoke_2026-07-29-evaluation/final_report.md
+      results: test_notes/medical_public_smoke_2026-07-29-evaluation/first_run_results.yaml
+      acceptance: test_notes/medical_public_smoke_2026-07-29-evaluation/acceptance_cases.yaml
+      runs: test_notes/medical_public_smoke_2026-07-29-evaluation/runs/
+    historical_ab:
+      report: test_notes/medical_public_smoke_2026-07-29-ab/comparison_report.md
+      matrix: test_notes/medical_public_smoke_2026-07-29-ab/comparison_matrix.yaml
+      versions: test_notes/medical_public_smoke_2026-07-29-ab/versions.yaml
+      per_version_results: test_notes/medical_public_smoke_2026-07-29-ab/per_version_results/
+      runs: test_notes/medical_public_smoke_2026-07-29-ab/runs/
+    confirmed_facts:
+      - 四个历史版本均为 3 个文档、130 个 chunk，逐文件为 111、8、11。
+      - 四版正文、chunk metadata、向量和标签一致。
+      - MED-002、MED-003、MED-004、MED-005、MED-011 四版均失败。
+      - 五题 gold 均存在于索引，多数位于初始相关候选 rank 1 至 3。
+      - 五题 gold 均在邻块扩展和每文件预算后离开最终上下文。
+      - 608bd570 未引入该回归，不回滚近期提交。
+  evidence_policy: >-
+    上述 test_notes 产物仅作只读冻结证据，不修改、不覆盖、不暂存、不提交。
+
+production_call_chain:
+  - app/chat_loop_parts/runner.py::build_search_query 形成本轮 search_query。
+  - retrieval/search_engine.py::perform_retrieval 执行 allowed_paths 过滤、向量与词项打分。
+  - perform_retrieval 按 scores 降序形成 relevant_indices，必要补召回后按 top_k 截断。
+  - app/retrieval_flow/materials.py::build_retrieval_materials 接收相关 seed。
+  - retrieval/search_context.py::build_context_text 调用邻块扩展并执行每文件预算。
+  - retrieval/chunking.py::expand_neighbor_chunks 将 seed 与同文件相邻 chunk 去重合并。
+  - build_context_text 将保留的 chunk 组织为 context_text。
+  - app/retrieval_flow/materials.py::build_safe_final_prompt 脱敏并约束上下文。
+  - ai/prompt_builder.py::build_final_prompt 将参考片段写入最终 Prompt。
+
+root_cause:
+  initial_hit_order: >-
+    relevant_indices 在常规路径中按检索最终分数从高到低排列，表达 seed
+    的初始相关性优先级；允许范围过滤发生在排名之前。
+  neighbor_expansion: >-
+    每个 seed 加入自身及同文件 chunk_id 距离不超过 1 的物理邻块。
+  priority_loss: >-
+    expand_neighbor_chunks 使用 set 合并 seed 与 neighbor 后返回全局数组索引排序，
+    来源角色、seed 原始排名和邻块服务对象均随之丢失。
+  per_file_budget: >-
+    build_context_text 遍历上述全局索引序列，对每个文件最多保留 3 块。
+  failure_mechanism: >-
+    同一文件的较早候选及其邻块拥有更小的全局数组索引，会先占满三块预算；
+    后部 rank 1 gold 即使已被召回，也会在预算裁剪中被跳过。
+  affected_scope:
+    single_file: 后部精确章节会被同文件前部候选替换。
+    multi_file: 每个文件独立重复前部偏置，可能同时丢失多文件的核心 seed。
+
+repair_design:
+  principle: 选择优先级与展示顺序分离。
+  selection:
+    - 保留 relevant_indices 的原始顺序作为 seed 相关性优先级。
+    - 去重时保留候选来源角色，不允许 neighbor 覆盖 seed 身份。
+    - 每文件预算先按 seed 初始排名保留 seed。
+    - 只有 seed 未用满预算时，才按确定性规则补充服务于已保留 seed 的邻块。
+    - 多文件分别应用同一预算规则，使每个文件的高相关 seed 都能保留。
+  presentation:
+    - 完成预算选择后，再按文件与文件内 chunk 位置组织 Prompt。
+    - 文档位置只决定可读展示顺序，不决定保留资格。
+  deterministic_ties: >-
+    邻块选择使用 seed 排名、与 seed 的距离和稳定 chunk 位置作为确定性依据，
+    不引入随机性。
+
+invariants:
+  - 不改变 embedding 模型、索引内容、chunk 切分和初始相似度搜索。
+  - 不改变查询改写、search_query 语义、阈值、top_k 或初始检索排名。
+  - 不改变 allowed_paths 的候选过滤和范围交集。
+  - 不取消或扩大每文件上下文预算。
+  - 不通过增加总上下文窗口或塞入原始文档全文掩盖缺陷。
+  - seed 在预算内始终优先于仅因物理相邻加入的 neighbor。
+  - 同一文件 seed 数量超过预算时，按初始相关性排名截断。
+  - 多文件场景逐文件保留各自高相关 seed。
+  - 完成选择后保持同一文件内的局部文档顺序。
+  - 输出可确定复现，不依赖文件名、文档类别、行业、岗位、地域或答案词汇。
+  - 短文件、无邻块或候选不超过预算时保持既有证据内容与可读顺序。
+  - 不改变本地直答、远程生成标记、路由、事件分类或结果集消费逻辑。
+
+minimum_implementation_boundary:
+  production:
+    - retrieval/search_context.py
+    - retrieval/chunking.py
+  tracked_tests:
+    - public_tests/retrieval/test_long_document_context_priority_contract.py
+  rule: >-
+    优先只修改实际负责上下文候选选择与裁剪的最小模块；若证明必须跨越
+    上述生产边界才能完成，应停止扩大范围并报告。
+
+non_goals:
+  - MED-001 的 decision_request 分类与生成契约
+  - manifest 或文件列举顺序稳定化
+  - β 等字符导致的文件身份截断
+  - MED-007 至 MED-009 的结果集焦点链
+  - Prompt 重写
+  - 医疗专用规则
+  - 增加上下文窗口上限
+  - 招聘插件
+  - QuestionSignals / ScopeDecision 后续迁移
+  - 修改事件分类、结果集文件身份、文件顺序或医疗安全策略
+  - 修改 embedding、索引、query rewrite、初始相似度排名或冻结语料
+  - 重构检索框架、Prompt 系统或聊天 runner
+
+automated_acceptance:
+  scenario_a_late_seed:
+    setup: 同一长文档含前部 chunk 1、2、3 与后部高相关 seed 20 及邻块 19、21。
+    expected:
+      - 每文件预算 3 时保留 chunk 20。
+      - 可用剩余预算补充合理邻块。
+      - 不得只因编号较小而仅保留 chunk 1 至 3。
+  scenario_b_multiple_seeds:
+    setup: 同一文件含两个高相关 seed，且各自存在邻块，预算不足以保留全部邻块。
+    expected:
+      - 两个 seed 均先保留。
+      - 剩余预算才分配给邻块。
+      - 一个 seed 不得被另一个 seed 的邻块挤掉。
+  scenario_c_cross_file:
+    setup: 两个文件各有一个后部高相关 seed，并各有前部低优先级候选及邻块。
+    expected:
+      - 两个文件的核心 seed 均进入最终上下文。
+      - 每文件预算仍生效。
+      - 展示可按文件及局部 chunk 顺序组织。
+  scenario_d_neighbor_priority:
+    setup: 邻块仅因物理相邻加入，没有独立相关性排名。
+    expected:
+      - seed 的预算优先级始终高于 neighbor。
+      - 只有剩余预算才保留 neighbor。
+  scenario_e_simple_behavior:
+    setup: 短文件、无可扩展邻块或扩展候选不超过预算。
+    expected:
+      - 证据集合和局部顺序与既有行为一致。
+  generalization:
+    heterogeneous_domains:
+      - 技术手册
+      - 法规资料
+      - 汽车维修资料
+    requirement: >-
+      使用合成数据覆盖至少三类异质文档语义；生产实现不得以领域词触发。
+
+test_scope:
+  new_contract:
+    - public_tests/retrieval/test_long_document_context_priority_contract.py
+  retrieval_existing:
+    - tests/retrieval/
+    - public_tests/retrieval/
+    - retrieval/search_engine.py 的既有直接与间接测试
+  scope_contracts:
+    - 多文件比较公共测试
+    - allowed_paths 公共测试
+    - 结果集范围公共测试
+  dialog_contracts:
+    - QuestionSignals / ScopeDecision 公共契约
+  full:
+    - .venv/bin/python -m pytest
+
+frozen_medical_regression:
+  corpus: test_notes/medical_public_smoke_2026-07-29-eval-corpus/
+  acceptance: test_notes/medical_public_smoke_2026-07-29-evaluation/acceptance_cases.yaml
+  output: test_notes/medical_public_smoke_2026-07-30-context-fix-regression/
+  fresh_cache_required: true
+  immutable_inputs:
+    - 三份资料及文件名
+    - manifest
+    - 十二个问句与 gold
+    - 连续会话顺序
+    - PASS / FAIL 标准
+    - 模型配置
+    - Prompt
+  target_cases:
+    - MED-002
+    - MED-003
+    - MED-004
+    - MED-005
+    - MED-011
+  controls:
+    - MED-001
+    - MED-006
+    - MED-007
+    - MED-008
+    - MED-009
+    - MED-010
+    - MED-012
+  deterministic_trace:
+    - gold 是否仍在初始召回
+    - seed 初始排名
+    - 邻块扩展结果
+    - 每文件预算前候选
+    - 每文件预算后候选
+    - 最终 relevant indices
+    - 最终 Prompt 是否包含 gold
+    - 最终回答
+  success:
+    - 五个目标 case 的 gold 均进入最终上下文。
+    - 不再被文件头部或低优先级邻块替换。
+    - MED-005 两份目标证据均进入上下文。
+    - MED-010 继续无证据安全回退。
+    - MED-012 继续不产生诊断、处方或剂量越界。
+    - MED-001、MED-006 至 MED-009 不出现新的确定性退化。
+  generation_boundary: >-
+    若 gold 已全部进入 Prompt 而回答仍有生成失败，记录为剩余生成问题，
+    不扩大本切片；若任一 gold 未进入 Prompt，本修复不通过且不提交实现。
+
+rollback_boundary:
+  docs_commit: >-
+    任务卡独立提交，可单独保留或回退，不依赖实现代码。
+  implementation_commit: >-
+    上下文选择实现与公开回归测试集中在单一提交；回退后恢复原 seed/neighbor
+    混合后按全局索引裁剪的行为，不涉及索引、缓存、配置、状态或数据迁移。
+
+verification:
+  task_card:
+    - UTF-8 可解码且无 BOM
+    - yaml.safe_load 可解析
+    - 递归检查无重复键
+    - git diff --check
+  implementation:
+    - .venv/bin/python -m py_compile retrieval/search_context.py retrieval/chunking.py
+    - .venv/bin/python -m pytest public_tests/retrieval/test_long_document_context_priority_contract.py
+    - .venv/bin/python -m pytest tests/retrieval public_tests/retrieval
+    - .venv/bin/python -m pytest <多文件比较、allowed_paths、结果集范围公共测试>
+    - .venv/bin/python -m pytest <QuestionSignals / ScopeDecision 公共契约>
+    - .venv/bin/python -m pytest
+    - git diff --check
+    - 乱码扫描
+
+commit_plan:
+  task_card:
+    title: "docs(retrieval): 定稿长文档高相关章节上下文保留任务卡"
+    body:
+      - "目标: 冻结已召回高相关章节在预算裁剪后仍进入最终上下文的通用验收边界。"
+      - "手段: 记录历史 A/B 根因、生产链、选择与展示分离原则及明确非目标。"
+  implementation:
+    title: "fix(retrieval): 保留长文档高相关章节进入最终上下文"
+    body:
+      - "目标: 保证长文档高相关 seed 在邻块扩展与每文件预算后仍进入生成上下文。"
+      - "手段: 先按 seed 相关性分配预算，再补邻块并按文档位置展示，配套通用回归。"
+  push: forbidden
+
+follow_up_not_in_this_slice:
+  - MED-001 的事实问句事件分类与生成契约
+  - manifest 与文件列举顺序稳定化
+  - β 等字符导致的稳定文件身份截断
+  - MED-007 至 MED-009 的结果集焦点链
+  - QuestionSignals / ScopeDecision 的后续消费者迁移
+
+acceptance:
+  - 新增公开回归至少一项在修复前稳定失败、修复后通过。
+  - 五类自动化场景及三类异质文档泛化验证通过。
+  - 相关检索、范围和对话公共契约通过。
+  - 全量 pytest 不低于 671 项且全部通过。
+  - 五个冻结目标 case 的 gold 均进入最终 Prompt。
+  - 控制场景没有新的确定性退化。
+  - 只形成任务卡与实现两个本地提交，最终工作区干净且未 push。
