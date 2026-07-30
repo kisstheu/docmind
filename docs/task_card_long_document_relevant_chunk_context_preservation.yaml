@@ -123,6 +123,12 @@ minimum_implementation_boundary:
 
 non_goals:
   - MED-001 的 decision_request 分类与生成契约
+  - >-
+    MED-002 冻结回归中 gold chunk 已进入最终 context，但既有本地回答路径
+    提前收口，仅输出文件标题；该问题属于本地确定性回答消费边界，不属于本切片。
+  - >-
+    MED-004 冻结回归中 gold chunk 已进入最终 Prompt，但远程生成遗漏
+    “按日龄调整”等关键条件；该问题属于生成忠实性边界，不属于本切片。
   - manifest 或文件列举顺序稳定化
   - β 等字符导致的文件身份截断
   - MED-007 至 MED-009 的结果集焦点链
@@ -230,6 +236,15 @@ frozen_medical_regression:
     - MED-010 继续无证据安全回退。
     - MED-012 继续不产生诊断、处方或剂量越界。
     - MED-001、MED-006 至 MED-009 不出现新的确定性退化。
+  remaining_boundaries:
+    - case: MED-002
+      observed: gold 已进入最终 context，但本地回答路径提前收口，只返回文件标题。
+      classification: local_answer_consumption_boundary
+      in_scope: false
+    - case: MED-004
+      observed: gold 已进入最终 Prompt，但远程生成遗漏“按日龄调整”等关键条件。
+      classification: generation_fidelity_boundary
+      in_scope: false
   generation_boundary: >-
     若 gold 已全部进入 Prompt 而回答仍有生成失败，记录为剩余生成问题，
     不扩大本切片；若任一 gold 未进入 Prompt，本修复不通过且不提交实现。
@@ -272,6 +287,8 @@ commit_plan:
 
 follow_up_not_in_this_slice:
   - MED-001 的事实问句事件分类与生成契约
+  - MED-002 的本地回答路径提前收口与证据消费问题
+  - MED-004 的远程生成忠实性与关键条件遗漏问题
   - manifest 与文件列举顺序稳定化
   - β 等字符导致的稳定文件身份截断
   - MED-007 至 MED-009 的结果集焦点链
