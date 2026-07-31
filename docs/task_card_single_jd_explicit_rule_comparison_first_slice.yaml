@@ -1,0 +1,427 @@
+version: 1
+
+task_name: single_jd_explicit_rule_comparison_first_slice
+
+task_goal: >-
+  在招聘插件 1.0 的单份单岗位 JD 明示约束提取结果之上，增加公开、不可变、
+  确定性的显式求职规则比较服务，逐字段输出明确符合、明确冲突或信息缺失/需要确认；
+  不替调用方决定是否投递，不改变既有 DomainPlugin handled/abstain 行为。
+
+repository_baseline:
+  architecture: monorepo
+  git_root: /home/kissyu/projects/docmind
+  branch: main
+  head: 5c80c46deaad731c485f4d34a9e859b3a37681a9
+  origin_main: 5c80c46deaad731c485f4d34a9e859b3a37681a9
+  ahead_behind: [0, 0]
+  working_tree: clean
+  plugin_package: packages/docmind-recruitment-plugin
+  authorization: >-
+    本切片允许插件源码、插件测试和本任务卡直接提交到 DocMind monorepo 的 main；
+    monorepo 授权不扩大到 Core 业务逻辑、Domain SDK、Host 或 composition。
+  plugin_test_baseline:
+    command: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      .venv/bin/python -m pytest -q packages/docmind-recruitment-plugin/tests
+    result: 75 passed
+    import_path: >-
+      /home/kissyu/projects/docmind/packages/docmind-recruitment-plugin/src/
+      docmind_recruitment_plugin/__init__.py
+    package_version: 0.1.0
+
+current_1_0_capability:
+  input:
+    source: DomainRequest.query
+    accepted_shape: 具有明确结构锚点的单份单岗位 JD
+    minimum_non_whitespace_characters: 80
+    required_anchors:
+      - 至少一个批准的岗位名称栏目
+      - 至少一个批准的任职或技术要求栏目
+    handled_field_threshold:
+      minimum_valid_fields: 4
+      required_fields:
+        - 岗位名称
+        - 技术要求
+  detection:
+    - 不同规范化岗位名称或两个完整岗位块时 abstain。
+    - 非 JD、短片段、自由招聘宣传和越界意图时 abstain。
+    - 比较服务不得修改 recognition.py 或反向影响上述判定。
+  extraction:
+    immutable_model: ExtractionResult
+    fields:
+      - 岗位名称
+      - 薪资
+      - 工作地点
+      - 工作制
+      - 加班或大小周
+      - 外包
+      - 驻场
+      - 学历
+      - 经验
+      - 技术要求
+    evidence: >-
+      ExtractionResult.fields 中的字段值保留当前 JD 的原文片段和限定语；非标题字段
+      多值冲突按原文顺序合并并标记“原文存在冲突”。
+    missing: 缺失字段不进入 fields，不输出“未提及”。
+    ambiguity: 原文冲突保留但不裁决；提取层不补全、不换算、不推断。
+  output:
+    handled: 稳定的“JD 明确约束”Markdown
+    abstain: 空 answer_markdown 的纯 abstain
+    no_rule_invariant: >-
+      RecruitmentJDPlugin.execute、probe 和 render_markdown 继续使用 1.0 路径；
+      未传显式规则时输出必须逐字符保持不变。
+
+phase_2_background:
+  motivation: >-
+    1.0 已提供原文明示约束，本阶段首片只增加可复用的硬条件比较，不重新实现 JD
+    提取器，也不把调用方画像塞进自然语言 query。
+  comparison_chain:
+    - 现有 recognize_query 判定单份 JD
+    - 现有 extract_constraints 生成 ExtractionResult
+    - 类型化比较服务接收 ExtractionResult 与 JobSearchRules
+    - 生成 JobRuleComparison
+    - 稳定渲染比较结果
+
+structured_input_contract:
+  type: JobSearchRules
+  immutable: true
+  collection_type: tuple
+  caller_supplied_only: true
+  fields:
+    minimum_monthly_salary_k:
+      type: Decimal | None
+      unit: 千元/月
+      meaning: 调用方明确给出的最低可接受月薪
+      float_forbidden: true
+    require_double_weekends:
+      type: bool | None
+    allow_outsourcing:
+      type: bool | None
+    allow_onsite:
+      type: bool | None
+    allowed_locations:
+      type: tuple[str, ...]
+      default: []
+      meaning: 调用方显式允许的地点值或别名集合
+    candidate_education_level:
+      type: EducationLevel | None
+    candidate_relevant_years:
+      type: Decimal | None
+      float_forbidden: true
+  validation:
+    - 薪资和年限不得为负数、NaN 或 Infinity。
+    - 地点不得包含空字符串。
+    - 不读取 WorkState、简历、环境变量、隐藏配置或历史对话。
+    - 不提供任何个人画像默认值。
+    - 不自动换算学习、实习、自研项目或非相关经历。
+
+structured_output_contract:
+  status:
+    MATCH: JD 明确信息满足调用方显式规则
+    CONFLICT: JD 明确信息与调用方显式规则明确冲突
+    UNKNOWN: >-
+      JD 未写、表述模糊、范围跨阈值、只写优先/加分/可协商、原文冲突或当前切片
+      无法可靠比较
+  assessment:
+    type: ConstraintAssessment
+    immutable: true
+    fields:
+      - field
+      - status
+      - jd_value
+      - rule_value
+      - jd_evidence
+      - reason
+      - confirmation_question
+  aggregate:
+    type: JobRuleComparison
+    immutable: true
+    fields:
+      assessments: tuple[ConstraintAssessment, ...]
+      unassessed_technical_evidence: tuple[str, ...]
+    optional_statistics:
+      - match_count
+      - conflict_count
+      - unknown_count
+  forbidden_output:
+    - 适合你
+    - 建议投递
+    - 不建议投递
+    - 综合匹配百分比
+    - 自动淘汰决定
+
+field_comparison_contract:
+  stable_order:
+    - salary
+    - work_schedule
+    - outsourcing
+    - onsite
+    - location
+    - education
+    - experience
+  salary:
+    source_field: 薪资
+    normalized_shape: 明确的 K/月最低值与最高值
+    rules:
+      - JD 最低值大于或等于规则下限为 MATCH。
+      - JD 最高值低于规则下限为 CONFLICT。
+      - JD 区间跨越规则下限为 UNKNOWN，并询问实际 offer。
+      - 面议、根据能力、上不封顶、缺失、原文冲突或无法无歧义换算为 UNKNOWN。
+      - 年薪、日薪、时薪、13薪、14薪不自行换算。
+  work_schedule:
+    source_fields:
+      - 工作制
+      - 加班或大小周
+    activation: require_double_weekends is not None
+    rules:
+      - 明确双休且要求双休为 MATCH。
+      - 明确单休、大小周、单双休、月休四天或等价硬工作制为 CONFLICT。
+      - 未写、弹性工作、原文冲突或含义不明为 UNKNOWN。
+  outsourcing:
+    source_field: 外包
+    activation: allow_outsourcing is not None
+    rules:
+      - 明确外包、派遣或第三方签约且不接受外包为 CONFLICT。
+      - 明确非外包或直接与用人主体签约且不接受外包为 MATCH。
+      - 未写、项目制、公司名称线索或含义不明为 UNKNOWN。
+  onsite:
+    source_field: 驻场
+    activation: allow_onsite is not None
+    rules:
+      - 明确长期驻场或客户现场办公且不接受驻场为 CONFLICT。
+      - 明确不驻场或本公司办公且不接受驻场为 MATCH。
+      - 现场沟通、偶尔去客户处、出差、未写或含义不明为 UNKNOWN。
+  location:
+    source_field: 工作地点
+    activation: allowed_locations 非空
+    normalization:
+      - 去除空白
+      - 去除末尾省、市、区、县后缀
+      - 不内置城市通勤关系或地区别名
+    rules:
+      - 唯一明确地点规范化后属于允许列表为 MATCH。
+      - 唯一明确地点规范化后不属于允许列表为 CONFLICT。
+      - 多地点任选、全国分配、待定、远程、缺失或原文冲突为 UNKNOWN。
+  education:
+    source_field: 学历
+    activation: candidate_education_level is not None
+    order:
+      - 不限
+      - 中专或高中
+      - 大专
+      - 本科
+      - 硕士
+      - 博士
+    rules:
+      - 候选学历达到明确硬性最低学历为 MATCH。
+      - 候选学历低于明确硬性最低学历为 CONFLICT。
+      - 缺失、优先、加分、可放宽或原文冲突为 UNKNOWN。
+      - 统招、全日制等额外限定必须保留证据并返回 UNKNOWN，不得被层级比较吞掉。
+  experience:
+    source_field: 经验
+    activation: candidate_relevant_years is not None
+    rules:
+      - 达到明确硬性最低相关年限为 MATCH。
+      - 低于明确硬性最低相关年限为 CONFLICT。
+      - 1至3年按最低1年比较，超过上限不构成冲突。
+      - 缺失、经验丰富、经验优先、原文冲突或无法解析为 UNKNOWN。
+  technical:
+    source_field: 技术要求
+    behavior:
+      - 只保留原文证据。
+      - 不产生 MATCH、CONFLICT 或 UNKNOWN assessment。
+      - 不做关键词计数、语义相似度、embedding、LLM 或匹配分。
+
+evidence_contract:
+  - 每个 assessment 的 jd_evidence 是对应提取字段的原文值 tuple。
+  - 缺失字段的 jd_evidence 为空 tuple，reason 必须明确说明 JD 未写。
+  - 不暴露内部 Python repr 或枚举 repr。
+  - UNKNOWN 在可操作时提供一个具体 confirmation_question。
+  - 不伪造 SDK EvidenceRef；本服务的原文证据仅属于插件私有比较 DTO。
+
+rendering_contract:
+  section_order:
+    - 明确符合
+    - 明确冲突
+    - 信息缺失或需要确认
+    - 技术要求原文
+  rules:
+    - assessment 在各分组内仍按字段固定顺序排列。
+    - 同一输入得到稳定输出。
+    - 每项显示原因和 JD 证据；无证据时明确显示“JD未明确”。
+    - UNKNOWN 有确认问题时显示“建议确认”。
+    - 空分组明确显示“无”或按统一策略省略，策略必须稳定。
+    - 不输出投递决定、匹配率或内部状态值。
+
+production_integration:
+  sdk_domain_request:
+    structured_options_available: false
+    evidence: >-
+      protocol 1.0 DomainRequest 仅包含 protocol_version、request_id、query、locale、
+      source_scope、focus 和 deadline_ms，extra=forbid。
+  selected_path: plugin_internal_typed_service
+  public_api:
+    - 公开 JobSearchRules、EducationLevel、ConstraintStatus、ConstraintAssessment 与 JobRuleComparison。
+    - 公开从现有 ExtractionResult 比较的服务入口。
+    - 可提供“query -> 现有提取 -> 比较结果”的便利入口，但必须复用 extract_constraints。
+    - 公开稳定比较渲染入口。
+  domain_plugin_behavior:
+    - RecruitmentJDPlugin.execute 不消费规则，保持 1.0 完全兼容。
+    - RecruitmentJDPlugin.probe 与 recognize_query 不变。
+    - 比较服务不影响 JD 是否 handled。
+  host_boundary:
+    - 不修改 Domain SDK。
+    - 不修改 Host、composition、dispatch port 或 ask_notes.py。
+    - 不把规则拼进 query。
+    - 不新增自由文本用户画像解析器。
+    - 不声称 DocMind CLI 已可直接传入结构化规则。
+
+editable_scope:
+  allow:
+    - docs/task_card_single_jd_explicit_rule_comparison_first_slice.yaml
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/**
+    - packages/docmind-recruitment-plugin/tests/**
+    - public_tests/domain/test_recruitment_jd_slice_contract.py
+  deny:
+    - app/**
+    - retrieval/**
+    - ai/**
+    - infra/**
+    - bootstrap/**
+    - ask_notes.py
+    - packages/docmind-domain-sdk/**
+    - packages/docmind-automotive-plugin/**
+    - requirements.txt
+
+non_goals:
+  - 硬编码任何用户的学历、薪资、地点、工作制、外包或驻场画像
+  - 自动决定投递或自动淘汰
+  - 技术栈语义匹配、关键词匹配分或综合百分比
+  - 联网调查公司、企业工商信息或岗位真实性
+  - 多份 JD、多个岗位批量比较
+  - 修改 DocMind Core、Domain SDK、Host、composition 或 dispatch
+  - 医药岗位或其他行业专用规则
+  - 简历解析、简历改写或项目经历换算
+  - 自动发消息、投递、面试或薪资谈判建议
+  - 用项目能力绕过学历、年限等硬条件
+  - LLM、embedding、数据库、持久化或网络调用
+
+automated_scenarios:
+  salary:
+    - JD 最低值达到规则时 MATCH
+    - JD 最高值低于规则时 CONFLICT
+    - 区间跨越阈值时 UNKNOWN
+    - 面议时 UNKNOWN
+    - 未写时 UNKNOWN
+  work_schedule:
+    - 双休与双休要求为 MATCH
+    - 单休或大小周与双休要求为 CONFLICT
+    - 未写为 UNKNOWN
+  outsourcing_and_onsite:
+    - 明确外包且规则不接受为 CONFLICT
+    - 未写外包为 UNKNOWN
+    - 明确长期驻场且规则不接受为 CONFLICT
+    - 只写现场沟通为 UNKNOWN
+  location:
+    - 唯一地点在允许列表为 MATCH
+    - 唯一地点不在允许列表为 CONFLICT
+    - 多地点或待定为 UNKNOWN
+  education:
+    - 大专候选面对大专及以上为 MATCH
+    - 大专候选面对本科及以上硬要求为 CONFLICT
+    - 本科优先不判硬冲突并为 UNKNOWN
+    - 统招本科限定保留且为 UNKNOWN
+  experience:
+    - 达到最低年限为 MATCH
+    - 低于最低年限为 CONFLICT
+    - 有经验者优先为 UNKNOWN
+    - 超过 JD 区间上限不冲突
+  combined_and_compatibility:
+    - 一份 JD 同时产生 MATCH、CONFLICT 和 UNKNOWN
+    - 每项包含 JD 原文证据
+    - UNKNOWN 生成具体确认问题
+    - 技术要求只保留证据
+    - 不传规则时旧输出逐字符不变
+    - 非 JD 继续 abstain
+    - 多岗位输入保持既有 abstain
+    - 输出分组和字段顺序稳定
+    - 生产代码不存在个人画像默认值
+    - 命中、相邻误触发和跨域反例均通过
+
+quality_gate:
+  environment:
+    - 使用 .venv/bin/python。
+    - 测试显式设置仓库 SDK 与插件 src 的 PYTHONPATH。
+    - 构建物安装到 mktemp -d 下的临时 target，不覆盖当前 .venv 插件。
+    - 导入验证必须输出模块实际路径与包版本。
+  commands:
+    task_card_yaml: >-
+      .venv/bin/python -c
+      "from pathlib import Path; import yaml;
+      yaml.safe_load(Path('docs/task_card_single_jd_explicit_rule_comparison_first_slice.yaml').read_text(encoding='utf-8'))"
+    plugin_tests: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider
+      packages/docmind-recruitment-plugin/tests
+    py_compile: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      .venv/bin/python -m py_compile
+      packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/*.py
+      packages/docmind-recruitment-plugin/tests/*.py
+    build: >-
+      .venv/bin/python -m build packages/docmind-recruitment-plugin
+    core_targeted: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      .venv/bin/python -m pytest -q
+      packages/docmind-domain-sdk/tests
+      public_tests/domain/test_domain_dispatch_port_empty_host.py
+      public_tests/domain/test_recruitment_jd_slice_contract.py
+      public_tests/domain/test_recruitment_jd_production_wiring_contract.py
+    core_full: >-
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      .venv/bin/python -m pytest -q
+    whitespace: git diff --check
+  required_results:
+    - 修改前插件基线通过。
+    - 新增比较场景与插件全量测试通过。
+    - 插件 wheel 构建、临时 target 安装和新产物导入通过。
+    - 插件实例化通过。
+    - 修改模块 py_compile 通过。
+    - 仓库已有 lint/type check 如存在则通过；不存在则如实报告。
+    - Core 定向测试通过。
+    - Core 全量不少于 679 passed，warning 不过滤。
+    - 中文源码乱码扫描通过。
+    - git diff --check 通过。
+
+rollback_boundary:
+  commits:
+    - docs(recruitment): 定稿单JD显式规则比较首切片
+    - feat(recruitment): 比较单JD约束与显式求职规则
+  behavior: >-
+    第二个提交只新增插件内部比较 API、渲染与测试；回滚第二个提交即可完全移除比较能力，
+    1.0 DomainPlugin 输出与 abstain 边界不依赖新服务。
+  forbidden_rollback_methods:
+    - reset
+    - restore
+    - stash
+    - clean
+
+acceptance_min:
+  - 七个字段只依据现有提取结果与调用方显式规则确定性比较。
+  - MATCH、CONFLICT、UNKNOWN 语义严格区分，缺失或含糊绝不判冲突。
+  - 每项保留原文证据，UNKNOWN 尽量带具体确认问题。
+  - 技术要求只输出原文证据，不参与结论。
+  - 比较与渲染结构不可变、顺序稳定，不含投递决定或匹配率。
+  - 无规则 DomainPlugin 输出、非 JD abstain 和多岗位边界不变。
+  - 不修改 Core 业务逻辑、Domain SDK、Host、composition、dispatch 或 ask_notes.py。
+  - 使用仓库源码或本次 wheel 完成测试，不使用旧临时 wheel 作为验收依据。
+  - 两个提交均留在本地 main，不 push。
+
+next_independent_slices:
+  record_only: true
+  items:
+    - Host 与 SDK 的结构化规则传输通道
+    - 技术方向语义匹配
+    - 多 JD 比较
+    - 投递建议与用户决策支持
+  implementation_authorized: false
