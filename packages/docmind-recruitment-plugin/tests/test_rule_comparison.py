@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, fields
 from decimal import Decimal
 import inspect
 from pathlib import Path
@@ -10,6 +10,7 @@ import pytest
 
 from docmind_domain_sdk import DomainRequest
 from docmind_recruitment_plugin import (
+    ConstraintAssessment,
     ConstraintStatus,
     EducationLevel,
     ExtractionResult,
@@ -20,6 +21,27 @@ from docmind_recruitment_plugin import (
     extract_and_compare,
     extract_constraints,
     render_job_rule_comparison,
+)
+from docmind_recruitment_plugin.comparison import (
+    ConstraintAssessment as ComparisonConstraintAssessment,
+)
+from docmind_recruitment_plugin.comparison import (
+    ConstraintStatus as ComparisonConstraintStatus,
+)
+from docmind_recruitment_plugin.comparison import (
+    EducationLevel as ComparisonEducationLevel,
+)
+from docmind_recruitment_plugin.comparison import (
+    JobRuleComparison as ComparisonJobRuleComparison,
+)
+from docmind_recruitment_plugin.comparison import (
+    JobSearchRules as ComparisonJobSearchRules,
+)
+from docmind_recruitment_plugin.comparison import (
+    compare_job_search_rules as comparison_compare_job_search_rules,
+)
+from docmind_recruitment_plugin.comparison import (
+    extract_and_compare as comparison_extract_and_compare,
 )
 
 
@@ -79,6 +101,51 @@ def _execute(query: str):
         source_scope=(),
     )
     return asyncio.run(RecruitmentJDPlugin().execute(request))
+
+
+def test_public_comparison_facade_preserves_contract_exports() -> None:
+    assert ComparisonEducationLevel is EducationLevel
+    assert ComparisonConstraintStatus is ConstraintStatus
+    assert ComparisonJobSearchRules is JobSearchRules
+    assert ComparisonConstraintAssessment is ConstraintAssessment
+    assert ComparisonJobRuleComparison is JobRuleComparison
+    assert comparison_compare_job_search_rules is compare_job_search_rules
+    assert comparison_extract_and_compare is extract_and_compare
+    assert tuple(item.value for item in EducationLevel) == (
+        "unrestricted",
+        "secondary",
+        "associate",
+        "bachelor",
+        "master",
+        "doctorate",
+    )
+    assert tuple(item.value for item in ConstraintStatus) == (
+        "match",
+        "conflict",
+        "unknown",
+    )
+    assert tuple(field.name for field in fields(JobSearchRules)) == (
+        "minimum_monthly_salary_k",
+        "require_double_weekends",
+        "allow_outsourcing",
+        "allow_onsite",
+        "allowed_locations",
+        "candidate_education_level",
+        "candidate_relevant_years",
+    )
+    assert tuple(field.name for field in fields(ConstraintAssessment)) == (
+        "field",
+        "status",
+        "jd_value",
+        "rule_value",
+        "jd_evidence",
+        "reason",
+        "confirmation_question",
+    )
+    assert tuple(field.name for field in fields(JobRuleComparison)) == (
+        "assessments",
+        "unassessed_technical_evidence",
+    )
 
 
 def test_explicit_rule_models_are_public_frozen_and_have_no_profile_defaults() -> None:
