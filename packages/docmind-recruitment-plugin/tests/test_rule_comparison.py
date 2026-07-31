@@ -232,6 +232,36 @@ def test_work_schedule_comparison_uses_explicit_schedule_only(
 
 
 @pytest.mark.parametrize(
+    ("work_schedule", "status"),
+    (
+        ("双休或单休", ConstraintStatus.UNKNOWN),
+        ("双休/单休", ConstraintStatus.UNKNOWN),
+        ("单双休", ConstraintStatus.CONFLICT),
+        ("双休", ConstraintStatus.MATCH),
+        ("周末双休", ConstraintStatus.MATCH),
+        ("单休", ConstraintStatus.CONFLICT),
+        ("月休四天", ConstraintStatus.CONFLICT),
+        ("月休六天", ConstraintStatus.CONFLICT),
+    ),
+)
+def test_work_schedule_distinguishes_conflicting_independent_evidence(
+    work_schedule: str,
+    status: ConstraintStatus,
+) -> None:
+    result = _comparison(
+        _jd(work_schedule=work_schedule),
+        require_double_weekends=True,
+    )
+    assessment = _assessment(result, "work_schedule")
+
+    assert assessment.status is status
+    assert assessment.jd_evidence == (work_schedule,)
+    if status is ConstraintStatus.UNKNOWN:
+        assert "相反工作制信息" in assessment.reason
+        assert assessment.confirmation_question == "该岗位是否固定周末双休？"
+
+
+@pytest.mark.parametrize(
     ("outsourcing", "status"),
     (
         ("第三方签约", ConstraintStatus.CONFLICT),
@@ -254,6 +284,51 @@ def test_outsourcing_comparison_does_not_guess_from_project_wording(
 
 
 @pytest.mark.parametrize(
+    ("outsourcing", "status", "reason_fragment"),
+    (
+        (
+            "非外包但第三方签约",
+            ConstraintStatus.UNKNOWN,
+            "相反的外包性质信息",
+        ),
+        (
+            "非外包，但与第三方签约",
+            ConstraintStatus.UNKNOWN,
+            "相反的外包性质信息",
+        ),
+        (
+            "不是外包，劳动合同却由第三方签署",
+            ConstraintStatus.UNKNOWN,
+            "相反的外包性质信息",
+        ),
+        ("非外包", ConstraintStatus.MATCH, None),
+        ("第三方签约", ConstraintStatus.CONFLICT, None),
+        ("项目制", ConstraintStatus.UNKNOWN, "不足以可靠确认"),
+    ),
+)
+def test_outsourcing_distinguishes_independent_positive_and_negative_evidence(
+    outsourcing: str,
+    status: ConstraintStatus,
+    reason_fragment: str | None,
+) -> None:
+    result = _comparison(
+        _jd(outsourcing=outsourcing),
+        allow_outsourcing=False,
+    )
+    assessment = _assessment(result, "outsourcing")
+
+    assert assessment.status is status
+    assert assessment.jd_evidence == (outsourcing,)
+    if status is ConstraintStatus.UNKNOWN:
+        assert reason_fragment is not None
+        assert reason_fragment in assessment.reason
+        assert (
+            assessment.confirmation_question
+            == "该岗位是否为外包、派遣或第三方签约？"
+        )
+
+
+@pytest.mark.parametrize(
     ("onsite", "status"),
     (
         ("长期驻客户现场办公", ConstraintStatus.CONFLICT),
@@ -270,6 +345,44 @@ def test_onsite_comparison_requires_long_term_onsite_evidence(
     result = _comparison(_jd(onsite=onsite), allow_onsite=False)
 
     assert _assessment(result, "onsite").status is status
+
+
+@pytest.mark.parametrize(
+    ("onsite", "status", "reason_fragment"),
+    (
+        (
+            "不驻场但长期驻场",
+            ConstraintStatus.UNKNOWN,
+            "相反的驻场信息",
+        ),
+        (
+            "非驻场但客户现场办公",
+            ConstraintStatus.UNKNOWN,
+            "相反的驻场信息",
+        ),
+        ("不驻场", ConstraintStatus.MATCH, None),
+        ("本公司办公", ConstraintStatus.MATCH, None),
+        ("长期驻场", ConstraintStatus.CONFLICT, None),
+        ("需要现场沟通", ConstraintStatus.UNKNOWN, "现场沟通"),
+    ),
+)
+def test_onsite_distinguishes_independent_positive_and_negative_evidence(
+    onsite: str,
+    status: ConstraintStatus,
+    reason_fragment: str | None,
+) -> None:
+    result = _comparison(_jd(onsite=onsite), allow_onsite=False)
+    assessment = _assessment(result, "onsite")
+
+    assert assessment.status is status
+    assert assessment.jd_evidence == (onsite,)
+    if status is ConstraintStatus.UNKNOWN:
+        assert reason_fragment is not None
+        assert reason_fragment in assessment.reason
+        assert (
+            assessment.confirmation_question
+            == "该岗位是否需要长期驻客户现场办公？"
+        )
 
 
 @pytest.mark.parametrize(
@@ -394,6 +507,40 @@ def test_experience_compares_hard_minimum_and_ignores_upper_bound(
     )
 
     assert _assessment(result, "experience").status is status
+
+
+@pytest.mark.parametrize(
+    ("experience", "status"),
+    (
+        ("3年左右", ConstraintStatus.UNKNOWN),
+        ("约3年", ConstraintStatus.UNKNOWN),
+        ("大约3年", ConstraintStatus.UNKNOWN),
+        ("3年上下", ConstraintStatus.UNKNOWN),
+        ("至少3年", ConstraintStatus.CONFLICT),
+        ("不低于3年", ConstraintStatus.CONFLICT),
+        ("3年以上", ConstraintStatus.CONFLICT),
+        ("1～3年", ConstraintStatus.MATCH),
+        ("3年", ConstraintStatus.CONFLICT),
+    ),
+)
+def test_experience_distinguishes_approximate_from_hard_minimum(
+    experience: str,
+    status: ConstraintStatus,
+) -> None:
+    result = _comparison(
+        _jd(experience=experience),
+        candidate_relevant_years=Decimal("2"),
+    )
+    assessment = _assessment(result, "experience")
+
+    assert assessment.status is status
+    assert assessment.jd_evidence == (experience,)
+    if status is ConstraintStatus.UNKNOWN:
+        assert "近似年限" in assessment.reason
+        assert (
+            assessment.confirmation_question
+            == "该岗位硬性要求的最低相关经验年限是多少？"
+        )
 
 
 def test_one_jd_can_produce_match_conflict_and_unknown_with_evidence() -> None:

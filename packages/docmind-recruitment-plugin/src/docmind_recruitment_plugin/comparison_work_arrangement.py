@@ -7,15 +7,18 @@ from .comparison_support import _CONFLICT_MARKER, _evidence, _unknown
 
 
 _NON_DOUBLE_WEEKEND = re.compile(
-    r"单休|大小周|单双休|月休\s*(?:四|4|六|6)\s*天"
+    r"单双休|单休|大小周|月休\s*(?:四|4|六|6)\s*天"
 )
 _DOUBLE_WEEKEND = re.compile(r"周末双休|双休")
-_OUTSOURCING_NEGATIVE = re.compile(
-    r"非外包|不是外包|不属于外包|不接受外包|非派遣|不是派遣|不派遣|"
+_OUTSOURCING_NEGATED_TERM = re.compile(
+    r"非外包|不是外包|不属于外包|不接受外包|非派遣|不是派遣|不派遣"
+)
+_OUTSOURCING_DIRECT_SIGNING = re.compile(
     r"(?:与|和)?用人主体直接签约|直接与.{0,12}签订(?:劳动)?合同"
 )
 _OUTSOURCING_POSITIVE = re.compile(
-    r"外包|派遣|第三方.{0,8}(?:签约|合同)"
+    r"外包|派遣|第三方.{0,8}(?:签约|合同|签署)|"
+    r"(?:劳动)?合同.{0,8}第三方(?:签署|签订)"
 )
 _ONSITE_NEGATIVE = re.compile(
     r"不驻场|非驻场|无需驻场|不需要驻场|本公司办公|总部办公"
@@ -56,7 +59,16 @@ def _assess_work_schedule(
             question=question,
         )
     is_non_double = _NON_DOUBLE_WEEKEND.search(combined) is not None
-    is_double = _DOUBLE_WEEKEND.search(combined) is not None
+    independent_double_source = _NON_DOUBLE_WEEKEND.sub("", combined)
+    is_double = _DOUBLE_WEEKEND.search(independent_double_source) is not None
+    if is_non_double and is_double:
+        return _unknown(
+            field="work_schedule",
+            rule_value=require_double_weekends,
+            evidence=evidence,
+            reason="JD 工作制原文同时存在相反工作制信息，不能可靠判断。",
+            question=question,
+        )
     if require_double_weekends and is_non_double:
         return ConstraintAssessment(
             field="work_schedule",
@@ -121,15 +133,25 @@ def _assess_outsourcing(
     compact = "".join(raw.split())
     is_negative = (
         compact in {"否", "不是", "非外包"}
-        or _OUTSOURCING_NEGATIVE.search(raw) is not None
+        or _OUTSOURCING_NEGATED_TERM.search(raw) is not None
+        or _OUTSOURCING_DIRECT_SIGNING.search(raw) is not None
     )
+    independent_positive_source = _OUTSOURCING_NEGATED_TERM.sub("", raw)
     is_positive = (
         compact in {"是", "外包"}
         or (
-            _OUTSOURCING_POSITIVE.search(raw) is not None
-            and not is_negative
+            _OUTSOURCING_POSITIVE.search(independent_positive_source)
+            is not None
         )
     )
+    if is_negative and is_positive:
+        return _unknown(
+            field="outsourcing",
+            rule_value=allow_outsourcing,
+            evidence=evidence,
+            reason="JD 原文同时存在相反的外包性质信息，不能可靠判断。",
+            question=question,
+        )
     if not (is_negative or is_positive):
         return _unknown(
             field="outsourcing",
@@ -189,13 +211,19 @@ def _assess_onsite(
         compact in {"否", "不是", "不驻场"}
         or _ONSITE_NEGATIVE.search(raw) is not None
     )
+    independent_positive_source = _ONSITE_NEGATIVE.sub("", raw)
     is_positive = (
         compact in {"是", "驻场"}
-        or (
-            _ONSITE_POSITIVE.search(raw) is not None
-            and not is_negative
-        )
+        or _ONSITE_POSITIVE.search(independent_positive_source) is not None
     )
+    if is_negative and is_positive:
+        return _unknown(
+            field="onsite",
+            rule_value=allow_onsite,
+            evidence=evidence,
+            reason="JD 原文同时存在相反的驻场信息，不能可靠判断。",
+            question=question,
+        )
     if not (is_negative or is_positive):
         return _unknown(
             field="onsite",

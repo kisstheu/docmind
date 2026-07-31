@@ -37,6 +37,10 @@ _EDUCATION_RANK = {
 }
 _EXPERIENCE_SOFT = re.compile(r"优先|加分|经验丰富|有经验者|经验不限")
 _EXPERIENCE_MAXIMUM_ONLY = re.compile(r"以下|不超过|至多")
+_EXPERIENCE_APPROXIMATE = re.compile(
+    r"(?:大约|约)\s*\d+(?:\.\d+)?\s*年|"
+    r"\d+(?:\.\d+)?\s*年\s*(?:左右|上下)"
+)
 _EXPERIENCE_RANGE = re.compile(
     r"(?P<minimum>\d+(?:\.\d+)?)\s*"
     r"[-–—~～至到]\s*"
@@ -124,6 +128,14 @@ def _assess_experience(
             question=question,
         )
     raw = evidence[0]
+    if _EXPERIENCE_APPROXIMATE.search(raw):
+        return _unknown(
+            field="experience",
+            rule_value=candidate_years,
+            evidence=evidence,
+            reason="JD 只给出近似年限，不能作为明确的硬性最低经验要求。",
+            question=question,
+        )
     if (
         _CONFLICT_MARKER in raw
         or _EXPERIENCE_SOFT.search(raw)
