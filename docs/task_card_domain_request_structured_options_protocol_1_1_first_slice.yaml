@@ -1,0 +1,857 @@
+version: 1
+
+task_name: domain_request_structured_options_protocol_1_1_first_slice
+
+card_status: finalized
+
+task_goal: >-
+  在不改写 protocol 1.0 artifact、不引入任何领域业务语义的前提下，交付
+  protocol 1.1 的 DomainRequest 通用 request-local 结构化 options 契约，打通
+  调用方到 dispatch、Host 和 DomainPlugin.execute 的完整透明传递，并以递归
+  JSON Schema、固定安全配额和兼容性回归冻结无 options 时的既有行为。
+
+current_execution_boundary:
+  docs_only: true
+  allowed_change: docs/task_card_domain_request_structured_options_protocol_1_1_first_slice.yaml
+  implementation_in_this_run: forbidden
+  test_implementation_in_this_run: forbidden
+  schema_generation_in_this_run: forbidden
+  local_commit_required: true
+  push: forbidden
+
+repository_baseline:
+  architecture: monorepo
+  git_root: /home/kissyu/projects/docmind
+  branch: main
+  head: 8d43d2dab5324acc1ac7ab27ed31822cdc46e5e2
+  main: 8d43d2dab5324acc1ac7ab27ed31822cdc46e5e2
+  origin_main: 8d43d2dab5324acc1ac7ab27ed31822cdc46e5e2
+  ahead_behind: [0, 0]
+  working_tree: clean
+  current_sdk_package_version: 0.1.0
+  current_protocol_version: "1.0"
+  current_protocol_1_0_schema:
+    path: packages/docmind-domain-sdk/src/docmind_domain_sdk/schemas/protocol-1.0.schema.json
+    size_bytes: 21931
+    sha256: ef119f934d9a30794fa8aa429489e213fa4183abb1ee0e34f4ddd75550a52dc3
+
+task_background:
+  - >-
+    当前 DomainRequest 只能承载 protocol_version、request_id、query、locale、
+    source_scope、focus 和 deadline_ms，且所有 WireModel 都配置 extra=forbid。
+  - >-
+    当前显式规则比较能力已作为插件内部类型化服务存在，但 DomainPlugin.execute
+    没有 request-local 结构化参数通道，调用方无法通过公共协议传入额外控制参数。
+  - >-
+    ADR 已固定“通用 Core + 领域无关 Host + 中立 SDK/线协议 + 独立领域插件”
+    的依赖方向；结构化参数必须沿同一 DTO 边界传递，不能形成旁路耦合。
+  - >-
+    本任务的架构探索结论为 GO，本卡不重新讨论是否需要该能力，只冻结首个
+    可独立验收的实现切片。
+
+current_evidence:
+  sdk_dto:
+    path: packages/docmind-domain-sdk/src/docmind_domain_sdk/dto.py
+    symbols:
+      - WireModel
+      - DomainRequest
+      - PluginStartRequest
+    facts:
+      - WireModel 使用 extra=forbid、frozen=True 和 allow_inf_nan=False。
+      - DomainRequest 当前没有 options、metadata、context、extension 或 attributes 字段。
+      - PluginStartRequest.config 是启动期配置，不是 request-local 输入。
+      - PluginStartRequest.config 使用 Pydantic JsonValue，但不承诺深层不可变。
+  sdk_protocol:
+    path: packages/docmind-domain-sdk/src/docmind_domain_sdk/protocol.py
+    facts:
+      - probe 与 execute 都接收同一个 DomainRequest 类型。
+      - DomainPlugin 只交换 SDK DTO，不接收 Host 或 Core 内部对象。
+  sdk_validation:
+    path: packages/docmind-domain-sdk/src/docmind_domain_sdk/validation.py
+    reusable_error: docmind_domain_sdk.ProtocolViolationError
+    facts:
+      - 当前只存在跨消息结果边界校验，没有 DomainRequest options 配额校验。
+      - ProtocolViolationError 是现有统一协议边界错误类型。
+  protocol_1_0_schema:
+    path: packages/docmind-domain-sdk/src/docmind_domain_sdk/schemas/protocol-1.0.schema.json
+    facts:
+      - DomainRequest.additionalProperties 为 false。
+      - DomainRequest.protocol_version 固定为 1.0。
+      - $defs.JsonValue 当前实际为空 Schema 对象 {}。
+      - 旧 1.0 接收方会拒绝包含新顶层字段的请求。
+  schema_generator:
+    path: packages/docmind-domain-sdk/scripts/generate_json_schema.py
+    facts:
+      - 当前生成目标固定为 protocol-1.0.schema.json。
+      - title、$id 和 x-protocol-version 当前固定为 1.0。
+  dispatch_port:
+    path: app/domain_dispatch_port.py
+    symbols:
+      - DomainDispatchPort
+      - dispatch_domain_request
+    facts:
+      - dispatch_domain_request 当前只接收 port 与 question。
+      - request_id 在 helper 内生成，query 逐字符使用传入 question，source_scope 固定为空。
+      - helper 捕获端口异常并回落 None。
+  host:
+    path: app/domain_host/host.py
+    symbols:
+      - EmptyDomainHost
+      - StaticDomainHost
+    facts:
+      - StaticDomainHost 当前静态持有一个插件。
+      - 当前不调用 describe、start、sync_sources、probe 或 stop。
+      - dispatch 将收到的 DomainRequest 直接交给一次 plugin.execute。
+      - 当前没有动态发现、能力协商、多插件调用或请求大小治理。
+  runner:
+    path: app/chat_loop_parts/runner.py
+    facts:
+      - 通用守门后调用 dispatch_domain_request(domain_dispatch_port, question)。
+      - runner 当前没有 request-local options 来源。
+      - 首切片保持该调用不变，由 helper 默认空 options 保持旧行为。
+  composition:
+    path: bootstrap/domain_composition.py
+    facts:
+      - create_domain_host 只构造 EmptyDomainHost 或 StaticDomainHost。
+      - 首切片不需要修改 composition。
+  cli:
+    path: ask_notes.py
+    facts:
+      - 当前 CLI 只提供 notes-dir 参数。
+      - 首切片不增加任何面向最终用户的 options 输入方式。
+  plugin_dependency:
+    path: packages/docmind-recruitment-plugin/pyproject.toml
+    facts:
+      - 当前精确依赖 docmind-domain-sdk==0.1.0。
+      - SDK 升级到 0.2.0 后必须只同步依赖元数据，插件业务源码保持不变。
+  adr:
+    path: docs/adr/0001-domain-plugin-boundary-and-future-mcp-adapter.md
+    facts:
+      - SDK 负责严格、版本化、可 JSON 序列化的 DTO。
+      - Host 负责协议、大小、权限和调用边界，不解释领域业务语义。
+      - Core、Host 和 SDK 不得包含具体领域字段或词表。
+
+problem_definition:
+  missing_capability: >-
+    公共请求协议缺少 request-local 的通用结构化参数通道，调用方只能传 query，
+    插件只能依赖固定 DTO 字段。
+  rejected_paths:
+    - 把结构化规则拼进 query
+    - 使用具体插件专用的 Host 参数
+    - 复用 PluginStartRequest.config
+    - 把调用方参数塞进 FocusContext
+    - 增加含义宽泛的 metadata 或 context 字段
+    - 为每个领域建立专用请求 DTO
+    - 通过 kwargs、全局变量、环境变量或会话状态旁路传递
+  reason: >-
+    上述路径会混淆请求语义、生命周期配置、Host 内部上下文或插件状态，并破坏
+    统一 Host 分发及未来 JSON transport 的稳定边界。
+
+architecture_decision:
+  decision: GO
+  selected_contract: DomainRequest.options
+  target_protocol: "1.1"
+  rationale:
+    - options 明确表达调用方本轮提供的可选结构化参数。
+    - 字段保持领域无关，SDK 和 Host 不定义任何业务 key。
+    - 默认空对象允许旧调用代码和现有 runner 不改调用方式。
+    - 插件拥有业务 schema、业务校验和未知 key 策略。
+  concept_separation:
+    core_semantics:
+      fields:
+        - query
+        - source_scope
+        - focus
+        - locale
+      meaning: 请求的核心问题、授权来源与通用交互状态。
+    caller_options:
+      field: options
+      meaning: 调用方只针对本次请求提供的可选结构化参数。
+    host_execution_context:
+      examples:
+        - logger
+        - trace span
+        - timeout timer
+        - transport connection
+        - authentication object
+      wire_behavior: 不进入 DomainRequest.options。
+    capability_negotiation:
+      examples:
+        - supported protocol range
+        - option schema declaration
+        - transport permissions
+      wire_behavior: 不由 options 承载，且不在首切片实现。
+
+protocol_version_strategy:
+  current_protocol: "1.0"
+  target_protocol: "1.1"
+  sdk_package_version_after_slice: 0.2.0
+  package_and_protocol_versions_evolve_independently: true
+  protocol_1_0:
+    artifact_immutable: true
+    path: packages/docmind-domain-sdk/src/docmind_domain_sdk/schemas/protocol-1.0.schema.json
+    required_sha256: ef119f934d9a30794fa8aa429489e213fa4183abb1ee0e34f4ddd75550a52dc3
+    behavior:
+      - 不重新生成。
+      - 不修改 title、$id、定义、空白、排序或结尾换行。
+      - 保持 additionalProperties=false 和既有 $defs.JsonValue={} 作为历史事实。
+  protocol_1_1:
+    artifact: packages/docmind-domain-sdk/src/docmind_domain_sdk/schemas/protocol-1.1.schema.json
+    schema_draft: "2020-12"
+    schema_id: urn:docmind:domain-plugin-protocol:1.1
+    default_protocol_version: "1.1"
+    domain_request_accepted_versions:
+      - "1.0"
+      - "1.1"
+    legacy_request_rule: >-
+      protocol_version=1.0 的请求只能省略 options 或携带空 options；非空 options
+      与 1.0 标记组合必须拒绝，禁止把 1.1 能力伪装成 1.0。
+    other_top_level_messages: >-
+      protocol 1.1 SDK 构造的其他顶层消息默认并固定为 1.1；本切片只对
+      DomainRequest 定义 1.0 输入兼容读取。
+  reason_for_minor_version: >-
+    options 是可选的加法式请求字段，没有改变 DomainPlugin 方法集合或既有字段语义；
+    但 1.0 additionalProperties=false 使新 wire 请求无法被旧接收方读取，因此必须
+    发布 1.1 Schema，不能原地改写 1.0，也不需要升级到 2.0。
+
+dto_contract:
+  field_name: options
+  conceptual_python_type: "Mapping[str, JsonValue]"
+  concrete_sdk_storage: "dict[str, JsonValue]"
+  wire_type: JSON object
+  default_factory: dict
+  default_behavior: >-
+    调用方省略 options 时，DomainRequest.options 等于空对象；query、Host 调用次数、
+    插件输出和普通检索回落均与当前行为一致。
+  json_value:
+    public_sdk_type: JsonValue
+    recursive_definition:
+      scalar:
+        - string
+        - boolean
+        - null
+        - finite integer
+        - finite number
+      containers:
+        - "list[JsonValue]"
+        - "dict[str, JsonValue]"
+    accepted_examples:
+      - '{"flag": true}'
+      - '{"count": 3, "ratio": 0.5}'
+      - '{"nested": {"items": ["x", null]}}'
+    forbidden_runtime_inputs:
+      - pathlib.Path
+      - bytes
+      - bytearray
+      - Decimal
+      - set
+      - frozenset
+      - tuple
+      - arbitrary object instance
+      - callable
+      - NaN
+      - positive Infinity
+      - negative Infinity
+      - cyclic dict or list
+      - non-string mapping key
+    coercion_policy: >-
+      禁止把上述非法 Python 输入静默转换为字符串、数字、列表或其他 JSON 值。
+    schema_requirement: >-
+      protocol 1.1 的 $defs.JsonValue 必须真实递归表达 object、array、string、boolean、
+      null、integer 和 number；object.additionalProperties 与 array.items 必须递归引用
+      JsonValue，禁止继续生成空 Schema {}。
+  top_level_unknown_fields: forbid
+  numbers:
+    finite_only: true
+    allow_nan: false
+    allow_infinity: false
+  input_isolation:
+    required: true
+    rules:
+      - DomainRequest 不保存调用方原始 dict/list 的对象引用。
+      - 构造完成后修改调用方原始任意层 dict/list 不得改变 request.options。
+      - 反序列化和 Python 构造路径都必须产生独立的值树。
+  plugin_read_only_convention:
+    - 插件把 request.options 视为只读输入。
+    - 首切片不引入递归不可变容器或 canonical immutable mapping。
+    - StaticDomainHost 不依赖 plugin.execute 返回后被插件修改的 request.options。
+    - 未来多插件 Host 必须为每个插件提供独立值树，禁止共享前一插件可污染的容器。
+  equality:
+    options_participates: true
+    rules:
+      - 其他字段相同但 options 不同的 DomainRequest 不相等。
+      - 同值但 dict key 插入顺序不同的 options 不影响相等性。
+  hash:
+    public_contract: unsupported
+    rules:
+      - DomainRequest 不作为公共哈希键契约。
+      - 加入结构化 options 后不保证实例可哈希。
+      - 不实现 canonical __hash__。
+      - 缓存、签名和去重不得使用 Python hash(request)。
+      - 规范化 JSON 缓存键与请求签名属于后续独立切片。
+  error_redaction:
+    - protocol 1.1 WireModel 配置隐藏校验错误中的 input value。
+    - 校验消息只包含失败类别和固定阈值，不包含完整 options、key 对应值或 Python repr。
+
+security_quotas:
+  ownership: >-
+    SDK 定义固定协议常量和共享遍历校验；DomainRequest 构造时执行一次，Host 在
+    plugin.execute 前通过公开请求边界校验再次执行，保证任何插件调用前完成拒绝。
+  constants:
+    max_encoded_bytes:
+      name: MAX_OPTIONS_ENCODED_BYTES
+      value: 16384
+      unit: UTF-8 bytes
+    max_container_depth:
+      name: MAX_OPTIONS_DEPTH
+      value: 8
+    max_total_keys:
+      name: MAX_OPTIONS_TOTAL_KEYS
+      value: 128
+    max_total_container_items:
+      name: MAX_OPTIONS_CONTAINER_ITEMS
+      value: 256
+  canonical_size_measurement:
+    encoder: json.dumps
+    arguments:
+      ensure_ascii: false
+      allow_nan: false
+      sort_keys: true
+      separators: [",", ":"]
+    measurement: compact canonical JSON 的 UTF-8 字节长度
+  depth_definition: >-
+    顶层 options object 深度为 1；每进入一个嵌套 object 或 array 深度加 1；
+    scalar 不增加容器深度；任一路径容器深度大于 8 即超限。
+  key_count_definition: >-
+    统计整棵 options 值树所有 object 的 key 数之和，包含顶层 object；总数大于
+    128 即超限。
+  container_item_definition: >-
+    对整棵值树的每个 object 和 array 累加 len(container)；object 的一个键值对计
+    一个成员，array 的一个元素计一个成员；总数大于 256 即超限。
+  cycle_detection: >-
+    遍历器维护当前递归路径的容器对象身份；同一容器在当前路径再次出现时按循环引用
+    拒绝，不把合法的值等价独立容器误判为循环。
+  failure_behavior:
+    dto_construction: >-
+      原始输入在 DomainRequest 校验阶段失败，Pydantic ValidationError 隐藏 input value。
+    host_boundary: >-
+      validate_request_boundary 对超限或非法请求抛出 ProtocolViolationError；
+      StaticDomainHost 在创建 execute coroutine 前调用该校验，插件调用次数保持为零。
+    core_fallback: >-
+      dispatch_domain_request 继续捕获端口异常并返回 None，保留原 query 进入现有通用检索。
+    message_policy: >-
+      错误消息只报告 encoded_bytes、depth、total_keys、container_items 或 invalid_json_type
+      类别及对应固定上限，不包含 option key 名、值、完整 payload 或对象 repr。
+  logging:
+    - SDK 和 Host 默认不记录完整 options。
+    - SDK 和 Host 默认不记录单个 option 值。
+    - 本切片不新增 options 内容日志。
+    - 测试捕获 stdout、stderr 和异常文本，确认合成敏感哨兵值不出现。
+  configurability: >-
+    首切片使用上述固定常量，不接配置中心、不读环境变量；配额可配置化列入独立后续切片。
+
+responsibility_boundaries:
+  sdk:
+    owns:
+      - protocol 1.1 版本常量和 Schema artifact
+      - JsonValue 递归类型
+      - DomainRequest.options 字段与默认空值
+      - JSON 类型、有限数字、循环引用和固定配额校验
+      - 调用方可变对象隔离
+      - 未知顶层字段拒绝
+      - validate_request_boundary 公共边界校验
+    does_not_own:
+      - 具体 option key
+      - 插件业务枚举、范围或字段组合
+      - 插件 option schema registry
+      - Host 内部执行对象
+  host:
+    owns:
+      - plugin.execute 前调用通用请求边界校验
+      - 完整、值等价地转发 request.options
+      - 协议错误安全回落
+      - 不泄露 option 值的通用错误边界
+    transparent_rules:
+      - 不解释具体 key。
+      - 不增加业务默认值。
+      - 不删除、过滤或重命名 key。
+      - 不修改 option value。
+      - 不把 options 拼进 query。
+      - 不把 options 自动拼进 prompt。
+      - 不按领域、插件 ID、行业、岗位、公司或地域写判断。
+      - 不为兼容 1.0 接收方静默剥离非空 options。
+  plugin:
+    owns:
+      - 读取自己认识的 option。
+      - 将 JSON 值转换成插件内部类型化业务模型。
+      - 校验枚举、范围、缺失、冲突和组合关系。
+      - 决定自身 schema 是否拒绝未知 key。
+      - 缺少业务必需 option 时返回结构化 fatal_error 或明确 abstain。
+      - 保持 options 只读。
+    default_unknown_key_behavior: 插件可忽略自己不认识的 option，Host 不统一拒绝业务未知 key。
+    does_not_require_host_semantics: true
+  caller:
+    owns:
+      - 提供结构化 mapping。
+      - 只发送本次请求所需参数。
+      - 明确所使用插件能力的业务契约。
+      - 不把 option 已传输等同于插件已支持该业务语义。
+    forbidden_values_and_context:
+      - 长期用户画像
+      - 完整聊天历史
+      - logger
+      - 数据库连接
+      - 文件句柄
+      - 模型 client
+      - Path 对象
+      - API key
+      - token
+      - 其他凭据
+      - Host 内部追踪对象
+      - Host 内部执行对象
+      - 插件启动期持久配置
+
+compatibility_matrix:
+  old_caller_to_new_sdk_and_host:
+    construction: >-
+      旧调用代码继续只传 request_id、query 和 source_scope 时可正常构造，options
+      由 default_factory 归一为空对象。
+    serialization: protocol 1.1 序列化包含值为空的 options，不改变其他字段值。
+    runtime: StaticDomainHost 和现有插件按原调用次数执行。
+    semantics: query、handled/abstain、回答文本与普通检索回落保持不变。
+  new_caller_to_new_host_and_new_plugin:
+    construction: 合法 JSON options 可构造并通过固定配额。
+    serialization: model_dump、model_dump_json 与 model_validate_json 完整保留值。
+    runtime: dispatch 和 Host 不投影、不删除、不改名，插件收到值等价 options。
+    semantics: 插件自行解释业务内容，SDK 与 Host 不形成业务结论。
+  new_caller_to_new_host_and_option_unaware_plugin:
+    construction: 请求正常构造。
+    serialization: options 仍完整保留到 Host 边界。
+    runtime: >-
+      插件源码运行在新 SDK 上且只读取既有字段时继续执行；合成插件测试只访问
+      request.query 并忽略 request.options。
+    semantics: >-
+      只保证旧插件行为不被破坏，不保证调用方提供的 option 已生效，也不得宣称
+      该插件已经支持相应业务能力。
+  new_1_1_wire_request_to_old_1_0_receiver:
+    construction: 新 SDK 可构造。
+    serialization: 产生带 options 的 1.1 wire 请求。
+    runtime: 旧 1.0 Schema 允许拒绝该请求，不提供前向兼容保证。
+    semantics: 新 Host 不静默剥离非空 options，不伪装成功。
+  protocol_1_0_request_to_protocol_1_1_receiver:
+    construction: >-
+      1.1 DomainRequest 模型接受 protocol_version=1.0 且缺失 options 的旧 payload。
+    serialization: 读取后 options 归一为空对象；原 query 和既有字段值保持不变。
+    runtime: 可进入新 Host 和只读取既有字段的插件。
+    semantics: 等价于调用方没有提供 request-local options。
+  forbidden_version_combination:
+    construction: protocol_version=1.0 与非空 options 组合拒绝。
+    serialization: 不产生伪装为 1.0 的 options wire payload。
+    runtime: 插件不被调用。
+    semantics: 1.1 能力不能降级标记为 1.0。
+
+first_slice_scope:
+  domain_sdk:
+    - 将 SDK package version 升级为 0.2.0，PROTOCOL_VERSION 升级为 1.1。
+    - 定义并公开递归 JsonValue 类型。
+    - 为 DomainRequest 增加默认空 options。
+    - 支持读取不含 options 的 protocol 1.0 DomainRequest payload。
+    - 拒绝 protocol_version=1.0 与非空 options 的组合。
+    - 对 Python 输入执行无隐式非法类型转换的递归校验。
+    - 对 options 执行输入对象隔离和固定安全配额校验。
+    - 增加公开 validate_request_boundary 并复用 ProtocolViolationError。
+    - 保持未知顶层字段拒绝。
+    - options 参与 DTO 相等性，不提供公共哈希保证。
+    - 在校验错误中隐藏 input value。
+  schema:
+    - 新增独立 protocol-1.1.schema.json。
+    - 生成真实递归 $defs.JsonValue，禁止空 Schema。
+    - 让 1.1 DomainRequest Schema 表达 1.0 空 options 兼容与 1.1 options 契约。
+    - 保留 protocol-1.0.schema.json 的精确 SHA-256。
+    - 调整生成器只生成或检查 1.1 artifact，不用新 DTO 重写 1.0 artifact。
+    - wheel 同时包含 protocol 1.0 与 1.1 Schema。
+  core_dispatch:
+    - dispatch_domain_request 新增 keyword-only 可选 options 参数。
+    - 省略参数时构造空 options。
+    - 提供参数时完整交给 DomainRequest 构造校验。
+    - request.query 继续逐字符等于传入 question。
+    - 不添加领域逻辑、业务默认值或 query 拼接。
+  host:
+    - StaticDomainHost 在创建 plugin.execute coroutine 前调用 validate_request_boundary。
+    - 合法请求以原对象或值等价对象交给插件。
+    - options 不被投影、删除、过滤、改名或修改。
+    - 超限请求不调用插件，并沿现有外层 helper 安全回落 None。
+    - EmptyDomainHost 行为保持不变。
+    - 不接入 describe、probe、动态发现或能力协商。
+  package_compatibility:
+    - 仅将招聘插件 pyproject 的 SDK 精确依赖同步为 docmind-domain-sdk==0.2.0。
+    - >-
+      仅将招聘插件 test_plugin_contract.py 中由 PROTOCOL_VERSION 驱动的 manifest
+      schema_version 断言同步为 1.1，不修改测试场景、业务断言或 options 行为。
+    - 不修改招聘插件 src、公开业务模型、识别、提取、比较、渲染或 execute 行为。
+  documentation:
+    - SDK README 记录 0.2.0、protocol 1.1、options 语义、配额和 1.0 artifact 保留策略。
+    - ADR 对齐 protocol 1.1 已交付边界与 request-local options 例外，仍禁止插件私有状态进入 DTO。
+  tests:
+    - SDK DTO 与请求边界契约测试。
+    - protocol 1.1 Schema artifact 与 protocol 1.0 不变测试。
+    - dispatch 和 Host 透明传递测试。
+    - 合成旧插件源码兼容测试。
+    - 现有无 options SDK、Host、runner 和招聘插件回归。
+
+non_goals:
+  - ask_notes.py 命令行 JSON 参数
+  - 面向最终用户的 options 输入方式
+  - runner 新增 options 来源或会话状态
+  - 招聘插件读取或使用 options
+  - 显式求职规则业务接线
+  - 修改现有 JD 比较业务
+  - plugin option schema registry
+  - manifest 声明 option schema
+  - 完整 capability negotiation
+  - describe、start、sync_sources、probe 或 stop 的生产接线
+  - 动态插件发现、路由或多插件仲裁
+  - namespaced extensions
+  - MCP transport
+  - UI 自动生成
+  - options 驱动的业务缓存
+  - canonical request 签名或哈希
+  - 全面审计系统
+  - 插件专用权限体系
+  - 配额配置中心、环境变量覆盖或插件自定义协议配额
+  - 递归不可变容器
+  - 修改 protocol 1.0 Schema artifact
+  - 在 SDK、Host 或 dispatch 中加入领域、行业、岗位、公司、地域或用户画像 key
+
+expected_modified_files:
+  task_card:
+    - docs/task_card_domain_request_structured_options_protocol_1_1_first_slice.yaml
+  sdk_runtime:
+    - packages/docmind-domain-sdk/src/docmind_domain_sdk/dto.py
+    - packages/docmind-domain-sdk/src/docmind_domain_sdk/validation.py
+    - packages/docmind-domain-sdk/src/docmind_domain_sdk/__init__.py
+    - packages/docmind-domain-sdk/src/docmind_domain_sdk/_version.py
+    - packages/docmind-domain-sdk/pyproject.toml
+  sdk_schema_and_packaging:
+    - packages/docmind-domain-sdk/src/docmind_domain_sdk/schemas/protocol-1.1.schema.json
+    - packages/docmind-domain-sdk/scripts/generate_json_schema.py
+    - packages/docmind-domain-sdk/scripts/check_wheel_contents.py
+    - packages/docmind-domain-sdk/README.md
+  sdk_tests:
+    - packages/docmind-domain-sdk/tests/fixtures.py
+    - packages/docmind-domain-sdk/tests/test_dto_contract.py
+    - packages/docmind-domain-sdk/tests/test_boundary_validation.py
+    - packages/docmind-domain-sdk/tests/test_schema_artifact.py
+    - packages/docmind-domain-sdk/tests/test_public_api.py
+    - packages/docmind-domain-sdk/tests/test_distribution.py
+  core_and_host:
+    - app/domain_dispatch_port.py
+    - app/domain_host/host.py
+  public_contract_tests:
+    - public_tests/domain/test_domain_dispatch_port_empty_host.py
+  dependency_metadata_only:
+    - packages/docmind-recruitment-plugin/pyproject.toml
+  plugin_protocol_version_assertion_only:
+    - packages/docmind-recruitment-plugin/tests/test_plugin_contract.py
+  architecture_documentation:
+    - docs/adr/0001-domain-plugin-boundary-and-future-mcp-adapter.md
+
+protected_files_and_paths:
+  exact_immutable_file:
+    path: packages/docmind-domain-sdk/src/docmind_domain_sdk/schemas/protocol-1.0.schema.json
+    sha256: ef119f934d9a30794fa8aa429489e213fa4183abb1ee0e34f4ddd75550a52dc3
+  forbidden_changes:
+    - ask_notes.py
+    - app/chat_loop_parts/runner.py
+    - bootstrap/**
+    - ai/**
+    - retrieval/**
+    - infra/**
+    - packages/docmind-recruitment-plugin/src/**
+    - packages/docmind-recruitment-plugin/tests/test_rule_comparison.py
+    - requirements.txt
+    - examples/**
+    - test_notes/**
+    - tests/**
+    - frontend/**
+    - ui/**
+
+test_matrix:
+  sdk_unit_tests:
+    - id: sdk-default-empty
+      scenario: 省略 options 时 request.options 等于空对象。
+    - id: sdk-old-call-source-compatibility
+      scenario: 旧 DomainRequest 构造调用不新增实参即可通过。
+    - id: sdk-json-round-trip
+      scenario: 普通嵌套 JSON 经 model_dump_json 与 model_validate_json 完整往返。
+    - id: sdk-valid-scalars
+      scenario: 字符串、布尔、null、有限整数和有限浮点均合法。
+    - id: sdk-invalid-python-types
+      scenario: Path、bytes、bytearray、Decimal、set、frozenset、tuple、对象实例和 callable 均拒绝且不隐式转换。
+    - id: sdk-nonfinite
+      scenario: NaN、Infinity 和负 Infinity 均拒绝。
+    - id: sdk-cycle
+      scenario: 循环 dict 与循环 list 均拒绝，错误不回显输入值。
+    - id: sdk-key-type
+      scenario: 非字符串 key 拒绝。
+    - id: sdk-extra-forbid
+      scenario: 未知顶层 DomainRequest 字段继续拒绝。
+    - id: sdk-caller-isolation
+      scenario: 构造后修改调用方原始任意层 dict/list 不改变 request.options。
+    - id: sdk-equality
+      scenario: options 参与相等性，同值不同插入顺序相等，不同值不相等。
+    - id: sdk-hash-contract
+      scenario: 测试明确不依赖 hash(request)，带 dict/list options 的请求允许不可哈希。
+    - id: sdk-legacy-request
+      scenario: protocol_version=1.0 且缺失 options 的 payload 可读取并归一为空对象。
+    - id: sdk-forbidden-version-combination
+      scenario: protocol_version=1.0 与非空 options 组合拒绝。
+    - id: sdk-quota-boundaries
+      scenario: 四项固定配额分别覆盖刚好等于上限通过和超过上限拒绝。
+    - id: sdk-redacted-errors
+      scenario: 合成敏感哨兵值不出现在 ValidationError 文本。
+  schema_artifact_tests:
+    - id: schema-1-1-metadata
+      scenario: protocol 1.1 Schema 使用 Draft 2020-12、固定 $id 和 x-protocol-version=1.1。
+    - id: schema-recursive-json-value
+      scenario: $defs.JsonValue 明确包含七类 JSON 类型且 object/array 递归引用自身。
+    - id: schema-no-empty-json-value
+      scenario: protocol 1.1 的 $defs.JsonValue 不等于 {}。
+    - id: schema-options-default
+      scenario: DomainRequest.options 是默认空 object，additionalProperties 递归引用 JsonValue。
+    - id: schema-legacy-read
+      scenario: 1.1 Schema 接受缺失 options 的 protocol_version=1.0 请求。
+    - id: schema-no-fake-1-0-options
+      scenario: 1.1 Schema 拒绝 protocol_version=1.0 与非空 options 的组合。
+    - id: schema-new-wire-old-receiver
+      scenario: protocol 1.0 Schema 对 1.1 非空 options 请求保持拒绝，明确不承诺前向兼容。
+    - id: schema-1-0-immutable
+      scenario: protocol-1.0.schema.json 的 SHA-256 精确等于冻结值。
+    - id: schema-deterministic
+      scenario: 1.1 artifact 确定性生成，--check 无漂移且不写 1.0 artifact。
+    - id: schema-wheel-content
+      scenario: wheel 同时包含 1.0、1.1 Schema 和 py.typed。
+  host_and_dispatch_contract_tests:
+    - id: dispatch-default-empty
+      scenario: dispatch_domain_request 省略 options 时插件收到空对象。
+    - id: dispatch-query-preservation
+      scenario: 传入 options 前后 request.query 逐字符等于 question，不拼接或改写。
+    - id: dispatch-value-preservation
+      scenario: dispatch 构造的 request.options 与调用方合法输入值等价。
+    - id: host-transparent-forwarding
+      scenario: StaticDomainHost 将完整 options 原对象或值等价对象交给 plugin.execute。
+    - id: host-unknown-business-keys
+      scenario: 使用三个跨领域合成 key 证明 Host 不理解、过滤、删除、改名或修改业务 key。
+    - id: host-option-unaware-plugin
+      scenario: 只读取 query 的合成旧插件在新 SDK 上继续 execute 并维持原结果。
+    - id: host-over-depth
+      scenario: 超过深度上限时 execute 调用次数为零。
+    - id: host-over-bytes
+      scenario: 超过编码字节上限时 execute 调用次数为零。
+    - id: host-over-keys
+      scenario: 超过总 key 上限时 execute 调用次数为零。
+    - id: host-over-items
+      scenario: 超过总容器成员上限时 execute 调用次数为零。
+    - id: host-redacted-failure
+      scenario: 超限异常、stdout 和 stderr 不包含完整合成敏感 option 内容。
+    - id: host-running-loop-order
+      scenario: 既有运行 event loop 拒绝边界仍在创建 execute coroutine 前生效。
+    - id: empty-host-zero-diff
+      scenario: EmptyDomainHost 对合法请求仍返回 None 且无副作用。
+  existing_regression_tests:
+    - id: sdk-existing-contracts
+      scenario: 现有 Domain SDK DTO、边界、Schema、公开 API 和分发测试全部通过。
+    - id: host-existing-contracts
+      scenario: 现有 Empty/Static Host、异常回落、最小 handled 和 normal retrieval 回归全部通过。
+    - id: runner-no-options-path
+      scenario: runner 继续使用两参数 helper 调用且行为不变，不修改 runner。
+    - id: recruitment-plugin-no-options
+      scenario: 招聘插件全部现有测试通过，无 options 时 handled/abstain 与 Markdown 输出不变。
+    - id: full-tracked-regression
+      scenario: 仓库全量 pytest 通过，warning 不过滤。
+
+quality_gate:
+  environment:
+    - 使用 Linux Bash。
+    - Python 使用 .venv/bin/python。
+    - 测试显式设置仓库 SDK 与插件 src 的 PYTHONPATH。
+    - 测试设置 PYTHONDONTWRITEBYTECODE=1 并关闭 pytest cache provider。
+    - wheel 和临时安装产物只写入 mktemp -d，并由 trap 清理。
+  commands:
+    task_card_yaml: >-
+      .venv/bin/python -c
+      "from pathlib import Path; import yaml;
+      p=Path('docs/task_card_domain_request_structured_options_protocol_1_1_first_slice.yaml');
+      yaml.safe_load(p.read_text(encoding='utf-8'))"
+    changed_python_py_compile: >-
+      PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=packages/docmind-domain-sdk/src
+      .venv/bin/python -m py_compile
+      packages/docmind-domain-sdk/src/docmind_domain_sdk/dto.py
+      packages/docmind-domain-sdk/src/docmind_domain_sdk/validation.py
+      packages/docmind-domain-sdk/src/docmind_domain_sdk/__init__.py
+      packages/docmind-domain-sdk/src/docmind_domain_sdk/_version.py
+      packages/docmind-domain-sdk/scripts/generate_json_schema.py
+      packages/docmind-domain-sdk/scripts/check_wheel_contents.py
+      app/domain_dispatch_port.py app/domain_host/host.py
+    sdk_tests: >-
+      PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=packages/docmind-domain-sdk/src
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      packages/docmind-domain-sdk/tests
+    host_dispatch_tests: >-
+      PYTHONDONTWRITEBYTECODE=1
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      public_tests/domain/test_domain_dispatch_port_empty_host.py
+    recruitment_plugin_tests: >-
+      PYTHONDONTWRITEBYTECODE=1
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      packages/docmind-recruitment-plugin/tests
+    domain_public_regression: >-
+      PYTHONDONTWRITEBYTECODE=1
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      public_tests/domain
+    full_pytest: >-
+      PYTHONDONTWRITEBYTECODE=1
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+    schema_1_1_check: >-
+      PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=packages/docmind-domain-sdk/src
+      .venv/bin/python packages/docmind-domain-sdk/scripts/generate_json_schema.py --check
+    schema_1_0_hash: >-
+      test "$(sha256sum
+      packages/docmind-domain-sdk/src/docmind_domain_sdk/schemas/protocol-1.0.schema.json
+      | awk '{print $1}')" =
+      ef119f934d9a30794fa8aa429489e213fa4183abb1ee0e34f4ddd75550a52dc3
+    build_and_wheel_check: >-
+      SDK_OPTIONS_VERIFY_ROOT="$(mktemp -d)";
+      export SDK_OPTIONS_VERIFY_ROOT;
+      trap 'rm -rf "$SDK_OPTIONS_VERIFY_ROOT"' EXIT;
+      .venv/bin/python -m build --wheel
+      --outdir "$SDK_OPTIONS_VERIFY_ROOT/dist" packages/docmind-domain-sdk;
+      .venv/bin/python packages/docmind-domain-sdk/scripts/check_wheel_contents.py
+      "$SDK_OPTIONS_VERIFY_ROOT"/dist/*.whl
+    encoding: >-
+      .venv/bin/python packages/docmind-domain-sdk/scripts/check_text_encoding.py
+      packages/docmind-domain-sdk app/domain_dispatch_port.py app/domain_host/host.py
+      public_tests/domain/test_domain_dispatch_port_empty_host.py
+      docs/adr/0001-domain-plugin-boundary-and-future-mcp-adapter.md
+    mojibake: >-
+      ! rg -n
+      "AI鍥炵瓟|馃|鈴憋笍|鈿狅笍|褰撳墠杩樻病鏈|锛\\?|銆\\?"
+      packages/docmind-domain-sdk app public_tests/domain
+    domain_neutrality: >-
+      ! rg -n
+      "recruitment|招聘|JD|候选人|岗位|公司|地域"
+      packages/docmind-domain-sdk/src app/domain_dispatch_port.py app/domain_host/host.py
+    no_protected_diff: >-
+      test -z "$(git diff --name-only --
+      packages/docmind-domain-sdk/src/docmind_domain_sdk/schemas/protocol-1.0.schema.json
+      ask_notes.py app/chat_loop_parts/runner.py bootstrap ai retrieval infra
+      packages/docmind-recruitment-plugin/src
+      packages/docmind-recruitment-plugin/tests/test_rule_comparison.py
+      requirements.txt)"
+    whitespace: git diff --check
+  required_results:
+    - 所有新增和修改 Python 文件通过 py_compile。
+    - SDK 契约、Host/dispatch 契约、domain public regression 和招聘插件测试全部通过。
+    - 全量 pytest 通过，warning 不过滤。
+    - protocol 1.1 Schema 确定性生成且 $defs.JsonValue 不是空 Schema。
+    - protocol 1.0 artifact SHA-256 与冻结值一致。
+    - wheel 同时包含 1.0、1.1 Schema 和 py.typed。
+    - 错误、stdout、stderr 和默认日志不回显合成敏感 option 值。
+    - SDK、dispatch 和 Host 通过领域词扫描。
+    - ask_notes.py、runner、composition、插件业务源码和 protocol 1.0 artifact 无差异。
+    - git diff --check 通过。
+  verification_order:
+    - py_compile
+    - SDK 单元与边界测试
+    - Schema artifact 与 1.0 hash 测试
+    - Host/dispatch 契约测试
+    - 招聘插件无 options 回归
+    - domain public regression
+    - protocol 1.1 Schema --check
+    - wheel 构建与内容检查
+    - 编码、乱码、领域中立和受保护路径检查
+    - 全量 pytest
+    - git diff --check 与最终状态检查
+
+acceptance_min:
+  - PROTOCOL_VERSION 为 1.1，SDK package version 为 0.2.0，二者继续独立管理。
+  - DomainRequest 提供默认空 options，并读取不含 options 的 1.0 请求。
+  - protocol_version=1.0 与非空 options 组合在 DTO 和 Schema 两侧均拒绝。
+  - JsonValue 运行时只接受递归 JSON 值，不隐式接收 Path、bytes、Decimal、set、tuple、对象或 callable。
+  - protocol 1.1 Schema 真实递归表达 JsonValue，protocol 1.0 artifact 精确不变。
+  - options 满足 16 KiB、深度 8、总 key 128 和总容器成员 256 四项固定边界。
+  - 调用方原始可变对象与 DTO 值树隔离，options 参与相等性且不承诺可哈希。
+  - dispatch 不改写 query，Host 不解释、过滤、修改或记录完整 options。
+  - 超限请求在 plugin.execute 前拒绝，错误与日志不回显 option 值，外层安全回落保持不变。
+  - 不认识 options 且只读取旧字段的合成插件继续执行，但不宣称支持 option 业务语义。
+  - 无 options 的 SDK、Host、runner 和招聘插件行为保持不变。
+  - 首切片不包含 CLI、业务插件接线、schema registry、能力协商、动态发现或 MCP。
+
+completion_line:
+  implementation_complete_when:
+    - expected_modified_files 中的协议、传递、安全和文档改动全部完成。
+    - protected_files_and_paths 无差异，protocol 1.0 SHA-256 精确匹配。
+    - test_matrix 的全部场景均由自动测试覆盖并通过。
+    - quality_gate.required_results 全部满足。
+    - 最终工作区仅包含本切片授权文件且提交后干净。
+  incomplete_if:
+    - 只在 DTO 增加 dict 字段但没有递归运行时校验或有效递归 Schema。
+    - 只验证 SDK 而没有 dispatch 与 Host 透明传递测试。
+    - 通过改写 query、复用 config/focus 或增加插件专用 Host 参数传递。
+    - 修改 protocol 1.0 artifact 或用 1.0 标记携带非空 options。
+    - 超限请求仍能调用插件或错误中泄露 option 值。
+    - 无 options 现有行为未通过回归。
+
+follow_up_slices:
+  record_only: true
+  implementation_in_first_slice: forbidden
+  items:
+    - 面向 CLI 或其他最终用户调用方的结构化 options 输入设计
+    - 具体领域插件的 option schema、类型转换与业务接线
+    - manifest option schema 声明与调用方发现
+    - 完整 protocol capability negotiation
+    - 动态多插件环境下的 option 定向与隔离
+    - namespaced extensions 再评估
+    - MCP transport 的 protocol 1.1 映射
+    - 规范化 JSON 缓存键、请求签名与重放语义
+    - 安全配额可配置化与集中审计
+
+commit_boundary:
+  task_card_commit:
+    subject: "docs(domain-sdk): 定稿结构化 options 协议 1.1 首切片任务卡"
+    body:
+      - "目标: 冻结 DomainRequest 通用结构化 options 的 protocol 1.1 最小实现与兼容边界。"
+      - "手段: 明确递归 JSON 契约、安全配额、透明传递、测试矩阵和严格非目标。"
+    files:
+      - docs/task_card_domain_request_structured_options_protocol_1_1_first_slice.yaml
+    push: forbidden
+  future_implementation_commit:
+    subject: "feat(domain-sdk): 传递 protocol 1.1 结构化 options"
+    body_requirements:
+      - 标题与任务目标关键词对齐。
+      - 正文至少包含可验证的目标和手段条目。
+      - 不与其他领域业务或 Host 治理切片混合提交。
+    push: forbidden
+  rollback:
+    method: revert 对应独立提交
+    forbidden_methods:
+      - reset
+      - restore
+      - stash
+      - clean
+
+deliverables:
+  current_run:
+    - 定稿任务卡
+    - YAML、diff 和 docs-only 范围验证记录
+    - 本地 docs 提交
+  future_implementation:
+    - protocol 1.1 SDK 与双 Schema artifact
+    - dispatch 和 StaticDomainHost 透明传递
+    - 固定安全配额与脱敏失败边界
+    - SDK、Schema、Host/dispatch 和现有回归测试
+    - SDK README 与 ADR 对齐
