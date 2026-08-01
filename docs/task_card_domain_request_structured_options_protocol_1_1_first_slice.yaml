@@ -204,8 +204,12 @@ protocol_version_strategy:
       - "1.0"
       - "1.1"
     legacy_request_rule: >-
-      protocol_version=1.0 的请求只能省略 options 或携带空 options；非空 options
-      与 1.0 标记组合必须拒绝，禁止把 1.1 能力伪装成 1.0。
+      protocol_version=1.0 的请求必须省略 options；只要输入中显式出现 options 字段，
+      无论值为空对象还是非空内容，都必须拒绝。新 SDK 可将合法旧 1.0 请求在内存中
+      归一为 request.options == {}，但这不表示 1.0 wire 协议拥有 options 字段；通过
+      model_dump(mode="json")、model_dump_json() 或统一 wire dump helper 重新序列化为
+      1.0 wire payload 时必须再次省略 options，并继续通过冻结的 1.0 Schema。
+      protocol 1.0 artifact 不修改。
     other_top_level_messages: >-
       protocol 1.1 SDK 构造的其他顶层消息默认并固定为 1.1；本切片只对
       DomainRequest 定义 1.0 输入兼容读取。
@@ -223,6 +227,13 @@ dto_contract:
   default_behavior: >-
     调用方省略 options 时，DomainRequest.options 等于空对象；query、Host 调用次数、
     插件输出和普通检索回落均与当前行为一致。
+  legacy_wire_exception: >-
+    默认空对象是 protocol 1.1 和统一 Python 内存模型的行为，不代表 protocol 1.0 wire
+    payload 可以携带空 options。protocol_version=1.0 的 wire 输入与输出均不得出现
+    options 字段；显式 Python 构造 protocol_version="1.0", options={} 也必须拒绝，
+    只有省略 options 的 1.0 构造或反序列化可以进入兼容读取路径。合法旧请求读取后即使
+    request.options == {}，公共 wire 序列化结果仍必须省略 options。此处只冻结可观察
+    契约，不规定 model_fields_set、前置 validator 或其他具体实现手段。
   json_value:
     public_sdk_type: JsonValue
     recursive_definition:
@@ -440,15 +451,27 @@ compatibility_matrix:
     semantics: 新 Host 不静默剥离非空 options，不伪装成功。
   protocol_1_0_request_to_protocol_1_1_receiver:
     construction: >-
-      1.1 DomainRequest 模型接受 protocol_version=1.0 且缺失 options 的旧 payload。
-    serialization: 读取后 options 归一为空对象；原 query 和既有字段值保持不变。
-    runtime: 可进入新 Host 和只读取既有字段的插件。
-    semantics: 等价于调用方没有提供 request-local options。
+      1.1 DomainRequest 模型接受 protocol_version=1.0 且缺失 options 的旧 payload；
+      显式包含空 options 或非空 options 的 1.0 payload 均拒绝。省略 options 的显式
+      Python 1.0 构造可进入兼容读取路径，显式传入 options={} 则拒绝。
+    serialization: >-
+      读取后内存对象允许 request.options == {}；通过 model_dump(mode="json")、
+      model_dump_json() 或统一 wire dump helper 重新输出 1.0 wire payload 时必须省略
+      options，原 query 和其他既有字段值保持不变，结果继续通过冻结的 1.0 Schema。
+    runtime: 合法旧 1.0 请求可进入新 Host 和只读取既有字段的插件。
+    semantics: >-
+      合法旧请求等价于调用方没有提供 request-local options；不能把空 options 写入
+      1.0 payload 后宣称该 payload 仍符合 protocol 1.0。
   forbidden_version_combination:
-    construction: protocol_version=1.0 与非空 options 组合拒绝。
-    serialization: 不产生伪装为 1.0 的 options wire payload。
-    runtime: 插件不被调用。
-    semantics: 1.1 能力不能降级标记为 1.0。
+    construction: >-
+      protocol_version=1.0 与任何显式 options 字段组合均拒绝，包括 options={}
+      和任意非空内容；判断依据是字段是否出现，而不是值是否非空。
+    serialization: >-
+      合法 1.0 请求的公共 wire 序列化结果不得出现 options，并必须通过冻结的
+      protocol-1.0.schema.json。
+    runtime: 任何非法的 1.0 + 显式 options 请求都不得调用插件。
+    semantics: >-
+      1.1 能力不能降级标记为 1.0，内存默认空对象也不能解释为 1.0 wire 空 options 兼容。
 
 first_slice_scope:
   domain_sdk:
@@ -456,7 +479,8 @@ first_slice_scope:
     - 定义并公开递归 JsonValue 类型。
     - 为 DomainRequest 增加默认空 options。
     - 支持读取不含 options 的 protocol 1.0 DomainRequest payload。
-    - 拒绝 protocol_version=1.0 与非空 options 的组合。
+    - 拒绝 protocol_version=1.0 与任何显式 options 字段的组合，包括空对象。
+    - 合法 1.0 请求读取后重新序列化时省略 options，保证输出继续符合冻结的 protocol 1.0 Schema。
     - 对 Python 输入执行无隐式非法类型转换的递归校验。
     - 对 options 执行输入对象隔离和固定安全配额校验。
     - 增加公开 validate_request_boundary 并复用 ProtocolViolationError。
@@ -466,7 +490,9 @@ first_slice_scope:
   schema:
     - 新增独立 protocol-1.1.schema.json。
     - 生成真实递归 $defs.JsonValue，禁止空 Schema。
-    - 让 1.1 DomainRequest Schema 表达 1.0 空 options 兼容与 1.1 options 契约。
+    - >-
+      让 1.1 DomainRequest Schema 表达 1.0 请求只允许缺失 options 的兼容分支，
+      该分支禁止 options 属性出现；1.1 分支允许 options 并遵守递归 JsonValue 契约。
     - 保留 protocol-1.0.schema.json 的精确 SHA-256。
     - 调整生成器只生成或检查 1.1 artifact，不用新 DTO 重写 1.0 artifact。
     - wheel 同时包含 protocol 1.0 与 1.1 Schema。
@@ -605,7 +631,15 @@ test_matrix:
     - id: sdk-legacy-request
       scenario: protocol_version=1.0 且缺失 options 的 payload 可读取并归一为空对象。
     - id: sdk-forbidden-version-combination
-      scenario: protocol_version=1.0 与非空 options 组合拒绝。
+      scenario: >-
+        protocol_version=1.0 与显式 options={} 或任意非空 options 的组合均拒绝；
+        同时覆盖 wire payload 和显式 Python 构造入口。
+    - id: sdk-legacy-reserialize
+      scenario: >-
+        从不含 options 的 1.0 JSON payload 读取后 request.options == {}；分别通过
+        model_dump(mode="json") 与 model_dump_json()，以及仓库实际存在的统一 wire dump
+        helper 重新序列化，输出均不存在 options key、继续通过冻结的 1.0 Schema，且
+        query 和其他既有字段值保持不变。
     - id: sdk-quota-boundaries
       scenario: 四项固定配额分别覆盖刚好等于上限通过和超过上限拒绝。
     - id: sdk-redacted-errors
@@ -622,7 +656,12 @@ test_matrix:
     - id: schema-legacy-read
       scenario: 1.1 Schema 接受缺失 options 的 protocol_version=1.0 请求。
     - id: schema-no-fake-1-0-options
-      scenario: 1.1 Schema 拒绝 protocol_version=1.0 与非空 options 的组合。
+      scenario: >-
+        1.1 Schema 的 1.0 兼容分支拒绝任何 options 属性出现，包括 options={} 和非空内容。
+    - id: schema-legacy-round-trip
+      scenario: >-
+        新 SDK 重新序列化合法旧 1.0 请求得到的 payload 不含 options，并通过冻结的
+        protocol-1.0.schema.json。
     - id: schema-new-wire-old-receiver
       scenario: protocol 1.0 Schema 对 1.1 非空 options 请求保持拒绝，明确不承诺前向兼容。
     - id: schema-1-0-immutable
@@ -780,7 +819,10 @@ quality_gate:
 acceptance_min:
   - PROTOCOL_VERSION 为 1.1，SDK package version 为 0.2.0，二者继续独立管理。
   - DomainRequest 提供默认空 options，并读取不含 options 的 1.0 请求。
-  - protocol_version=1.0 与非空 options 组合在 DTO 和 Schema 两侧均拒绝。
+  - >-
+    protocol_version=1.0 时，只要输入中出现 options 字段，无论空或非空，DTO 与
+    protocol 1.1 Schema 的 1.0 分支都拒绝；合法 1.0 请求重新序列化时省略 options，
+    并通过冻结的 protocol 1.0 Schema。
   - JsonValue 运行时只接受递归 JSON 值，不隐式接收 Path、bytes、Decimal、set、tuple、对象或 callable。
   - protocol 1.1 Schema 真实递归表达 JsonValue，protocol 1.0 artifact 精确不变。
   - options 满足 16 KiB、深度 8、总 key 128 和总容器成员 256 四项固定边界。
@@ -802,7 +844,9 @@ completion_line:
     - 只在 DTO 增加 dict 字段但没有递归运行时校验或有效递归 Schema。
     - 只验证 SDK 而没有 dispatch 与 Host 透明传递测试。
     - 通过改写 query、复用 config/focus 或增加插件专用 Host 参数传递。
-    - 修改 protocol 1.0 artifact 或用 1.0 标记携带非空 options。
+    - >-
+      修改 protocol 1.0 artifact、用 1.0 标记携带任何 options 字段（包括空对象），
+      或合法 1.0 请求重新序列化后出现 options 字段。
     - 超限请求仍能调用插件或错误中泄露 option 值。
     - 无 options 现有行为未通过回归。
 
