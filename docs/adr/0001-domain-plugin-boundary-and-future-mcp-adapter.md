@@ -24,9 +24,13 @@ Core 和 Host 均不得静态 import 具体插件。未安装插件、插件未�
 
 ### 1.1 当前实施状态
 
-截至 `0f0c11a`，已完成：
+当前已完成：
 
-- 独立 `docmind-domain-sdk` protocol 1.0、严格 DTO、Schema 和边界校验；
+- 独立 `docmind-domain-sdk` 0.2.0、protocol 1.1、严格 DTO、Schema 和边界校验；
+- `DomainRequest.options` 的 request-local 递归 JSON 契约、固定安全配额与
+  调用方 → dispatch → `StaticDomainHost` → `DomainPlugin.execute` 透明传递；
+- 对省略 `options` 的 protocol 1.0 `DomainRequest` 兼容读取和无 `options` 重序列化，
+  同时逐字节保留 protocol 1.0 Schema artifact；
 - Core 中立 `DomainDispatchPort`、`EmptyDomainHost` 以及 composition root 注入；
 - `StaticDomainHost` 对单个静态插件的一次 `execute` 调用和结果边界校验；
 - Core 对纯 Markdown、默认 `preserve`、无 Evidence/warnings/error 的最小
@@ -37,7 +41,7 @@ Core 和 Host 均不得静态 import 具体插件。未安装插件、插件未�
 
 当前实现仍是静态单插件窄切片：
 
-- `DomainRequest.deadline_ms` 已存在于 protocol 1.0 DTO，但
+- `DomainRequest.deadline_ms` 自 protocol 1.0 起已存在并在 protocol 1.1 保留，但
   `StaticDomainHost` 当前不强制执行、取消或终止该 deadline；
 - timeout 安全回退、retry、circuit breaker 和完整异常治理属于未来完整 Host 切片；
 - `describe/start/sync_sources/probe/stop` 虽属于 SDK 协议，当前生产 Host 不调用；
@@ -207,11 +211,14 @@ MCP endpoint 通过用户配置注册为一种 transport。配置只描述 `plug
 
 ## 8. 中立 DTO 与接口
 
-protocol 1.0 的权威 Python 实现位于
+protocol 1.1 的权威 Python 实现位于
 [`packages/docmind-domain-sdk/src/docmind_domain_sdk/`](../../packages/docmind-domain-sdk/src/docmind_domain_sdk/)，
 可独立构建和安装。Draft 2020-12 单文件 Schema 位于
-[`protocol-1.0.schema.json`](../../packages/docmind-domain-sdk/src/docmind_domain_sdk/schemas/protocol-1.0.schema.json)。
-正式实现使用 Pydantic 严格模型验证，但协议语义只依赖 JSON 数据类型。
+[`protocol-1.1.schema.json`](../../packages/docmind-domain-sdk/src/docmind_domain_sdk/schemas/protocol-1.1.schema.json)。
+冻结的
+[`protocol-1.0.schema.json`](../../packages/docmind-domain-sdk/src/docmind_domain_sdk/schemas/protocol-1.0.schema.json)
+仅作为历史 wire artifact 保留，不由当前 DTO 重新生成。正式实现使用 Pydantic
+严格模型验证，但协议语义只依赖 JSON 数据类型。
 
 ### 8.1 主要 DTO
 
@@ -221,7 +228,7 @@ protocol 1.0 的权威 Python 实现位于
 | `PluginStartRequest` / `PluginStopRequest` / `LifecycleResult` | 带关联 ID 的启动和停止生命周期 | `request_id`、`host_instance_id`、`plugin_id`、`status` |
 | `SourceRef` | Core 可识别的中立来源 | `source_id`、`revision`、`display_label`、`media_type` |
 | `SourceSnapshot` | 经授权的同步内容 | `source`、`content_sha256`、`inline_text` 或 `resource_uri` |
-| `DomainRequest` | 单轮领域调用 | `request_id`、`query`、`source_scope`、`focus`、`deadline_ms` |
+| `DomainRequest` | 单轮领域调用 | `request_id`、`query`、`source_scope`、`focus`、`deadline_ms`、request-local `options` |
 | `ProbeResult` | 插件认领建议 | `disposition`、`score`、`evidence_source_refs`、中立 `reason_code` |
 | `EvidenceRef` | 绑定具体 Source 版本的可核验来源 | `source_ref`、`source_revision`、`locator`、可选短 excerpt 与 confidence |
 | `OpaqueFocus` | Core 可保存和选择的不透明焦点 | `plugin_id`、`opaque_id`、`display_label`、`source_refs` |
@@ -245,6 +252,11 @@ class DomainPlugin(Protocol):
 ### 8.3 线协议不变量
 
 - 所有顶层请求/响应带协议版本和 `request_id`；嵌套值 DTO 通过所属顶层消息关联；
+- protocol 1.1 的 `DomainRequest.options` 只承载本轮调用方提供的递归 JSON 值；SDK
+  执行输入隔离和固定配额校验，Host 在 `execute` coroutine 创建前复验并透明转发，
+  具体 key、业务默认值和组合校验完全归插件所有；
+- protocol 1.0 `DomainRequest` 只在 wire 输入省略 `options` 时兼容读取；合法旧请求在
+  内存中归一为空对象，但公开 wire 重序列化继续省略该字段；
 - 未声明字段一律拒绝，避免内部对象从“扩展字段”泄漏；
 - 数值拒绝 NaN/Infinity，文本、ID、集合数量和总响应大小由 Host 设上限；
 - `handled` 必须有非空回答；`abstain/error` 不得携带部分回答或状态变更；
@@ -254,6 +266,7 @@ class DomainPlugin(Protocol):
 - `OpaqueFocus` 不包含领域 type、字段、关系或插件数据库行；
 - `excerpt` 只用于本轮展示，不写入 Core 长期状态；
 - 插件私有扩展应留在插件存储中，由 `opaque_id` 间接引用，不塞进 Core DTO。
+- 插件内部状态、连接、logger、`Path`、凭据和其他执行对象不得进入 `options` 或其他 DTO。
 
 ### 8.4 `text_span` offset 语义
 
@@ -349,7 +362,7 @@ Host 不按领域名、插件 ID、实体后缀或字段词表写分支。active
 
 连续失败触发按插件维度的短时熔断；熔断不能关闭通用检索。
 
-特别地，protocol 1.0 的 `DomainRequest.deadline_ms` 当前只是随请求传递的 DTO 字段。
+特别地，protocol 1.1 的 `DomainRequest.deadline_ms` 当前只是随请求传递的 DTO 字段。
 现有 `StaticDomainHost` 不据此建立计时器，也不提供可强制取消的超时保证。超时后安全
 回退普通检索仍是未来完整 Host 的验收目标，不是当前窄切片已经具备的能力。
 
@@ -415,7 +428,7 @@ docmind repository
 │           ├── validation.py
 │           ├── errors.py
 │           ├── py.typed
-│           └── schemas/protocol-1.0.schema.json
+│           └── schemas/              # frozen 1.0 + current 1.1 artifacts
 │   └── docmind-recruitment-plugin/  # current: independent recruitment plugin package
 │       ├── pyproject.toml
 │       ├── tests/
@@ -507,7 +520,7 @@ adapter 仍只是未来目录方向，当前尚未创建。
 ## 17. 迁移步骤与门槛
 
 1. **协议 spike（已完成）**：ADR、严格 DTO、JSON 往返、额外字段拒绝、Source 越界拒绝；未接生产逻辑。
-2. **独立 SDK（已完成 protocol 1.0）**：草案已提取为可单独构建和安装的 `docmind-domain-sdk`，包含 protocol 1.0 JSON Schema；当前未发布到制品仓库。
+2. **独立 SDK（已完成 protocol 1.1）**：草案已提取为可单独构建和安装的 `docmind-domain-sdk`；0.2.0 包含当前 protocol 1.1 Schema 与冻结的 protocol 1.0 artifact，并交付 request-local `options` 的透明传递和安全边界；当前未发布到制品仓库。
 3. **空 Host 接入（已完成）**：composition root 可注入 `EmptyDomainHost`；没有插件时运行结果与原通用路径一致。
 4. **静态单插件调用（已完成窄切片）**：`StaticDomainHost` 每轮调用一次 `execute`，校验结果边界；尚无 `probe`、生命周期和超时执行。
 5. **最小 handled 消费（已完成窄切片）**：纯 Markdown、默认 `preserve`、无 Evidence/warnings/error 的结果可直接回答；其他 profile 回落旧链路。

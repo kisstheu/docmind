@@ -7,7 +7,7 @@ name = "docmind-recruitment-plugin"
 version = "0.1.0"
 description = "Recruitment domain plugin skeleton for DocMind"
 requires-python = ">=3.12"
-dependencies = ["docmind-domain-sdk==0.1.0"]
+dependencies = ["docmind-domain-sdk==0.2.0"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

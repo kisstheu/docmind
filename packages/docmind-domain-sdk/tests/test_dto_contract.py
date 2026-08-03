@@ -3,6 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import unicodedata
+from decimal import Decimal
+from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 from pydantic import ValidationError
@@ -35,8 +38,196 @@ from fixtures import INLINE_TEXT, PLUGIN_ID, domain_request, domain_result, sour
 def test_package_and_protocol_versions_are_independent() -> None:
     from docmind_domain_sdk import PROTOCOL_VERSION
 
-    assert __version__ == "0.1.0"
-    assert PROTOCOL_VERSION == "1.0"
+    assert __version__ == "0.2.0"
+    assert PROTOCOL_VERSION == "1.1"
+
+
+def test_request_options_default_to_an_independent_empty_object() -> None:
+    first = DomainRequest(request_id="request-1", query="Question", source_scope=())
+    second = DomainRequest(request_id="request-2", query="Question", source_scope=())
+
+    assert first.options == second.options == {}
+    assert first.options is not second.options
+
+
+def test_request_options_round_trip_nested_json_and_valid_scalars() -> None:
+    options = {
+        "text": "value",
+        "enabled": True,
+        "missing": None,
+        "count": 3,
+        "ratio": 0.5,
+        "nested": {"items": ["x", False, None, 7, 1.25]},
+    }
+    request = DomainRequest(
+        request_id="request-options",
+        query="Question",
+        source_scope=(),
+        options=options,
+    )
+
+    assert request.options == options
+    assert DomainRequest.model_validate_json(request.model_dump_json()) == request
+    assert json.loads(request.model_dump_json())["options"] == options
+
+
+def test_request_options_accept_mapping_input_and_store_a_plain_isolated_dict() -> None:
+    original = {"nested": [1, {"enabled": True}]}
+    request = DomainRequest(
+        request_id="request-mapping",
+        query="Question",
+        source_scope=(),
+        options=MappingProxyType(original),
+    )
+
+    assert type(request.options) is dict
+    assert request.options == original
+    assert request.options is not original
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        Path("private-value"),
+        b"private-value",
+        bytearray(b"private-value"),
+        Decimal("1.5"),
+        {"private-value"},
+        frozenset({"private-value"}),
+        ("private-value",),
+        object(),
+        lambda: "private-value",
+    ],
+)
+def test_request_options_reject_non_json_python_types_without_coercion(invalid) -> None:
+    with pytest.raises(ValidationError):
+        DomainRequest(
+            request_id="request-invalid",
+            query="Question",
+            source_scope=(),
+            options={"value": invalid},
+        )
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), float("-inf")])
+def test_request_options_reject_nonfinite_numbers(invalid: float) -> None:
+    with pytest.raises(ValidationError):
+        DomainRequest(
+            request_id="request-nonfinite",
+            query="Question",
+            source_scope=(),
+            options={"value": invalid},
+        )
+
+
+def test_request_options_reject_cycles_and_non_string_keys_without_leaking_values() -> None:
+    sentinel = "PRIVATE-SENTINEL-DO-NOT-ECHO"
+    cyclic_dict = {sentinel: None}
+    cyclic_dict[sentinel] = cyclic_dict
+    cyclic_list = []
+    cyclic_list.append(cyclic_list)
+    invalid_options = (cyclic_dict, {"items": cyclic_list}, {1: sentinel})
+
+    for options in invalid_options:
+        with pytest.raises(ValidationError) as caught:
+            DomainRequest(
+                request_id="request-invalid-tree",
+                query="Question",
+                source_scope=(),
+                options=options,
+            )
+        assert sentinel not in str(caught.value)
+
+
+def test_request_options_are_isolated_from_all_caller_containers() -> None:
+    original_item = {"label": "before"}
+    original_list = [original_item]
+    original = {"nested": {"items": original_list}}
+    request = DomainRequest(
+        request_id="request-isolation",
+        query="Question",
+        source_scope=(),
+        options=original,
+    )
+
+    original_item["label"] = "after"
+    original_list.append("after")
+    original["nested"]["new"] = "after"
+
+    assert request.options == {"nested": {"items": [{"label": "before"}]}}
+    assert request.options is not original
+    assert request.options["nested"] is not original["nested"]
+    assert request.options["nested"]["items"] is not original_list
+    assert DomainRequest.model_validate_json(request.model_dump_json()).options == request.options
+
+
+def test_reused_noncyclic_container_is_accepted_and_copied_per_path() -> None:
+    shared = {"items": [1, 2]}
+    request = DomainRequest(
+        request_id="request-shared-container",
+        query="Question",
+        source_scope=(),
+        options={"first": shared, "second": shared},
+    )
+
+    assert request.options["first"] == request.options["second"] == shared
+    assert request.options["first"] is not request.options["second"]
+
+
+def test_request_options_participate_in_value_equality_without_hash_contract() -> None:
+    common = {"request_id": "request-equality", "query": "Question", "source_scope": ()}
+    first = DomainRequest(**common, options={"a": 1, "b": {"c": [2]}})
+    reordered = DomainRequest(**common, options={"b": {"c": [2]}, "a": 1})
+    different = DomainRequest(**common, options={"a": 2, "b": {"c": [2]}})
+
+    assert first == reordered
+    assert first != different
+    with pytest.raises(TypeError):
+        hash(first)
+
+
+def test_protocol_1_0_request_requires_options_to_be_omitted_and_reserializes_without_it() -> None:
+    payload = {
+        "protocol_version": "1.0",
+        "request_id": "legacy-request",
+        "query": "Legacy question",
+        "source_scope": [],
+    }
+    request = DomainRequest.model_validate(payload)
+    json_request = DomainRequest.model_validate_json(json.dumps(payload))
+
+    assert request.options == json_request.options == {}
+    assert "options" not in request.model_dump(mode="json")
+    assert "options" not in json.loads(request.model_dump_json())
+    assert request.model_dump(mode="json")["query"] == payload["query"]
+
+    for explicit_options in ({}, {"value": 1}):
+        with pytest.raises(ValidationError):
+            DomainRequest(**payload, options=explicit_options)
+        with pytest.raises(ValidationError):
+            DomainRequest.model_validate_json(
+                json.dumps({**payload, "options": explicit_options})
+            )
+
+
+def test_request_validation_errors_hide_complete_input_values() -> None:
+    sensitive_key = "secret_option_key_93841"
+    sensitive_value = "SECRET_OPTION_VALUE_DO_NOT_LEAK_93841"
+    invalid_options = {sensitive_key: Path(sensitive_value)}
+
+    with pytest.raises(ValidationError) as caught:
+        DomainRequest(
+            request_id="request-redacted",
+            query="Question",
+            source_scope=(),
+            options=invalid_options,
+        )
+
+    for text in (str(caught.value), repr(caught.value)):
+        assert "invalid_json_type" in text
+        assert sensitive_key not in text
+        assert sensitive_value not in text
+        assert repr(invalid_options) not in text
 
 
 def test_models_round_trip_as_json_and_forbid_extra_fields() -> None:

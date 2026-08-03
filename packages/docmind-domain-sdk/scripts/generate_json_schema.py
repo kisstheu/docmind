@@ -14,7 +14,7 @@ SCHEMA_PATH = (
     SRC_ROOT
     / "docmind_domain_sdk"
     / "schemas"
-    / "protocol-1.0.schema.json"
+    / "protocol-1.1.schema.json"
 )
 sys.path.insert(0, str(SRC_ROOT))
 
@@ -65,14 +65,25 @@ DTO_MODELS = (
 def render_schema() -> str:
     _, generated = models_json_schema(
         [(model, "validation") for model in DTO_MODELS],
-        title="DocMind Domain Plugin Protocol 1.0",
+        title="DocMind Domain Plugin Protocol 1.1",
     )
+    domain_request = generated["$defs"]["DomainRequest"]
+    domain_request["oneOf"] = [
+        {
+            "properties": {"protocol_version": {"const": "1.0"}},
+            "required": ["protocol_version"],
+            "not": {"required": ["options"]},
+        },
+        {
+            "properties": {"protocol_version": {"const": "1.1"}},
+        },
+    ]
     bundle = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": "urn:docmind:domain-plugin-protocol:1.0",
-        "title": "DocMind Domain Plugin Protocol 1.0",
-        "description": "Neutral wire DTO definitions for protocol 1.0.",
-        "x-protocol-version": "1.0",
+        "$id": "urn:docmind:domain-plugin-protocol:1.1",
+        "title": "DocMind Domain Plugin Protocol 1.1",
+        "description": "Neutral wire DTO definitions for protocol 1.1.",
+        "x-protocol-version": "1.1",
         "$defs": generated["$defs"],
     }
     return json.dumps(bundle, ensure_ascii=False, indent=2, sort_keys=True) + "\n"

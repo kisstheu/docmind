@@ -13,6 +13,7 @@ EXPECTED_PUBLIC_API = {
     "DomainRequest",
     "ProbeResult",
     "FocusUpdate",
+    "JsonValue",
     "PluginError",
     "DomainResult",
     "SourceSyncRequest",
@@ -25,10 +26,15 @@ EXPECTED_PUBLIC_API = {
     "DomainPlugin",
     "PROTOCOL_VERSION",
     "ProtocolViolationError",
+    "MAX_OPTIONS_ENCODED_BYTES",
+    "MAX_OPTIONS_DEPTH",
+    "MAX_OPTIONS_TOTAL_KEYS",
+    "MAX_OPTIONS_CONTAINER_ITEMS",
     "validate_manifest_boundary",
     "validate_lifecycle_boundary",
     "validate_sync_boundary",
     "validate_probe_boundary",
+    "validate_request_boundary",
     "validate_result_boundary",
 }
 

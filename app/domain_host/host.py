@@ -6,6 +6,7 @@ from docmind_domain_sdk import (
     DomainPlugin,
     DomainRequest,
     DomainResult,
+    validate_request_boundary,
     validate_result_boundary,
 )
 
@@ -32,6 +33,7 @@ class StaticDomainHost(DomainDispatchPort):
                 "StaticDomainHost cannot dispatch inside a running event loop"
             )
 
+        validate_request_boundary(request)
         result = asyncio.run(self._plugin.execute(request))
         validate_result_boundary(
             request,

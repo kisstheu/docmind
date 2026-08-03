@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -8,12 +9,26 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
-    JsonValue,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
     model_validator,
 )
 
+from .validation import validate_and_copy_options
 
-PROTOCOL_VERSION = "1.0"
+
+PROTOCOL_VERSION = "1.1"
+
+type JsonValue = (
+    str
+    | bool
+    | None
+    | int
+    | float
+    | list[JsonValue]
+    | dict[str, JsonValue]
+)
 
 
 def _reject_surrounding_whitespace(value: Any) -> Any:
@@ -68,6 +83,7 @@ class WireModel(BaseModel):
         extra="forbid",
         frozen=True,
         allow_inf_nan=False,
+        hide_input_in_errors=True,
     )
 
 
@@ -197,13 +213,41 @@ class FocusContext(WireModel):
 
 
 class DomainRequest(WireModel):
-    protocol_version: Literal["1.0"] = PROTOCOL_VERSION
+    protocol_version: Literal["1.0", "1.1"] = PROTOCOL_VERSION
     request_id: RequestId
     query: Annotated[str, Field(min_length=1, max_length=16000)]
     locale: Annotated[str, Field(min_length=2, max_length=32)] = "und"
     source_scope: tuple[SourceRef, ...]
     focus: FocusContext = FocusContext()
     deadline_ms: Annotated[int, Field(ge=50, le=300000)] = 10000
+    options: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        validate_default=True,
+        json_schema_extra={"default": {}},
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def forbid_legacy_options_field(cls, value: Any) -> Any:
+        if (
+            isinstance(value, Mapping)
+            and value.get("protocol_version", PROTOCOL_VERSION) == "1.0"
+            and "options" in value
+        ):
+            raise ValueError("options field is not allowed for protocol 1.0")
+        return value
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def validate_options(cls, value: Any) -> dict[str, JsonValue]:
+        return validate_and_copy_options(value)
+
+    @model_serializer(mode="wrap")
+    def serialize_wire(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        payload = handler(self)
+        if self.protocol_version == "1.0":
+            payload.pop("options", None)
+        return payload
 
     @model_validator(mode="after")
     def validate_focus_scope(self) -> DomainRequest:
@@ -221,7 +265,7 @@ class DomainRequest(WireModel):
 
 
 class ProbeResult(WireModel):
-    protocol_version: Literal["1.0"] = PROTOCOL_VERSION
+    protocol_version: Literal["1.1"] = PROTOCOL_VERSION
     request_id: RequestId
     plugin_id: PluginId
     disposition: Literal["claim", "abstain"]
@@ -259,7 +303,7 @@ class PluginError(WireModel):
 
 
 class DomainResult(WireModel):
-    protocol_version: Literal["1.0"] = PROTOCOL_VERSION
+    protocol_version: Literal["1.1"] = PROTOCOL_VERSION
     request_id: RequestId
     plugin_id: PluginId
     status: Literal["handled", "abstain", "retryable_error", "fatal_error"]
@@ -287,14 +331,14 @@ class DomainResult(WireModel):
 
 
 class SourceSyncRequest(WireModel):
-    protocol_version: Literal["1.0"] = PROTOCOL_VERSION
+    protocol_version: Literal["1.1"] = PROTOCOL_VERSION
     request_id: RequestId
     upserts: tuple[SourceSnapshot, ...] = ()
     removed_source_ids: tuple[SourceId, ...] = ()
 
 
 class SourceSyncResult(WireModel):
-    protocol_version: Literal["1.0"] = PROTOCOL_VERSION
+    protocol_version: Literal["1.1"] = PROTOCOL_VERSION
     request_id: RequestId
     plugin_id: PluginId
     status: Literal["ok", "retryable_error", "fatal_error"]
@@ -313,12 +357,12 @@ class SourceSyncResult(WireModel):
 
 
 class PluginDescribeRequest(WireModel):
-    protocol_version: Literal["1.0"] = PROTOCOL_VERSION
+    protocol_version: Literal["1.1"] = PROTOCOL_VERSION
     request_id: RequestId
 
 
 class PluginManifest(WireModel):
-    protocol_version: Literal["1.0"] = PROTOCOL_VERSION
+    protocol_version: Literal["1.1"] = PROTOCOL_VERSION
     request_id: RequestId
     plugin_id: PluginId
     plugin_version: ShortIdentifier
@@ -332,7 +376,7 @@ class PluginManifest(WireModel):
 
 
 class PluginStartRequest(WireModel):
-    protocol_version: Literal["1.0"] = PROTOCOL_VERSION
+    protocol_version: Literal["1.1"] = PROTOCOL_VERSION
     request_id: RequestId
     host_instance_id: HostInstanceId
     storage_uri: Annotated[str, Field(min_length=1, max_length=2048)] | None = None
@@ -340,13 +384,13 @@ class PluginStartRequest(WireModel):
 
 
 class PluginStopRequest(WireModel):
-    protocol_version: Literal["1.0"] = PROTOCOL_VERSION
+    protocol_version: Literal["1.1"] = PROTOCOL_VERSION
     request_id: RequestId
     host_instance_id: HostInstanceId
 
 
 class LifecycleResult(WireModel):
-    protocol_version: Literal["1.0"] = PROTOCOL_VERSION
+    protocol_version: Literal["1.1"] = PROTOCOL_VERSION
     request_id: RequestId
     plugin_id: PluginId
     status: Literal["ok", "retryable_error", "fatal_error"]

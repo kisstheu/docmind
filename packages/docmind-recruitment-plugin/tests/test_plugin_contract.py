@@ -127,7 +127,7 @@ def test_manifest_is_stable_and_uses_no_permissions() -> None:
     assert PLUGIN_ID == "org.docmind.recruitment.jd-constraints"
     assert PLUGIN_VERSION == "0.1.0"
     assert result.display_name == DISPLAY_NAME
-    assert result.schema_version == "1.0"
+    assert result.schema_version == "1.1"
     assert result.transport_modes == ("in_process",)
     assert result.permissions == ()
 

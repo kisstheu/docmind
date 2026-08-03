@@ -6,6 +6,7 @@ from .dto import (
     EvidenceRef,
     FocusContext,
     FocusUpdate,
+    JsonValue,
     LifecycleResult,
     OpaqueFocus,
     PluginDescribeRequest,
@@ -22,9 +23,14 @@ from .dto import (
 from .errors import ProtocolViolationError
 from .protocol import DomainPlugin
 from .validation import (
+    MAX_OPTIONS_CONTAINER_ITEMS,
+    MAX_OPTIONS_DEPTH,
+    MAX_OPTIONS_ENCODED_BYTES,
+    MAX_OPTIONS_TOTAL_KEYS,
     validate_lifecycle_boundary,
     validate_manifest_boundary,
     validate_probe_boundary,
+    validate_request_boundary,
     validate_result_boundary,
     validate_sync_boundary,
 )
@@ -39,6 +45,7 @@ __all__ = [
     "DomainRequest",
     "ProbeResult",
     "FocusUpdate",
+    "JsonValue",
     "PluginError",
     "DomainResult",
     "SourceSyncRequest",
@@ -51,9 +58,14 @@ __all__ = [
     "DomainPlugin",
     "PROTOCOL_VERSION",
     "ProtocolViolationError",
+    "MAX_OPTIONS_ENCODED_BYTES",
+    "MAX_OPTIONS_DEPTH",
+    "MAX_OPTIONS_TOTAL_KEYS",
+    "MAX_OPTIONS_CONTAINER_ITEMS",
     "validate_manifest_boundary",
     "validate_lifecycle_boundary",
     "validate_sync_boundary",
     "validate_probe_boundary",
+    "validate_request_boundary",
     "validate_result_boundary",
 ]

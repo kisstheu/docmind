@@ -8,6 +8,7 @@ from pathlib import Path
 REQUIRED = {
     "docmind_domain_sdk/py.typed",
     "docmind_domain_sdk/schemas/protocol-1.0.schema.json",
+    "docmind_domain_sdk/schemas/protocol-1.1.schema.json",
 }
 FORBIDDEN_PARTS = {"tests", "spikes", "scripts", "__pycache__"}
 

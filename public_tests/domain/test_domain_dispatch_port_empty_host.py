@@ -22,7 +22,12 @@ from docmind_domain_sdk import (
     DomainRequest,
     DomainResult,
     FocusUpdate,
+    MAX_OPTIONS_CONTAINER_ITEMS,
+    MAX_OPTIONS_DEPTH,
+    MAX_OPTIONS_ENCODED_BYTES,
+    MAX_OPTIONS_TOTAL_KEYS,
     PluginError,
+    ProtocolViolationError,
 )
 
 
@@ -410,8 +415,116 @@ def test_empty_host_satisfies_sync_port_and_has_no_side_effects(capsys):
     assert host.dispatch(request) is None
     assert request.query == "原始问题"
     assert request.source_scope == ()
+    assert request.options == {}
     assert capsys.readouterr() == ("", "")
     assert isinstance(create_domain_host(), EmptyDomainHost)
+
+
+def test_dispatch_preserves_query_and_transfers_options_without_semantic_changes():
+    question = "  Synthetic question with exact whitespace.\n"
+    options = {
+        "document_rendering": {"mode": "compact", "sections": [1, 3]},
+        "inventory_threshold": 0.75,
+        "schedule_timezone": None,
+    }
+    plugin = _NeutralPlugin(_domain_result)
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+    result = dispatch_domain_request(host, question, options=options)
+
+    assert result is not None
+    assert len(plugin.execute_requests) == 1
+    request = plugin.execute_requests[0]
+    assert request.query == question
+    assert request.options == options
+    assert list(request.options) == list(options)
+    assert request.options is not options
+    assert plugin.other_calls == []
+
+
+def test_dispatch_default_options_keep_query_only_plugin_compatible():
+    seen_queries = []
+
+    def query_only_result(request):
+        seen_queries.append(request.query)
+        return _domain_result(request)
+
+    plugin = _NeutralPlugin(query_only_result)
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+    assert dispatch_domain_request(host, "Query-only compatibility.") is not None
+    assert seen_queries == ["Query-only compatibility."]
+    assert plugin.execute_requests[0].options == {}
+
+
+def _nested_options(depth):
+    value = "leaf"
+    for _ in range(depth):
+        value = {"next": value}
+    return value
+
+
+@pytest.mark.parametrize(
+    ("options", "category"),
+    [
+        (
+            {"value": "x" * (MAX_OPTIONS_ENCODED_BYTES - len('{"value":""}') + 1)},
+            "encoded_bytes",
+        ),
+        (_nested_options(MAX_OPTIONS_DEPTH + 1), "depth"),
+        (
+            {f"key-{index}": index for index in range(MAX_OPTIONS_TOTAL_KEYS + 1)},
+            "total_keys",
+        ),
+        (
+            {"items": [None] * MAX_OPTIONS_CONTAINER_ITEMS},
+            "container_items",
+        ),
+    ],
+)
+def test_static_host_revalidates_quotas_before_plugin_coroutine(
+    options,
+    category,
+    capsys,
+):
+    sentinel = "PRIVATE-SENTINEL-DO-NOT-ECHO"
+    plugin = _NeutralPlugin(_domain_result)
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+    valid = DomainRequest(
+        request_id="request-host-boundary",
+        query="Question",
+        source_scope=(),
+    )
+    if category == "encoded_bytes":
+        options = {sentinel: next(iter(options.values()))}
+    forged = valid.model_copy(update={"options": options})
+
+    with pytest.raises(ProtocolViolationError, match=category) as caught:
+        host.dispatch(forged)
+
+    output = capsys.readouterr()
+    assert plugin.execute_requests == []
+    assert plugin.execute_loops == []
+    assert sentinel not in str(caught.value)
+    assert sentinel not in output.out
+    assert sentinel not in output.err
+
+
+def test_dispatch_outer_boundary_maps_host_request_violation_to_none(capsys):
+    sentinel = "PRIVATE-SENTINEL-DO-NOT-ECHO"
+    plugin = _NeutralPlugin(_domain_result)
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+    class _MutatingForwardPort:
+        def dispatch(self, request):
+            request.options[sentinel] = "x" * MAX_OPTIONS_ENCODED_BYTES
+            return host.dispatch(request)
+
+    assert dispatch_domain_request(_MutatingForwardPort(), "Question") is None
+    output = capsys.readouterr()
+    assert plugin.execute_requests == []
+    assert sentinel not in output.out
+    assert sentinel not in output.err
 
 
 def test_composition_factory_requires_complete_static_plugin_configuration():
