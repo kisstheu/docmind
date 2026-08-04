@@ -1,0 +1,1227 @@
+version: 1
+
+task_name: recruitment_structured_options_explicit_rules_first_slice
+
+card_status: finalized
+
+task_goal: >-
+  在不修改公共 SDK、Host、dispatch、runner 或 CLI 的前提下，让招聘插件通过
+  DomainRequest.options 严格接收自身 namespace 下的七字段显式求职规则，转换为
+  现有不可变 JobSearchRules，并复用现有三态比较与稳定渲染完成 production
+  StaticDomainHost 程序调用链的首个业务接入切片。
+
+current_execution_boundary:
+  docs_only: true
+  allowed_change:
+    - docs/task_card_recruitment_structured_options_explicit_rules_first_slice.yaml
+  implementation_in_this_run: forbidden
+  test_implementation_in_this_run: forbidden
+  schema_generation_in_this_run: forbidden
+  business_wiring_in_this_run: forbidden
+  local_docs_commit_required: true
+  amend: forbidden
+  push: forbidden
+
+repository_baseline:
+  architecture: monorepo
+  git_root: /home/kissyu/projects/docmind
+  branch: main
+  head: 8d62762d19ea8ec73678b13345525fcf5b596924
+  main: 8d62762d19ea8ec73678b13345525fcf5b596924
+  origin_main: 8d62762d19ea8ec73678b13345525fcf5b596924
+  ahead_behind: [0, 0]
+  working_tree: clean
+  staging_area: empty
+  recent_commits:
+    - "8d62762 feat(domain-sdk): 交付结构化 options 协议 1.1"
+    - "14a2290 docs(domain-sdk): 修正 protocol 1.0 options wire 边界"
+    - "d4bd84a docs(domain-sdk): 定稿结构化 options 协议 1.1 首切片任务卡"
+  sdk_package_version: 0.2.0
+  domain_protocol_version: "1.1"
+  recruitment_plugin_version: 0.1.0
+
+task_background:
+  - >-
+    Domain SDK protocol 1.1 已交付 DomainRequest.options 的 request-local 递归 JSON
+    契约、输入隔离、有限数字校验、循环检测和四项固定配额。
+  - >-
+    dispatch_domain_request 已接受 keyword-only options，StaticDomainHost 在 execute
+    前执行通用复验并把同一个 DomainRequest 透明交给招聘插件。
+  - >-
+    招聘插件已拥有不可变七字段 JobSearchRules、MATCH/CONFLICT/UNKNOWN 三态比较、
+    compare_job_search_rules 和 render_job_rule_comparison，但生产 execute 尚未消费
+    request.options。
+  - >-
+    当前缺口限定为招聘插件内部严格 payload adapter 和 execute 接线；公共 SDK、Host、
+    dispatch、runner 与 CLI 均已处于本切片所需边界之外。
+
+current_evidence:
+  sdk_domain_request:
+    path: packages/docmind-domain-sdk/src/docmind_domain_sdk/dto.py
+    symbols:
+      - DomainRequest
+      - DomainResult
+      - PluginManifest
+      - PluginError
+    facts:
+      - DomainRequest.options 的运行时存储是 dict[str, JsonValue]，默认值为空对象。
+      - WireModel 使用 extra=forbid、frozen=True、allow_inf_nan=False 和 hide_input_in_errors=True。
+      - >-
+        DomainResult 当前字段为 protocol_version、request_id、plugin_id、status、
+        answer_markdown、focus_update、evidence、warnings 和 error，不存在 diagnostics 字段。
+      - handled 结果必须有非空 answer_markdown 且 error 必须为 None。
+      - PluginManifest.schema_version 是 manifest 字段，不是本任务的 options payload 版本。
+  sdk_validation:
+    path: packages/docmind-domain-sdk/src/docmind_domain_sdk/validation.py
+    facts:
+      - SDK 只验证递归 JSON 类型、有限数字、循环引用和四项固定配额。
+      - SDK 不理解招聘 namespace、字段、枚举、单位或业务组合。
+  sdk_protocol:
+    path: packages/docmind-domain-sdk/src/docmind_domain_sdk/protocol.py
+    facts:
+      - DomainPlugin.execute 只接收 DomainRequest 并返回 DomainResult。
+      - 插件不接收 Host、WorkState、Core 状态或运行时连接对象。
+  sdk_public_api:
+    path: packages/docmind-domain-sdk/src/docmind_domain_sdk/__init__.py
+    facts:
+      - DomainRequest、DomainResult、JsonValue 与公共边界校验均已公开。
+  sdk_readme:
+    path: packages/docmind-domain-sdk/README.md
+    facts:
+      - options 的具体业务 key、业务校验、未知 key 策略和内部类型转换归插件所有。
+      - Host 透明传输 options，不解释、过滤、改名或补值。
+  dispatch:
+    path: app/domain_dispatch_port.py
+    symbols:
+      - DomainDispatchPort
+      - dispatch_domain_request
+    facts:
+      - dispatch_domain_request 已接受 options: Mapping[str, JsonValue] | None。
+      - helper 以 question 逐字符构造 request.query，不把 options 拼进 query。
+      - helper 捕获端口异常并回落 None。
+  host:
+    path: app/domain_host/host.py
+    symbols:
+      - EmptyDomainHost
+      - StaticDomainHost
+    facts:
+      - StaticDomainHost 在创建 execute coroutine 前调用 validate_request_boundary。
+      - StaticDomainHost 把原 DomainRequest 直接交给一次 plugin.execute。
+      - StaticDomainHost 只把 handled 返回给调用方，其余 status 映射为 None。
+  runner:
+    path: app/chat_loop_parts/runner.py
+    facts:
+      - runner 继续调用 dispatch_domain_request(domain_dispatch_port, question)。
+      - runner 当前没有显式规则来源，也不传 options。
+      - 本切片不修改 runner，不能宣称交互式 CLI 已支持显式规则比较。
+  cli_and_composition:
+    path: ask_notes.py
+    symbols:
+      - create_production_domain_host
+    facts:
+      - create_production_domain_host 构造 RecruitmentJDPlugin 和真实 StaticDomainHost。
+      - CLI 当前只有 notes-dir 参数，没有 options JSON 参数或求职画像 provider。
+      - 本切片只复用 production host factory，不修改 ask_notes.py。
+  recruitment_plugin:
+    path: packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/plugin.py
+    symbols:
+      - PLUGIN_ID
+      - RecruitmentJDPlugin.execute
+    facts:
+      - PLUGIN_ID 精确等于 org.docmind.recruitment.jd-constraints。
+      - execute 当前先调用 extract_constraints(request.query)。
+      - 提取成功时使用 render_markdown 返回 handled，失败时返回纯 abstain。
+      - execute 当前不读取 request.options。
+  recognition_and_extraction:
+    paths:
+      - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/recognition.py
+      - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/extraction.py
+    facts:
+      - 现有识别只接受满足结构锚点与长度门槛的单份单岗位 JD。
+      - 非 JD、跨域文本、多个完整 JD 块和不同规范化岗位名称均 abstain。
+      - ExtractionResult 保留原文明示字段，冲突原文不在提取层裁决。
+  comparison_contracts:
+    path: packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_contracts.py
+    symbols:
+      - EducationLevel
+      - ConstraintStatus
+      - JobSearchRules
+    facts:
+      - JobSearchRules 是 frozen dataclass，字段固定为七个。
+      - 薪资与相关年限只接受 Decimal 或 None，并要求有限且非负。
+      - allowed_locations 只接受 tuple[str, ...] 且元素必须是非空字符串。
+      - EducationLevel 只接受真实 enum 成员。
+      - ConstraintStatus 的真实值为 match、conflict、unknown。
+  education_enum:
+    source: packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_contracts.py
+    accepted_wire_values:
+      - unrestricted
+      - secondary
+      - associate
+      - bachelor
+      - master
+      - doctorate
+  comparison_service:
+    paths:
+      - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison.py
+      - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_compensation.py
+      - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_work_arrangement.py
+      - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_qualifications.py
+      - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_support.py
+    facts:
+      - compare_job_search_rules 只为已设置规则创建 assessment。
+      - 字段固定顺序为薪资、工作制、外包、驻场、地点、学历、经验。
+      - 缺失、含糊、范围跨阈值或原文冲突均按 UNKNOWN 处理。
+      - 技术要求只进入 unassessed_technical_evidence，不生成 assessment。
+  comparison_rendering:
+    path: packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_rendering.py
+    symbols:
+      - render_job_rule_comparison
+    facts:
+      - 现有标题是“## 单 JD 显式规则比较”。
+      - 现有分组顺序为明确符合、明确冲突、信息缺失或需要确认、技术要求原文。
+      - 现有渲染明确不生成投递决定。
+  legacy_rendering:
+    path: packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/rendering.py
+    symbols:
+      - render_markdown
+    facts:
+      - 无显式规则时的稳定标题是“## JD 明确约束”。
+      - 旧路径只列出原文明示字段，不输出未提及字段。
+  plugin_public_api:
+    path: packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/__init__.py
+    facts:
+      - JobSearchRules、EducationLevel、compare_job_search_rules 与 render_job_rule_comparison 已公开。
+      - request options adapter 与 OPTIONS_SCHEMA_VERSION 尚未存在。
+  plugin_readme:
+    path: packages/docmind-recruitment-plugin/README.md
+    state: missing
+    implementation_requirement: 在未来实现切片中新建插件业务 README。
+  existing_plugin_tests:
+    paths:
+      - packages/docmind-recruitment-plugin/tests/test_plugin_contract.py
+      - packages/docmind-recruitment-plugin/tests/test_rule_comparison.py
+    facts:
+      - 已冻结 PLUGIN_ID、manifest、probe、旧 handled Markdown 和 abstain 边界。
+      - 已冻结七字段模型、枚举、三态比较、渲染顺序和无规则兼容行为。
+  production_contract_tests:
+    paths:
+      - public_tests/domain/test_recruitment_jd_production_wiring_contract.py
+      - public_tests/domain/test_recruitment_jd_slice_contract.py
+      - public_tests/domain/test_domain_dispatch_port_empty_host.py
+    facts:
+      - 已覆盖真实 production factory、StaticDomainHost、招聘插件和 runner 无 options 路径。
+      - 已覆盖 dispatch 对 options 的 query 保真与透明传输。
+      - production wiring 测试尚未覆盖招聘 namespace 到比较 Markdown 的完整链路。
+  architecture:
+    path: docs/adr/0001-domain-plugin-boundary-and-future-mcp-adapter.md
+    facts:
+      - SDK 定义中立可序列化 DTO，Host 不解释领域业务语义。
+      - 插件拥有自身领域 schema、校验、模型和错误边界。
+      - 当前 production 是静态单插件窄切片，不包含动态发现、多插件仲裁或 MCP。
+
+problem_definition:
+  missing_capability: >-
+    程序调用方已经能把结构化 options 送达 RecruitmentJDPlugin.execute，但插件没有
+    严格解析自身 namespace 并把七字段 wire 值转换为现有 JobSearchRules 的入口，
+    因此现有比较服务尚未接入 production StaticDomainHost 程序调用链。
+  rejected_paths:
+    - 把求职规则或 options JSON 拼进 query
+    - 在 SDK 中增加招聘 DTO、招聘字段或业务枚举
+    - 在 Host 中解析招聘 namespace 或补求职规则默认值
+    - 在 dispatch 增加招聘专用参数
+    - 从 runner、CLI、WorkState、简历、环境变量或历史对话隐式加载规则
+    - 新建中央 namespace registry 或 JSON Schema artifact
+    - 复制或改写已有比较和渲染算法
+  reason: >-
+    这些路径会破坏 request-local 明示输入、领域插件所有权、query 保真和公共层中立性，
+    并扩大首切片到尚未授权的规则来源、公共协议或业务算法。
+
+architecture_decision:
+  decision: GO
+  decision_is_final: true
+  selected_path: recruitment_plugin_internal_strict_options_adapter
+  prerequisites_satisfied:
+    - Domain SDK protocol 1.1 已提供 DomainRequest.options。
+    - dispatch_domain_request 已提供可运行的 options 程序调用入口。
+    - StaticDomainHost 已透明转发 options。
+    - JobSearchRules 已提供稳定、不可变的七字段内部模型。
+    - 三态比较和比较结果渲染已存在并通过回归。
+  implementation_blocker_rule: >-
+    若实现需要修改 packages/docmind-domain-sdk/**、app/domain_dispatch_port.py、
+    app/domain_host/**、app/chat_loop_parts/runner.py 或 ask_notes.py，立即将实现任务标记为
+    blocked；该需求不得在本卡授权下进入公共层。
+
+first_slice_flow:
+  input: 调用方通过 DomainRequest.options 提供本轮显式求职规则快照。
+  parse: 招聘插件只定位并严格解析自身 PLUGIN_ID namespace。
+  conversion: 七字段 JSON wire 值转换为现有 JobSearchRules。
+  comparison: 调用现有 compare_job_search_rules。
+  rendering: 调用现有 render_job_rule_comparison。
+  forbidden_reimplementation:
+    - JD 提取
+    - 七字段比较算法
+    - 三态判断
+    - 比较结果渲染
+    - 公共 options 传输
+    - Host 业务路由
+
+options_namespace:
+  value: org.docmind.recruitment.jd-constraints
+  source_of_truth: docmind_recruitment_plugin.plugin.PLUGIN_ID
+  rules:
+    - 顶层 namespace 必须逐字符等于稳定 PLUGIN_ID。
+    - 不使用 Python package 名或 module 名作为 namespace。
+    - 不增加中央 namespace registry。
+    - options 可同时包含其他插件 namespace。
+    - 招聘插件只读取自身 namespace。
+    - 其他 namespace 不得改变招聘插件旧行为。
+    - SDK 与 Host 不解析、过滤、改名或补全该 namespace。
+
+payload_version:
+  constant_name: OPTIONS_SCHEMA_VERSION
+  value: "1.0"
+  owner: recruitment_plugin
+  distinctions:
+    domain_protocol_1_1: DomainRequest 公共 wire 协议版本。
+    plugin_manifest_schema_version: PluginManifest 当前 manifest schema_version 字段。
+    recruitment_options_schema_1_0: 本 namespace 内显式规则 payload 的独立版本。
+  rules:
+    - namespace 一旦出现，schema_version 必填。
+    - 首版只接受字符串 "1.0"。
+    - 缺失、null、非字符串或不支持的版本均原子拒绝。
+    - 不猜测版本，不降级为其他版本。
+    - 不把 Domain protocol 1.1 当作业务 payload 版本。
+    - 不修改 PluginManifest.schema_version 语义。
+
+payload_wire_schema:
+  canonical_example: |
+    {
+      "org.docmind.recruitment.jd-constraints": {
+        "schema_version": "1.0",
+        "explicit_rules": {
+          "minimum_monthly_salary_k": 13,
+          "require_double_weekends": true,
+          "allow_outsourcing": false,
+          "allow_onsite": false,
+          "allowed_locations": ["示例城市甲"],
+          "candidate_education_level": "associate",
+          "candidate_relevant_years": 2
+        }
+      }
+    }
+  namespace_object:
+    wire_type: object
+    required_fields:
+      - schema_version
+      - explicit_rules
+    allowed_fields:
+      - schema_version
+      - explicit_rules
+    additional_fields: forbidden
+    null: forbidden
+    empty_object: forbidden
+  explicit_rules:
+    wire_type: object
+    required: true
+    allowed_fields:
+      - minimum_monthly_salary_k
+      - require_double_weekends
+      - allow_outsourcing
+      - allow_onsite
+      - allowed_locations
+      - candidate_education_level
+      - candidate_relevant_years
+    additional_fields: forbidden
+    null: forbidden
+    empty_object: allowed_no_op
+  unknown_field_policy:
+    namespace_level: reject_atomically
+    explicit_rules_level: reject_atomically
+    rationale: 调用方明确提供但插件不支持的规则不得被静默忽略。
+  legal_no_op: |
+    {
+      "org.docmind.recruitment.jd-constraints": {
+        "schema_version": "1.0",
+        "explicit_rules": {}
+      }
+    }
+  invalid_empty_namespace: |
+    {
+      "org.docmind.recruitment.jd-constraints": {}
+    }
+  invalid_null_namespace: |
+    {
+      "org.docmind.recruitment.jd-constraints": null
+    }
+
+seven_field_wire_contract:
+  field_order:
+    - minimum_monthly_salary_k
+    - require_double_weekends
+    - allow_outsourcing
+    - allow_onsite
+    - allowed_locations
+    - candidate_education_level
+    - candidate_relevant_years
+  minimum_monthly_salary_k:
+    wire_type: JSON number
+    internal_type: Decimal
+    unit: K/月
+    validation:
+      - type(value) 必须是 int 或 float，bool 明确拒绝。
+      - 值必须有限且非负。
+      - null 拒绝。
+    conversion: Decimal(str(value))
+    missing: 不比较薪资。
+    direct_float_to_job_search_rules: forbidden
+  require_double_weekends:
+    wire_type: boolean
+    internal_type: bool
+    validation:
+      - type(value) 必须是 bool。
+      - null 拒绝。
+    missing: 不比较工作制。
+  allow_outsourcing:
+    wire_type: boolean
+    internal_type: bool
+    validation:
+      - type(value) 必须是 bool。
+      - null 拒绝。
+    missing: 不比较外包。
+  allow_onsite:
+    wire_type: boolean
+    internal_type: bool
+    validation:
+      - type(value) 必须是 bool。
+      - null 拒绝。
+    missing: 不比较驻场。
+  allowed_locations:
+    wire_type: array[string]
+    internal_type: tuple[str, ...]
+    validation:
+      - 输入必须是 JSON array。
+      - 每个元素必须是 string。
+      - 每个元素经 strip 检查后必须非空，存储值不由 adapter 改写。
+      - null 拒绝。
+    conversion: tuple(value)
+    list_semantics: OR
+    missing: 不比较地点。
+    empty_array: 合法并归一为空 tuple，因此不比较地点。
+    excluded_features:
+      - 地点别名系统
+      - 城市层级系统
+      - 距离或通勤半径
+      - 模糊地点匹配
+  candidate_education_level:
+    wire_type: string enum
+    internal_type: EducationLevel
+    accepted_values:
+      - unrestricted
+      - secondary
+      - associate
+      - bachelor
+      - master
+      - doctorate
+    validation:
+      - 只接受上述源码中真实存在的精确小写值。
+      - null 拒绝。
+    conversion: EducationLevel(value)
+    missing: 不比较学历。
+  candidate_relevant_years:
+    wire_type: JSON number
+    internal_type: Decimal
+    unit: 年
+    validation:
+      - type(value) 必须是 int 或 float，bool 明确拒绝。
+      - 值必须有限且非负。
+      - null 拒绝。
+    conversion: Decimal(str(value))
+    missing: 不比较相关年限。
+    direct_float_to_job_search_rules: forbidden
+  missing_field_semantics:
+    optional_rule_fields: true
+    internal_unset:
+      scalar_fields: None
+      allowed_locations: []
+    hidden_defaults: forbidden
+  unsupported_rule_shapes:
+    - 自由文本规则
+    - 数组式规则清单
+    - 条件组合对象
+    - 模糊程度字段
+  unsupported_rule_meanings:
+    - Java
+    - 模型调优
+    - 机器学习
+    - RAG
+    - Agent
+    - 技术栈偏好
+    - 职位方向
+    - 行业偏好
+    - 单休是否可接受的复杂条件
+    - 薪资与工作制的条件组合
+    - “尽量”“最好”“优先”等模糊程度
+
+adapter_contract:
+  target_file: packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/request_options.py
+  public_constants:
+    OPTIONS_SCHEMA_VERSION: "1.0"
+    INVALID_OPTIONS_CODE: recruitment.options.invalid_payload
+    INVALID_OPTIONS_CATEGORY: invalid_request_options
+  parse_entry:
+    name: parse_recruitment_request_options
+    conceptual_signature: >-
+      parse_recruitment_request_options(options: Mapping[str, JsonValue])
+      -> JobSearchRules | None
+    return_semantics:
+      namespace_absent: None
+      namespace_present_with_empty_rules: JobSearchRules()
+      namespace_present_with_nonempty_rules: 填入本轮显式值的 JobSearchRules
+      namespace_present_invalid: 抛出 RecruitmentOptionsError
+  error_type:
+    name: RecruitmentOptionsError
+    required_attributes:
+      code: recruitment.options.invalid_payload
+      category: invalid_request_options
+    text_contract: str() 与 repr() 只包含固定 code/category，不包含输入 key、value 或 payload。
+  responsibilities:
+    - 只定位 PLUGIN_ID 对应 namespace。
+    - 区分 namespace 缺失、合法空规则和 namespace 非法。
+    - 校验 OPTIONS_SCHEMA_VERSION。
+    - 严格校验 namespace object 和 explicit_rules object 字段集合。
+    - 校验七字段的 JSON 类型、非负范围、有限性和学历枚举。
+    - 明确拒绝 bool 冒充 JSON number。
+    - 将数字转换为 Decimal(str(value))。
+    - 将 location list 转换为 tuple。
+    - 将 education string 转换为 EducationLevel。
+    - 构造现有不可变 JobSearchRules。
+    - 不修改调用方传入的 options 或任意嵌套容器。
+    - 只产生固定、脱敏的内部错误 code/category。
+  forbidden_dependencies_and_behavior:
+    - 不实现 JD 识别、提取或比较。
+    - 不读取 WorkState。
+    - 不读取简历。
+    - 不读取环境变量。
+    - 不读取历史对话。
+    - 不读取长期画像。
+    - 不增加隐藏默认规则。
+    - 不访问网络、数据库或文件系统。
+    - 不修改 options。
+    - 不在异常文本中包含完整 payload、字段名或规则值。
+
+execute_wiring:
+  target: RecruitmentJDPlugin.execute
+  frozen_order:
+    - step: 1
+      behavior: 按现有逻辑对 request.query 识别并提取单份单岗位 JD。
+    - step: 2
+      behavior: 非 JD、跨域文本或多 JD 保持现有纯 abstain，不读取招聘 namespace。
+    - step: 3
+      behavior: 单 JD 提取成功后，调用 adapter 检查 PLUGIN_ID namespace。
+    - step: 4
+      behavior: namespace 不存在时调用现有 render_markdown，完整保持 JD 明示约束输出。
+    - step: 5
+      behavior: namespace 合法且 explicit_rules 为空时调用现有 render_markdown，完整保持 JD 明示约束输出。
+    - step: 6
+      behavior: >-
+        namespace 合法且规则非空时，使用 adapter 返回的 JobSearchRules 调用现有
+        compare_job_search_rules(extracted, rules)，再调用现有
+        render_job_rule_comparison(comparison)，返回 handled。
+    - step: 7
+      behavior: >-
+        namespace 存在但非法时原子拒绝，不调用比较服务，返回固定、脱敏、用户可见的
+        handled 拒绝。
+  invariants:
+    - options 解析发生在 extract_constraints 成功之后。
+    - 非 JD 文本不得因携带招聘 namespace 而被误判 handled。
+    - 多 JD 输入不得进入单 JD 比较。
+    - 不允许一部分规则生效、一部分规则被忽略。
+    - options 不得进入 query、JD 原文、Markdown 证据或日志。
+    - query 在插件执行前后逐字符不变。
+    - 规则值不得写入 stdout、stderr 或日志。
+
+invalid_payload_behavior:
+  activation_conditions:
+    - 现有 extract_constraints 已成功识别并提取单 JD。
+    - 招聘插件自身 PLUGIN_ID namespace 存在。
+    - namespace payload 校验失败。
+  domain_result:
+    status: handled
+    answer_markdown: |-
+      ## 求职规则输入无效
+
+      本次未执行显式规则比较。请检查结构化求职规则后重试。
+    focus_update: preserve
+    evidence: []
+    warnings: []
+    error: null
+  internal_error:
+    code: recruitment.options.invalid_payload
+    category: invalid_request_options
+  rationale: >-
+    StaticDomainHost 把非 handled 映射为 None；使用固定 handled 拒绝可阻止普通检索接管后
+    静默忽略调用方显式提供的非法规则。
+  security_rules:
+    - Markdown 逐字符固定。
+    - 不回显 option key。
+    - 不回显 option value。
+    - 不回显完整 payload。
+    - 不回显薪资、地点、学历或年限值。
+    - 不返回内部 Python 异常 repr。
+    - 不执行任何部分比较。
+    - 不调用 compare_job_search_rules。
+    - 不调用 render_job_rule_comparison。
+    - 不修改 query。
+    - DomainResult 不新增 diagnostics 字段。
+  abstain_precedence:
+    - 非 JD 携带非法招聘 namespace仍保持纯 abstain。
+    - 跨域文本携带非法招聘 namespace仍保持纯 abstain。
+    - 多 JD 携带非法招聘 namespace仍保持纯 abstain。
+
+no_options_compatibility:
+  equivalent_inputs:
+    - 完全省略 options。
+    - options 等于空对象。
+    - options 只包含其他插件 namespace。
+    - 自身 namespace 合法且 explicit_rules 等于空对象。
+  required_equivalence:
+    domain_result: 完整 DomainResult 相等。
+    markdown: 逐字符相等。
+    status: 相等。
+    sources: >-
+      当前 DomainResult 通过 evidence 承载来源，完整结果相等冻结 evidence 与现状一致。
+    diagnostics: >-
+      当前 DomainResult 不存在 diagnostics 字段；本切片不得修改 SDK 或新增该字段，
+      完整结果相等覆盖当前全部可观察字段。
+    focus_update: 相等。
+    evidence: 相等。
+    warnings: 相等。
+    error: 相等。
+    handled_abstain_boundary: 相等。
+    query: 逐字符相等。
+  forbidden_side_effects:
+    - 不加载默认求职规则。
+    - 不读取长期画像。
+    - 不读取 WorkState、简历或聊天历史。
+    - 其他插件 namespace 不触发招聘解析或比较。
+    - 合法空规则不进入比较渲染。
+  preserved_existing_behavior:
+    - 非 JD abstain。
+    - 跨域文本 abstain。
+    - 多 JD abstain。
+    - probe 行为。
+    - manifest 行为。
+    - runner 无 options 路径。
+    - 旧 JD 明示约束 Markdown。
+
+three_state_comparison_reuse:
+  required_calls:
+    - compare_job_search_rules
+    - render_job_rule_comparison
+  algorithm_copy_or_fork: forbidden
+  actual_statuses:
+    MATCH:
+      enum_value: match
+      meaning: JD 明确信息满足调用方本轮显式规则。
+    CONFLICT:
+      enum_value: conflict
+      meaning: JD 明确信息与调用方本轮显式规则明确冲突。
+    UNKNOWN:
+      enum_value: unknown
+      meaning: JD 未写、表述含糊、范围跨阈值、原文冲突或信息不足。
+  invariants:
+    - JD 缺失对应信息时为 UNKNOWN。
+    - JD 表述含糊时为 UNKNOWN。
+    - JD 原文内部冲突时为 UNKNOWN。
+    - 信息不足不能判为 CONFLICT。
+    - 技术要求只保留为 JD 证据，不参与七字段 assessment。
+    - 不新增评分、百分比、投递建议或自动淘汰结论。
+
+responsibility_boundaries:
+  caller:
+    owns:
+      - 明确知道本次目标是招聘插件。
+      - 提供本轮显式规则快照。
+      - 从未来长期画像中裁剪本轮所需七字段规则。
+      - 通过 dispatch_domain_request(host, jd_text, options={...}) 发起程序调用。
+    does_not_own:
+      - 招聘 JD 提取或比较逻辑。
+      - 把完整画像、简历或聊天历史放入 options。
+      - 把规则或 options 拼入 query。
+  sdk:
+    continues_to_own:
+      - 递归 JSON 类型。
+      - 深拷贝与调用方输入隔离。
+      - 有限数字。
+      - 循环检测。
+      - 编码字节、深度、总 key、总容器成员四项配额。
+      - protocol wire 边界。
+    forbidden_scope:
+      - 招聘字段。
+      - 招聘 DTO。
+      - 招聘枚举。
+      - 招聘 namespace registry。
+  host:
+    continues_to_own:
+      - options 透明转发。
+      - execute 前通用请求复验。
+      - 通用结果边界校验。
+    forbidden_scope:
+      - 解释招聘 namespace。
+      - 补业务默认值。
+      - 记录完整 options 或单个规则值。
+      - 修改 query。
+  recruitment_plugin:
+    owns:
+      - 自身 PLUGIN_ID namespace。
+      - OPTIONS_SCHEMA_VERSION。
+      - namespace 对象与 explicit_rules 字段严格校验。
+      - 七字段业务类型、范围、枚举和转换。
+      - 构造 JobSearchRules。
+      - 调用现有比较与渲染。
+      - 非法 payload 的固定脱敏 handled 拒绝。
+
+minimum_caller_boundary:
+  required_reachability: production_static_host_programmatic_call
+  canonical_call: |
+    from app.domain_dispatch_port import dispatch_domain_request
+    from ask_notes import create_production_domain_host
+    from docmind_recruitment_plugin import PLUGIN_ID
+
+    host = create_production_domain_host()
+
+    result = dispatch_domain_request(
+        host,
+        jd_text,
+        options={
+            PLUGIN_ID: {
+                "schema_version": "1.0",
+                "explicit_rules": {
+                    "minimum_monthly_salary_k": 13,
+                    "require_double_weekends": True,
+                    "allow_outsourcing": False,
+                },
+            },
+        },
+    )
+  assertions:
+    - 路径使用 ask_notes.create_production_domain_host 创建的真实 production StaticDomainHost。
+    - 路径经过 dispatch_domain_request、StaticDomainHost 和 RecruitmentJDPlugin.execute。
+    - 能力不能只在 adapter 或插件单元测试中可达。
+    - runner 与 CLI 仍不提供规则来源。
+    - 不增加 app service、caller provider 或隐藏全局状态。
+    - 不修改 ask_notes.py，只复用现有 production host factory。
+    - 不宣称 CLI 已支持显式规则比较。
+
+first_slice_scope:
+  plugin_runtime:
+    - 定义 OPTIONS_SCHEMA_VERSION 等于 "1.0"。
+    - 使用稳定 PLUGIN_ID 作为唯一招聘 namespace。
+    - 新增严格、纯函数式 request_options adapter。
+    - 完成七字段 JSON 到 JobSearchRules 的类型转换。
+    - 在 RecruitmentJDPlugin.execute 中按冻结顺序接线。
+    - 复用 compare_job_search_rules 与 render_job_rule_comparison。
+    - 对已提取单 JD 的非法自身 namespace 返回固定 handled 拒绝。
+    - 完整保持无 options 与合法空规则的旧结果。
+  documentation:
+    - 新增招聘插件 README，记录 namespace、payload version、七字段、错误边界与程序调用示例。
+    - README 不宣称 runner、CLI、长期画像或 MCP 已接入。
+  tests:
+    - adapter 单元测试。
+    - RecruitmentJDPlugin.execute 契约测试。
+    - production StaticDomainHost + dispatch + options 全链测试。
+    - 脱敏、输入不变与不部分成功测试。
+    - 现有插件测试和 domain public 回归。
+
+non_goals:
+  - runner 修改
+  - CLI JSON 参数
+  - UI
+  - MCP
+  - 长期画像存储
+  - WorkState 读取
+  - 自动读取用户个人资料
+  - 完整简历进入 options
+  - 聊天历史进入 options
+  - caller provider
+  - app service
+  - 隐藏全局状态
+  - 中央 schema registry
+  - JSON Schema artifact
+  - capability negotiation
+  - 动态插件发现
+  - 多插件仲裁
+  - 新的公共 SDK 或 Host 错误传播协议
+  - Java 规则
+  - 模型调优规则
+  - 机器学习规则
+  - RAG 或 Agent 技术方向规则
+  - 技术栈、职位方向或行业偏好规则
+  - 新求职规则字段
+  - 多 JD 比较
+  - 匹配百分比
+  - 自动投递建议
+  - 自动淘汰
+  - 部分成功策略
+  - 地点别名、城市层级、距离、通勤半径或模糊地点匹配
+  - 条件组合、自由文本规则或模糊程度规则
+
+expected_modified_files:
+  plugin_runtime:
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/plugin.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/request_options.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/__init__.py
+  plugin_documentation:
+    - path: packages/docmind-recruitment-plugin/README.md
+      change: add
+      reason: 当前路径不存在；新增插件业务契约、程序调用示例和边界说明。
+  plugin_tests:
+    - packages/docmind-recruitment-plugin/tests/test_request_options.py
+    - packages/docmind-recruitment-plugin/tests/test_plugin_contract.py
+  production_contract_tests:
+    - public_tests/domain/test_recruitment_jd_production_wiring_contract.py
+  exact_list: true
+  expansion_rule: >-
+    实现若证明必须增加其他招聘插件内部文件或测试文件，先更新并重新定稿任务卡，写明
+    不可替代原因；不得在原授权下扩大到公共 SDK、Host、dispatch、runner 或 CLI。
+
+protected_files_and_paths:
+  comparison_implementation:
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_contracts.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_rendering.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_compensation.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_work_arrangement.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_qualifications.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_support.py
+  extraction_and_recognition:
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/recognition.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/extraction.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/rendering.py
+  existing_comparison_tests:
+    - packages/docmind-recruitment-plugin/tests/test_rule_comparison.py
+  package_metadata:
+    - packages/docmind-recruitment-plugin/pyproject.toml
+  public_layers:
+    - packages/docmind-domain-sdk/**
+    - app/domain_dispatch_port.py
+    - app/domain_host/**
+    - app/chat_loop_parts/runner.py
+    - ask_notes.py
+    - bootstrap/**
+  unrelated_paths:
+    - ai/**
+    - retrieval/**
+    - infra/**
+    - requirements.txt
+    - examples/**
+    - test_notes/**
+    - tests/**
+    - frontend/**
+    - ui/**
+
+test_matrix:
+  payload_parser:
+    - id: parser-namespace-absent
+      scenario: 自身 namespace 缺失时返回 None。
+    - id: parser-valid-empty-rules
+      scenario: 合法空 explicit_rules 返回 JobSearchRules()。
+    - id: parser-valid-seven-fields
+      scenario: 合法七字段 payload 全部转换成功。
+    - id: parser-null-namespace
+      scenario: 自身 namespace 为 null 时固定错误。
+    - id: parser-non-object-namespace
+      scenario: 自身 namespace 为 string、number、boolean 或 array 时固定错误。
+    - id: parser-empty-namespace
+      scenario: 自身 namespace 为空 object 时因缺少两个必填字段固定错误。
+    - id: parser-missing-version
+      scenario: schema_version 缺失时固定错误。
+    - id: parser-version-type
+      scenario: schema_version 为 null、number、boolean、array 或 object 时固定错误。
+    - id: parser-unsupported-version
+      scenario: schema_version 不是精确字符串 "1.0" 时固定错误。
+    - id: parser-namespace-unknown-field
+      scenario: namespace object 出现第三个字段时原子拒绝。
+    - id: parser-rules-unknown-field
+      scenario: explicit_rules 出现七字段之外字段时原子拒绝。
+    - id: parser-missing-rules
+      scenario: explicit_rules 缺失时固定错误。
+    - id: parser-rules-type
+      scenario: explicit_rules 为 null、string、number、boolean 或 array 时固定错误。
+    - id: parser-seven-field-types
+      scenario: 七字段逐一覆盖错误 JSON 类型。
+    - id: parser-bool-is-not-number
+      scenario: 两个 number 字段分别拒绝 true 和 false。
+    - id: parser-negative-salary
+      scenario: 负薪资固定错误。
+    - id: parser-negative-years
+      scenario: 负相关年限固定错误。
+    - id: parser-nonfinite
+      scenario: 通过隔离的 adapter 单测覆盖 NaN、Infinity 和负 Infinity 拒绝。
+    - id: parser-education-enum
+      scenario: 非六个真实 EducationLevel 值固定错误。
+    - id: parser-location-item-type
+      scenario: location array 中非 string 元素固定错误。
+    - id: parser-location-empty-string
+      scenario: location array 中空字符串或纯空白字符串固定错误。
+    - id: parser-null-rule-fields
+      scenario: 七字段逐一显式传 null 均固定错误。
+    - id: parser-free-text-and-array-shapes
+      scenario: 自由文本、规则数组和条件组合形态固定错误。
+    - id: parser-input-unchanged
+      scenario: 成功与失败后原始 mapping 和任意嵌套值均未修改。
+    - id: parser-output-frozen
+      scenario: 输出 JobSearchRules 继续不可变。
+    - id: parser-other-namespaces
+      scenario: 自身 namespace 与三个异质插件 namespace 共存且只解析自身值。
+    - id: parser-redacted-errors
+      scenario: 异常属性、str 和 repr 不包含未知 key、规则值或完整 payload。
+  seven_field_mapping:
+    - id: mapping-salary-number
+      scenario: int 与有限 float 均通过 Decimal(str(value)) 写入 minimum_monthly_salary_k。
+    - id: mapping-double-weekends
+      scenario: boolean 逐值写入 require_double_weekends。
+    - id: mapping-outsourcing
+      scenario: boolean 逐值写入 allow_outsourcing。
+    - id: mapping-onsite
+      scenario: boolean 逐值写入 allow_onsite。
+    - id: mapping-locations
+      scenario: location list 按顺序转为 tuple，重复值不由 adapter 删除。
+    - id: mapping-empty-locations
+      scenario: 空 location list 转为空 tuple 并保持不比较地点。
+    - id: mapping-education
+      scenario: 六个 wire string 分别转为对应 EducationLevel 成员。
+    - id: mapping-years-number
+      scenario: int 与有限 float 均通过 Decimal(str(value)) 写入 candidate_relevant_years。
+    - id: mapping-missing-fields
+      scenario: 缺失 scalar 字段保持 None，缺失 location 保持空 tuple。
+  plugin_execute:
+    - id: execute-no-options
+      scenario: 省略 options 与冻结的旧 DomainResult 和 Markdown 逐字符相等。
+    - id: execute-empty-options
+      scenario: options 为空对象与冻结的旧 DomainResult 逐字段相等。
+    - id: execute-other-namespace
+      scenario: 只有其他 namespace 时与冻结的旧 DomainResult 逐字段相等。
+    - id: execute-valid-empty-rules
+      scenario: 合法空 rules 与冻结的旧 DomainResult 逐字段相等且不调用比较渲染。
+    - id: execute-single-field
+      scenario: 合法单字段规则只产生对应字段 assessment。
+    - id: execute-each-field
+      scenario: 七字段分别单独生效并保持现有字段顺序。
+    - id: execute-combined-rules
+      scenario: 多规则组合一次构造 JobSearchRules 并一次调用现有比较与渲染。
+    - id: execute-match
+      scenario: JD 明确信息满足规则时进入明确符合。
+    - id: execute-conflict
+      scenario: JD 明确信息明确冲突时进入明确冲突。
+    - id: execute-missing
+      scenario: JD 信息缺失时进入 UNKNOWN，不判冲突。
+    - id: execute-ambiguous
+      scenario: JD 表述含糊时进入 UNKNOWN，不判冲突。
+    - id: execute-source-conflict
+      scenario: JD 原文冲突时进入 UNKNOWN，不判冲突。
+    - id: execute-invalid-own-namespace
+      scenario: 单 JD 加非法自身 namespace 返回逐字符固定 handled 拒绝。
+    - id: execute-invalid-no-compare
+      scenario: 非法 payload 时 compare_job_search_rules 和 render_job_rule_comparison 调用次数均为零。
+    - id: execute-atomic-rejection
+      scenario: 一个合法字段与一个非法字段共存时无 assessment、无比较 Markdown、无部分成功。
+    - id: execute-non-jd-invalid-options
+      scenario: 非 JD 加非法自身 namespace 仍返回现有纯 abstain。
+    - id: execute-cross-domain-invalid-options
+      scenario: 合同与采购异质样本加非法自身 namespace 仍返回现有纯 abstain。
+    - id: execute-multi-jd-invalid-options
+      scenario: 多 JD 加非法自身 namespace 仍返回现有纯 abstain。
+    - id: execute-query-preserved
+      scenario: 成功、no-op、拒绝和 abstain 路径的 request.query 均逐字符不变。
+    - id: execute-options-not-rendered
+      scenario: options JSON、namespace、字段名与规则哨兵值不进入 JD 原文或 Markdown。
+    - id: execute-probe-manifest-regression
+      scenario: probe、manifest、lifecycle 与 sync 行为保持现状。
+  production_full_chain:
+    - id: production-real-factory
+      scenario: 使用 ask_notes.create_production_domain_host 创建真实 StaticDomainHost。
+    - id: production-dispatch-options
+      scenario: dispatch_domain_request 传入合法招聘 namespace 后产生现有比较 Markdown。
+    - id: production-host-forwarding
+      scenario: 路径经过真实 RecruitmentJDPlugin 和 StaticDomainHost，options 值等价传递。
+    - id: production-query-preserved
+      scenario: production 全链中 query 逐字符等于 jd_text。
+    - id: production-no-options
+      scenario: 省略 options 的 production 原路径结果逐字段不变。
+    - id: production-invalid-payload
+      scenario: 非法 payload 通过 dispatch 返回逐字符固定 handled 拒绝，不回落 None。
+    - id: production-other-namespace
+      scenario: 仅其他 namespace 不改变 production 旧结果。
+    - id: production-public-layer-unchanged
+      scenario: 实现提交对 SDK、Host、dispatch、runner、CLI 与 ask_notes.py 均无 diff。
+  privacy_and_errors:
+    - id: privacy-fixed-code-category
+      scenario: adapter 错误 code 与 category 逐字符等于冻结值。
+    - id: privacy-exception-text
+      scenario: str 与 repr 只暴露固定 code/category。
+    - id: privacy-domain-result
+      scenario: handled 拒绝只包含固定 Markdown，evidence/warnings 为空且 error 为 None。
+    - id: privacy-no-diagnostics
+      scenario: 当前 DomainResult 不新增 diagnostics，拒绝路径不通过新字段传值。
+    - id: privacy-stdout-stderr
+      scenario: stdout 与 stderr 不包含 payload、未知 key 或规则值。
+    - id: privacy-sentinels
+      scenario: 合成薪资、地点、学历和年限哨兵值均不出现在错误、输出或日志。
+    - id: privacy-no-python-repr
+      scenario: 用户输出不包含异常类名、Python repr 或完整 options。
+  regression:
+    - id: regression-plugin-all
+      scenario: packages/docmind-recruitment-plugin/tests 全部通过。
+    - id: regression-domain-public
+      scenario: public_tests/domain 全部通过。
+    - id: regression-full-pytest
+      scenario: 仓库全量 pytest 通过且 warning 不过滤。
+    - id: regression-manifest-probe
+      scenario: manifest、probe、旧 JD 明示字段输出和旧 abstain 边界保持不变。
+    - id: regression-comparison
+      scenario: 现有七字段比较算法与三态语义保持不变。
+    - id: regression-protocol
+      scenario: protocol 1.0 历史 artifact 与 protocol 1.1 公共能力无修改。
+  generalized_rule_guard:
+    rationale: >-
+      本切片规则来自已交付七字段 JobSearchRules 和失败边界，不按岗位、行业、公司或地域
+      做路由；namespace 解析只在现有单 JD 提取成功后执行。
+    hit_sample: 单 JD 加合法自身 namespace 执行七字段比较。
+    adjacent_non_trigger: 非 JD 招聘宣传加非法自身 namespace 仍 abstain。
+    cross_domain_counterexamples:
+      - 合同文本加非法自身 namespace 仍 abstain。
+      - 采购文本加非法自身 namespace 仍 abstain。
+      - 项目需求文本加非法自身 namespace 仍 abstain。
+
+quality_gate:
+  environment:
+    - 使用 Linux Bash。
+    - Python 使用 .venv/bin/python。
+    - 设置 PYTHONDONTWRITEBYTECODE=1。
+    - 测试显式设置仓库 SDK 与招聘插件 src 的 PYTHONPATH。
+    - pytest 关闭 cache provider，warning 不过滤。
+  verification_order:
+    - UTF-8 可解码与乱码扫描。
+    - 修改 Python 文件 py_compile。
+    - adapter 和 plugin 函数级测试。
+    - production StaticHost + dispatch 最小全链。
+    - 插件测试与 domain public 回归。
+    - 仓库全量 pytest。
+  commands:
+    task_card_yaml: >-
+      .venv/bin/python -c
+      "from pathlib import Path; import yaml;
+      p=Path('docs/task_card_recruitment_structured_options_explicit_rules_first_slice.yaml');
+      data=yaml.safe_load(p.read_text(encoding='utf-8'));
+      assert isinstance(data, dict); print('YAML_OK')"
+    implementation_py_compile: >-
+      PYTHONDONTWRITEBYTECODE=1
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      .venv/bin/python -m py_compile
+      packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/plugin.py
+      packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/request_options.py
+      packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/__init__.py
+      packages/docmind-recruitment-plugin/tests/test_request_options.py
+      packages/docmind-recruitment-plugin/tests/test_plugin_contract.py
+      public_tests/domain/test_recruitment_jd_production_wiring_contract.py
+    adapter_tests: >-
+      PYTHONDONTWRITEBYTECODE=1
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      packages/docmind-recruitment-plugin/tests/test_request_options.py
+    plugin_contract_tests: >-
+      PYTHONDONTWRITEBYTECODE=1
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      packages/docmind-recruitment-plugin/tests/test_plugin_contract.py
+    production_chain_tests: >-
+      PYTHONDONTWRITEBYTECODE=1
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      public_tests/domain/test_recruitment_jd_production_wiring_contract.py
+    plugin_tests: >-
+      PYTHONDONTWRITEBYTECODE=1
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      packages/docmind-recruitment-plugin/tests
+    domain_public: >-
+      PYTHONDONTWRITEBYTECODE=1
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+      public_tests/domain
+    full_pytest: >-
+      PYTHONDONTWRITEBYTECODE=1
+      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+      .venv/bin/python -m pytest -q -p no:cacheprovider
+    text_encoding: >-
+      .venv/bin/python -c
+      "from pathlib import Path;
+      paths=[*Path('packages/docmind-recruitment-plugin').rglob('*.py'),
+      *Path('packages/docmind-recruitment-plugin').rglob('*.md'),
+      *Path('public_tests/domain').rglob('*.py')];
+      texts=[p.read_text(encoding='utf-8') for p in paths];
+      assert all(chr(0xfffd) not in text for text in texts)"
+    public_layer_no_diff: >-
+      test -z "$(git diff --name-only --
+      packages/docmind-domain-sdk app/domain_dispatch_port.py app/domain_host
+      app/chat_loop_parts/runner.py ask_notes.py bootstrap)"
+    protected_comparison_no_diff: >-
+      test -z "$(git diff --name-only --
+      packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison.py
+      packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_contracts.py
+      packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_rendering.py
+      packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_compensation.py
+      packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_work_arrangement.py
+      packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_qualifications.py
+      packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_support.py
+      packages/docmind-recruitment-plugin/tests/test_rule_comparison.py)"
+    diff_check: git diff --check
+  required_results:
+    - adapter、plugin execute 和 production 全链测试通过。
+    - 无 options 与四种 no-op 输入的完整 DomainResult 和 Markdown 精确兼容。
+    - 命中、相邻误触发和三类跨域反例均通过。
+    - 插件测试、domain public 和仓库全量 pytest 通过。
+    - 乱码扫描与 git diff --check 通过。
+    - SDK、Host、dispatch、runner、CLI、ask_notes.py 和比较实现无 diff。
+    - 最终实现提交后工作区干净且未 push。
+
+privacy_guard:
+  - 测试、README 和示例只使用某公司A、候选人X、示例城市甲与合成数值。
+  - 不在测试断言、异常、stdout、stderr、Markdown 或日志中保留真实个人或企业信息。
+  - 固定拒绝不包含字段名、规则值、完整 payload 或内部异常 repr。
+  - 规则值只在内存中转换为 JobSearchRules，不写入持久化状态。
+
+acceptance_min:
+  - 招聘插件只消费自身 PLUGIN_ID namespace。
+  - payload version 独立于 Domain protocol 和 PluginManifest schema_version，且严格只接受 "1.0"。
+  - 七字段全部按冻结 wire 契约映射到现有 JobSearchRules。
+  - 现有比较算法与比较渲染只复用，不复制、不改写、不分叉。
+  - 无 options、空 options、其他 namespace 与合法空规则的完整旧结果精确不变。
+  - 非 JD、跨域文本与多 JD 的 abstain 边界精确不变。
+  - 非法 payload 原子拒绝且不执行部分比较。
+  - 非法 payload 返回固定用户可见 handled Markdown，错误 code/category 与输出完全脱敏。
+  - production StaticHost + dispatch + options 程序调用链通过。
+  - SDK、Host、dispatch、runner、CLI 与 ask_notes.py 无修改。
+  - 不新增技术方向规则或七字段之外求职规则。
+  - 插件测试、domain public 和全量 pytest 全部通过。
+  - 实现工作区最终干净并创建独立本地实现提交。
+  - 未 push，除非后续获得单独授权。
+
+completion_line:
+  implementation_complete_when:
+    - expected_modified_files 的 runtime、README 与测试全部交付。
+    - protected_files_and_paths 无差异。
+    - test_matrix 的全部自动场景通过。
+    - quality_gate.required_results 全部满足。
+    - acceptance_min 全部满足。
+    - 实现提交后 main 工作区干净、暂存区为空且未 push。
+  incomplete_if:
+    - options 被拼入 query。
+    - 空 options 自动加载默认画像或长期状态。
+    - 其他插件 namespace 导致行为变化。
+    - 合法空 rules 进入比较渲染并改变旧输出。
+    - 未知 namespace 字段或未知规则字段被静默忽略。
+    - 非法规则出现部分生效。
+    - 错误回显规则值、字段名、完整 payload 或 Python repr。
+    - 非 JD、跨域文本或多 JD 因非法招聘 payload 被 handled。
+    - 多 JD 进入单 JD 比较。
+    - 复制、改写或分叉现有比较算法或比较渲染。
+    - 修改公共 SDK、Host、dispatch、runner、CLI 或 ask_notes.py。
+    - 新增 Java、模型调优、机器学习、RAG、Agent 或其他技术方向规则字段。
+    - 只在 adapter 或插件单测可达，未经过 production StaticHost + dispatch。
+    - 未冻结并验证逐字符旧 Markdown 与完整 DomainResult。
+    - 插件测试、domain public 或全量 pytest 未通过。
+
+follow_up_slices:
+  record_only: true
+  implementation_in_first_slice: forbidden
+  items:
+    - runner 或其他调用方的显式规则来源设计
+    - CLI、UI 或 API 的结构化规则输入
+    - 长期求职画像存储、授权、裁剪与删除
+    - 新求职规则字段及对应比较语义
+    - 技术方向、技术栈与模糊规则系统
+    - 多 JD 比较与调用方决策支持
+    - manifest options capability 声明与协商
+    - 动态多插件发现、仲裁与 namespace 定向
+    - MCP transport 映射
+    - JSON Schema artifact 或中央 schema registry 再评估
+
+commit_boundary:
+  current_task_card_commit:
+    subject: "docs(recruitment): 定稿 structured options 显式规则接入任务卡"
+    body:
+      - "目标: 冻结招聘插件七字段 structured options 显式规则接入首切片。"
+      - "手段: 明确 namespace、payload 版本、严格 adapter、execute 顺序、兼容边界和测试矩阵。"
+    files:
+      - docs/task_card_recruitment_structured_options_explicit_rules_first_slice.yaml
+    amend: forbidden
+    push: forbidden
+  future_implementation_commit:
+    subject: "feat(recruitment): 接入 structured options 显式规则比较"
+    body_requirements:
+      - 标题与任务目标关键词对齐。
+      - 正文至少包含可验证的目标和手段条目。
+      - 只包含 expected_modified_files 中的实现、README 与测试。
+      - 不与 runner、CLI、公共 SDK、Host 或其他规则切片混合提交。
+    push: forbidden
+  rollback:
+    method: revert 对应独立提交
+    forbidden_methods:
+      - reset
+      - restore
+      - checkout
+      - stash
+      - clean
+
+key_evidence_index:
+  task_card_style:
+    - docs/task_card_domain_request_structured_options_protocol_1_1_first_slice.yaml
+    - docs/task_card_single_jd_explicit_rule_comparison_first_slice.yaml
+  architecture:
+    - docs/adr/0001-domain-plugin-boundary-and-future-mcp-adapter.md
+  sdk_and_transport:
+    - packages/docmind-domain-sdk/src/docmind_domain_sdk/dto.py
+    - packages/docmind-domain-sdk/src/docmind_domain_sdk/validation.py
+    - packages/docmind-domain-sdk/src/docmind_domain_sdk/protocol.py
+    - packages/docmind-domain-sdk/src/docmind_domain_sdk/__init__.py
+    - packages/docmind-domain-sdk/README.md
+    - app/domain_dispatch_port.py
+    - app/domain_host/host.py
+    - app/chat_loop_parts/runner.py
+    - ask_notes.py
+  recruitment_runtime:
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/plugin.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/__init__.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/recognition.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/extraction.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_contracts.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_rendering.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_compensation.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_work_arrangement.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_qualifications.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/comparison_support.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/rendering.py
+  recruitment_tests:
+    - packages/docmind-recruitment-plugin/tests/test_plugin_contract.py
+    - packages/docmind-recruitment-plugin/tests/test_rule_comparison.py
+    - public_tests/domain/test_recruitment_jd_production_wiring_contract.py
+    - public_tests/domain/test_recruitment_jd_slice_contract.py
+    - public_tests/domain/test_domain_dispatch_port_empty_host.py
+  missing_paths:
+    - path: packages/docmind-recruitment-plugin/README.md
+      finding: 当前不存在，已列入未来实现 expected_modified_files 的新增文件。
+
+deliverables:
+  current_run:
+    - 定稿的单一 YAML 任务卡。
+    - YAML、重复 key、乱码、禁用模糊措辞与 docs-only diff 验证记录。
+    - 独立本地 docs 提交。
+  future_implementation:
+    - 招聘插件内部严格 request_options adapter。
+    - 七字段到 JobSearchRules 的转换与 execute 接线。
+    - 固定脱敏 handled 拒绝和无 options 精确兼容。
+    - 插件业务 README、adapter 测试、plugin 契约测试与 production 全链测试。
