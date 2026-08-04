@@ -1000,11 +1000,12 @@ quality_gate:
     - 使用 Linux Bash。
     - Python 使用 .venv/bin/python。
     - 设置 PYTHONDONTWRITEBYTECODE=1。
+    - Python 语法检查使用内存 compile()，不得调用 py_compile 或在仓库内生成 pyc。
     - 测试显式设置仓库 SDK 与招聘插件 src 的 PYTHONPATH。
     - pytest 关闭 cache provider，warning 不过滤。
   verification_order:
     - UTF-8 可解码与乱码扫描。
-    - 修改 Python 文件 py_compile。
+    - 修改 Python 文件执行内存语法编译，不生成 pyc。
     - adapter 和 plugin 函数级测试。
     - production StaticHost + dispatch 最小全链。
     - 插件测试与 domain public 回归。
@@ -1016,16 +1017,30 @@ quality_gate:
       p=Path('docs/task_card_recruitment_structured_options_explicit_rules_first_slice.yaml');
       data=yaml.safe_load(p.read_text(encoding='utf-8'));
       assert isinstance(data, dict); print('YAML_OK')"
-    implementation_py_compile: >-
-      PYTHONDONTWRITEBYTECODE=1
-      PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
-      .venv/bin/python -m py_compile
-      packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/plugin.py
-      packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/request_options.py
-      packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/__init__.py
-      packages/docmind-recruitment-plugin/tests/test_request_options.py
-      packages/docmind-recruitment-plugin/tests/test_plugin_contract.py
-      public_tests/domain/test_recruitment_jd_production_wiring_contract.py
+    implementation_syntax_check: |-
+      .venv/bin/python -c "
+      from pathlib import Path
+
+      paths = [
+          Path('packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/plugin.py'),
+          Path('packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/request_options.py'),
+          Path('packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/__init__.py'),
+          Path('packages/docmind-recruitment-plugin/tests/test_request_options.py'),
+          Path('packages/docmind-recruitment-plugin/tests/test_plugin_contract.py'),
+          Path('public_tests/domain/test_recruitment_jd_production_wiring_contract.py'),
+      ]
+
+      for path in paths:
+          source = path.read_text(encoding='utf-8')
+          compile(
+              source,
+              str(path),
+              'exec',
+              dont_inherit=True,
+          )
+
+      print(f'SYNTAX_OK {len(paths)} files')
+      "
     adapter_tests: >-
       PYTHONDONTWRITEBYTECODE=1
       PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
@@ -1079,6 +1094,7 @@ quality_gate:
       packages/docmind-recruitment-plugin/tests/test_rule_comparison.py)"
     diff_check: git diff --check
   required_results:
+    - 语法检查通过，且本轮验证未在仓库中新增 __pycache__、.pyc 或其他验证残留。
     - adapter、plugin execute 和 production 全链测试通过。
     - 无 options 与四种 no-op 输入的完整 DomainResult 和 Markdown 精确兼容。
     - 命中、相邻误触发和三类跨域反例均通过。
