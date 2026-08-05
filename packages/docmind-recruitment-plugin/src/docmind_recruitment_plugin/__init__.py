@@ -15,6 +15,13 @@ from .plugin import (
     PLUGIN_VERSION,
     RecruitmentJDPlugin,
 )
+from .request_options import (
+    INVALID_OPTIONS_CATEGORY,
+    INVALID_OPTIONS_CODE,
+    OPTIONS_SCHEMA_VERSION,
+    RecruitmentOptionsError,
+    parse_recruitment_request_options,
+)
 
 __all__ = [
     "ConstraintAssessment",
@@ -24,11 +31,16 @@ __all__ = [
     "ExtractionResult",
     "JobRuleComparison",
     "JobSearchRules",
+    "INVALID_OPTIONS_CATEGORY",
+    "INVALID_OPTIONS_CODE",
+    "OPTIONS_SCHEMA_VERSION",
     "PLUGIN_ID",
     "PLUGIN_VERSION",
     "RecruitmentJDPlugin",
+    "RecruitmentOptionsError",
     "compare_job_search_rules",
     "extract_and_compare",
     "extract_constraints",
+    "parse_recruitment_request_options",
     "render_job_rule_comparison",
 ]

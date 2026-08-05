@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import docmind_recruitment_plugin.plugin as plugin_module
+
 from app.domain_host import EmptyDomainHost, StaticDomainHost
 from bootstrap.domain_composition import create_domain_host
 from docmind_domain_sdk import (
@@ -63,16 +65,32 @@ ALTERNATE_JD = """提取下面岗位中明确写出的条件
 学历要求：本科及以上"""
 
 
-def _request(query: str = "Synthetic ordinary text.") -> DomainRequest:
+def _request(
+    query: str = "Synthetic ordinary text.",
+    *,
+    options=None,
+) -> DomainRequest:
     return DomainRequest(
         request_id="b2-request",
         query=query,
         source_scope=(),
+        **({} if options is None else {"options": options}),
     )
 
 
-def _execute(query: str):
-    return asyncio.run(RecruitmentJDPlugin().execute(_request(query)))
+def _execute(query: str, *, options=None):
+    return asyncio.run(
+        RecruitmentJDPlugin().execute(_request(query, options=options))
+    )
+
+
+def _recruitment_options(rules: dict[str, object]):
+    return {
+        PLUGIN_ID: {
+            "schema_version": "1.0",
+            "explicit_rules": rules,
+        }
+    }
 
 
 def _jd_at_non_whitespace_length(target: int) -> str:
@@ -659,3 +677,291 @@ def test_existing_empty_host_contract_remains_available() -> None:
 
     assert isinstance(host, EmptyDomainHost)
     assert host.dispatch(_request()) is None
+
+
+def test_no_options_empty_options_other_namespace_and_empty_rules_are_exact_noops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden(*args, **kwargs):
+        raise AssertionError("no-op paths must not enter comparison rendering")
+
+    monkeypatch.setattr(plugin_module, "compare_job_search_rules", forbidden)
+    monkeypatch.setattr(plugin_module, "render_job_rule_comparison", forbidden)
+    baseline = _execute(STANDARD_JD)
+    variants = (
+        _execute(STANDARD_JD, options={}),
+        _execute(
+            STANDARD_JD,
+            options={"org.example.contract": {"synthetic": "value"}},
+        ),
+        _execute(STANDARD_JD, options=_recruitment_options({})),
+    )
+
+    assert all(result == baseline for result in variants)
+    assert all(result.answer_markdown == baseline.answer_markdown for result in variants)
+    assert baseline.answer_markdown.startswith("## JD 明确约束\n\n")
+
+
+@pytest.mark.parametrize(
+    ("rules", "rendered_label"),
+    (
+        ({"minimum_monthly_salary_k": 14}, "- 薪资："),
+        ({"require_double_weekends": True}, "- 工作制："),
+        ({"allow_outsourcing": False}, "- 外包："),
+        ({"allow_onsite": False}, "- 驻场："),
+        ({"allowed_locations": ["示例城市甲"]}, "- 工作地点："),
+        ({"candidate_education_level": "associate"}, "- 学历："),
+        ({"candidate_relevant_years": 3}, "- 经验年限："),
+    ),
+)
+def test_each_structured_rule_field_individually_reaches_existing_comparison(
+    rules: dict[str, object],
+    rendered_label: str,
+) -> None:
+    result = _execute(STANDARD_JD, options=_recruitment_options(rules))
+
+    assert result.status == "handled"
+    assert result.answer_markdown.startswith("## 单 JD 显式规则比较\n\n")
+    assert result.answer_markdown.count(rendered_label) == 1
+    assert result.evidence == ()
+    assert result.warnings == ()
+    assert result.error is None
+
+
+def test_combined_rules_reuse_match_conflict_and_unknown_rendering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compare_calls = []
+    render_calls = []
+    original_compare = plugin_module.compare_job_search_rules
+    original_render = plugin_module.render_job_rule_comparison
+
+    def capture_compare(*args, **kwargs):
+        compare_calls.append((args, kwargs))
+        return original_compare(*args, **kwargs)
+
+    def capture_render(*args, **kwargs):
+        render_calls.append((args, kwargs))
+        return original_render(*args, **kwargs)
+
+    monkeypatch.setattr(
+        plugin_module,
+        "compare_job_search_rules",
+        capture_compare,
+    )
+    monkeypatch.setattr(
+        plugin_module,
+        "render_job_rule_comparison",
+        capture_render,
+    )
+    query = STANDARD_JD.replace(
+        "工作地点：示例城市甲",
+        "工作地点：示例城市甲\n是否外包：第三方签约\n是否驻场：需要现场沟通",
+    )
+    result = _execute(
+        query,
+        options=_recruitment_options(
+            {
+                "minimum_monthly_salary_k": 14,
+                "allow_outsourcing": False,
+                "allow_onsite": False,
+            }
+        ),
+    )
+
+    markdown = result.answer_markdown
+    assert markdown.startswith("## 单 JD 显式规则比较\n\n")
+    assert markdown.index("### 明确符合") < markdown.index("- 薪资：")
+    assert markdown.index("### 明确冲突") < markdown.index("- 外包：")
+    assert markdown.index("### 信息缺失或需要确认") < markdown.index("- 驻场：")
+    assert markdown.index("- 薪资：") < markdown.index("### 明确冲突")
+    assert markdown.index("- 外包：") < markdown.index("### 信息缺失或需要确认")
+    assert len(compare_calls) == 1
+    assert len(render_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("query", "rules", "label"),
+    (
+        (STANDARD_JD, {"allow_outsourcing": False}, "- 外包："),
+        (
+            STANDARD_JD.replace(
+                "工作地点：示例城市甲",
+                "工作地点：示例城市甲\n是否驻场：需要现场沟通",
+            ),
+            {"allow_onsite": False},
+            "- 驻场：",
+        ),
+        (
+            STANDARD_JD.replace(
+                "工作制：双休",
+                "工作制：双休\n工作制度：单休",
+            ),
+            {"require_double_weekends": True},
+            "- 工作制：",
+        ),
+    ),
+)
+def test_missing_ambiguous_and_source_conflict_are_unknown_not_conflict(
+    query: str,
+    rules: dict[str, object],
+    label: str,
+) -> None:
+    markdown = _execute(
+        query,
+        options=_recruitment_options(rules),
+    ).answer_markdown
+
+    unknown_start = markdown.index("### 信息缺失或需要确认")
+    technical_start = markdown.index("### 技术要求原文")
+    assert label in markdown[unknown_start:technical_start]
+    conflict_section = markdown[
+        markdown.index("### 明确冲突"):unknown_start
+    ]
+    assert conflict_section == "### 明确冲突\n- 无\n\n"
+
+
+def test_invalid_own_namespace_returns_fixed_redacted_handled_result() -> None:
+    request = _request(
+        STANDARD_JD,
+        options=_recruitment_options(
+            {
+                "minimum_monthly_salary_k": 987654.25,
+                "synthetic_unknown_rule": "示例城市隐私哨兵",
+            }
+        ),
+    )
+    query_before = request.query
+    result = asyncio.run(RecruitmentJDPlugin().execute(request))
+
+    assert result.status == "handled"
+    assert result.answer_markdown == """## 求职规则输入无效
+
+本次未执行显式规则比较。请检查结构化求职规则后重试。"""
+    assert result.focus_update.mode == "preserve"
+    assert result.focus_update.items == ()
+    assert result.focus_update.selected is None
+    assert result.evidence == ()
+    assert result.warnings == ()
+    assert result.error is None
+    assert request.query == query_before
+    for sentinel in (
+        PLUGIN_ID,
+        "minimum_monthly_salary_k",
+        "synthetic_unknown_rule",
+        "987654.25",
+        "示例城市隐私哨兵",
+        "RecruitmentOptionsError",
+    ):
+        assert sentinel not in result.answer_markdown
+
+
+def test_invalid_payload_never_calls_comparison_or_comparison_renderer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    comparison_calls = []
+    rendering_calls = []
+
+    def forbidden_comparison(*args, **kwargs):
+        comparison_calls.append((args, kwargs))
+        raise AssertionError("invalid payload must not compare")
+
+    def forbidden_rendering(*args, **kwargs):
+        rendering_calls.append((args, kwargs))
+        raise AssertionError("invalid payload must not render comparison")
+
+    monkeypatch.setattr(
+        plugin_module,
+        "compare_job_search_rules",
+        forbidden_comparison,
+    )
+    monkeypatch.setattr(
+        plugin_module,
+        "render_job_rule_comparison",
+        forbidden_rendering,
+    )
+
+    result = _execute(
+        STANDARD_JD,
+        options=_recruitment_options(
+            {
+                "require_double_weekends": True,
+                "synthetic_unknown_rule": False,
+            }
+        ),
+    )
+
+    assert result.answer_markdown.startswith("## 求职规则输入无效")
+    assert comparison_calls == []
+    assert rendering_calls == []
+    assert "明确符合" not in result.answer_markdown
+
+
+@pytest.mark.parametrize(
+    "query",
+    (
+        "招聘宣传：某公司A持续招聘技术人才，欢迎关注。职位名称：开发工程师。",
+        "合同条款：履约要求为按期交付，工作地点以书面通知为准。",
+        "采购规格：技术要求包含接口文档，经验参数仅用于供应商说明。",
+        "项目需求说明：开发地点为示例机房，要求提交测试记录。",
+    ),
+)
+def test_invalid_options_do_not_change_adjacent_or_cross_domain_abstain(
+    query: str,
+) -> None:
+    request = _request(
+        query,
+        options={PLUGIN_ID: {"synthetic_unknown_namespace_key": True}},
+    )
+    query_before = request.query
+
+    result = asyncio.run(RecruitmentJDPlugin().execute(request))
+
+    _assert_abstain(result)
+    assert request.query == query_before
+
+
+def test_invalid_options_do_not_change_multiple_jd_abstain() -> None:
+    second = STANDARD_JD.replace(
+        "Python AI 应用开发工程师",
+        "合成数据开发工程师",
+        1,
+    )
+    query = STANDARD_JD + "\n\n" + second
+
+    result = _execute(
+        query,
+        options={PLUGIN_ID: {"synthetic_unknown_namespace_key": True}},
+    )
+
+    _assert_abstain(result)
+
+
+def test_query_is_exactly_preserved_across_success_noop_rejection_and_abstain() -> None:
+    cases = (
+        (STANDARD_JD, _recruitment_options({"minimum_monthly_salary_k": 14})),
+        (STANDARD_JD, _recruitment_options({})),
+        (STANDARD_JD, {PLUGIN_ID: None}),
+        ("这是一段完全合成的普通项目说明。", {PLUGIN_ID: None}),
+    )
+
+    for index, (query, options) in enumerate(cases):
+        request = DomainRequest(
+            request_id=f"query-preservation-{index}",
+            query=query,
+            source_scope=(),
+            options=options,
+        )
+        before = request.query
+        asyncio.run(RecruitmentJDPlugin().execute(request))
+        assert request.query == before
+
+
+def test_empty_location_array_has_no_effective_rule_and_keeps_legacy_output() -> None:
+    baseline = _execute(STANDARD_JD)
+    result = _execute(
+        STANDARD_JD,
+        options=_recruitment_options({"allowed_locations": []}),
+    )
+
+    assert result == baseline

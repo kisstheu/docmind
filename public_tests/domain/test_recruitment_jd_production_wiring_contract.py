@@ -7,6 +7,7 @@ from docmind_domain_sdk import DomainRequest
 
 import ask_notes
 from app.domain_host import StaticDomainHost
+from app.domain_dispatch_port import dispatch_domain_request
 from docmind_recruitment_plugin import PLUGIN_ID, RecruitmentJDPlugin
 
 
@@ -131,3 +132,122 @@ def test_main_uses_production_composition_helper() -> None:
     assert called_names.count("create_production_domain_host") == 1
     assert "create_domain_host" not in called_names
     assert called_names.count("run_chat_loop") == 1
+
+
+def _recruitment_options(rules: dict[str, object]):
+    return {
+        PLUGIN_ID: {
+            "schema_version": "1.0",
+            "explicit_rules": rules,
+        }
+    }
+
+
+def test_production_dispatch_reaches_existing_comparison_markdown() -> None:
+    host = ask_notes.create_production_domain_host()
+
+    result = dispatch_domain_request(
+        host,
+        SYNTHETIC_JD,
+        options=_recruitment_options(
+            {
+                "minimum_monthly_salary_k": 14,
+                "require_double_weekends": True,
+                "allow_outsourcing": False,
+            }
+        ),
+    )
+
+    assert isinstance(host, StaticDomainHost)
+    assert result is not None
+    assert result.status == "handled"
+    assert result.answer_markdown.startswith("## 单 JD 显式规则比较\n\n")
+    assert "- 薪资：" in result.answer_markdown
+    assert "- 工作制：" in result.answer_markdown
+    assert "- 外包：" in result.answer_markdown
+    assert result.evidence == ()
+    assert result.warnings == ()
+    assert result.error is None
+
+
+def test_production_dispatch_transparently_preserves_query_and_options(
+    monkeypatch,
+) -> None:
+    observed = []
+    original_execute = RecruitmentJDPlugin.execute
+
+    async def capture_execute(self, request):
+        observed.append((request.query, request.options))
+        return await original_execute(self, request)
+
+    monkeypatch.setattr(RecruitmentJDPlugin, "execute", capture_execute)
+    options = _recruitment_options(
+        {
+            "allowed_locations": ["示例城市甲"],
+            "candidate_education_level": "associate",
+            "candidate_relevant_years": 3,
+        }
+    )
+    host = ask_notes.create_production_domain_host()
+
+    result = dispatch_domain_request(host, SYNTHETIC_JD, options=options)
+
+    assert result is not None
+    assert result.answer_markdown.startswith("## 单 JD 显式规则比较\n\n")
+    assert observed == [(SYNTHETIC_JD, options)]
+
+
+def test_production_dispatch_no_options_and_other_namespace_are_exact_noops(
+    monkeypatch,
+) -> None:
+    fixed_id = type("FixedRequestId", (), {"hex": "production-noop-request"})()
+    monkeypatch.setattr(
+        "app.domain_dispatch_port.uuid4",
+        lambda: fixed_id,
+    )
+    host = ask_notes.create_production_domain_host()
+
+    baseline = dispatch_domain_request(host, SYNTHETIC_JD)
+    empty = dispatch_domain_request(host, SYNTHETIC_JD, options={})
+    other = dispatch_domain_request(
+        host,
+        SYNTHETIC_JD,
+        options={"org.example.contract": {"synthetic": "value"}},
+    )
+
+    assert baseline is not None
+    assert empty == baseline
+    assert other == baseline
+    assert baseline.answer_markdown.startswith("## JD 明确约束\n\n")
+
+
+def test_production_dispatch_invalid_payload_returns_fixed_handled_rejection() -> None:
+    host = ask_notes.create_production_domain_host()
+
+    result = dispatch_domain_request(
+        host,
+        SYNTHETIC_JD,
+        options=_recruitment_options(
+            {
+                "minimum_monthly_salary_k": 987654.25,
+                "synthetic_unknown_rule": "示例城市隐私哨兵",
+            }
+        ),
+    )
+
+    assert result is not None
+    assert result.status == "handled"
+    assert result.answer_markdown == """## 求职规则输入无效
+
+本次未执行显式规则比较。请检查结构化求职规则后重试。"""
+    assert result.evidence == ()
+    assert result.warnings == ()
+    assert result.error is None
+    for sentinel in (
+        PLUGIN_ID,
+        "minimum_monthly_salary_k",
+        "synthetic_unknown_rule",
+        "987654.25",
+        "示例城市隐私哨兵",
+    ):
+        assert sentinel not in result.answer_markdown
