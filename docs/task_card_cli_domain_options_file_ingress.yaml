@@ -1,0 +1,1022 @@
+version: 1
+
+task_id: cli_domain_options_file_ingress_first_slice
+title: CLI domain options 文件入口首切片
+
+decision: GO
+
+status:
+  architecture_decision: GO
+  developer_level_finalization: completed
+  independent_final_review: completed_pass
+  next_stage: awaiting_separate_implementation_authorization
+  implementation_authorized: false
+  task_card_review_commit_authorized: true
+  implementation_commit_authorized: false
+  push_authorized: false
+
+created_from:
+  repository_contracts:
+    - docs/task_card_recruitment_structured_options_explicit_rules_first_slice.yaml
+    - docs/task_card_domain_request_structured_options_protocol_1_1_first_slice.yaml
+  authorization: >-
+    本卡将已经选定的通用 CLI 文件入口方案冻结为可独立终审、可直接指导后续实现的
+    权威实施契约；不重新比较 CLI、runner 命令、环境变量、长期画像、WorkState、简历、
+    MCP 或其他候选方案。
+  evidence_date: "2026-08-06"
+
+repository_baseline:
+  architecture: monorepo
+  git_root: repository_root
+  baseline_stage: developer_level_finalization_start
+  branch: main
+  head: 0ecfdfa1cdb4fbe6608b69efdd23a1ed33bae67f
+  main: 0ecfdfa1cdb4fbe6608b69efdd23a1ed33bae67f
+  origin_main: 0ecfdfa1cdb4fbe6608b69efdd23a1ed33bae67f
+  ahead_behind: [0, 0]
+  working_tree_at_start: clean
+  staging_area_at_start: empty
+  untracked_files_at_start: none
+  independent_final_review_start:
+    tracked_diff: empty
+    staging_area: empty
+    untracked_files:
+      - docs/task_card_cli_domain_options_file_ingress.yaml
+  recent_commits:
+    - "0ecfdfa feat(recruitment): 接入 structured options 显式规则比较"
+    - "9d32452 docs(recruitment): 修正实现语法检查无残留边界"
+    - "fc5b5ee docs(recruitment): 定稿 structured options 显式规则接入任务卡"
+    - "8d62762 feat(domain-sdk): 交付结构化 options 协议 1.1"
+    - "14a2290 docs(domain-sdk): 修正 protocol 1.0 options wire 边界"
+  sdk_public_api:
+    path: packages/docmind-domain-sdk/src/docmind_domain_sdk/__init__.py
+    facts:
+      - DomainRequest 与 JsonValue 均从 docmind_domain_sdk 公共包导出。
+      - validate_and_copy_options 未从公共包导出，属于禁止直接导入的内部 helper。
+  sdk_dto:
+    path: packages/docmind-domain-sdk/src/docmind_domain_sdk/dto.py
+    facts:
+      - DomainRequest 当前必要构造字段是 request_id、query 与 source_scope。
+      - protocol_version、locale、focus、deadline_ms 与 options 均已有公开默认值。
+      - options 的公开运行时存储为 dict[str, JsonValue]，构造时执行通用校验和隔离复制。
+  sdk_validation:
+    path: packages/docmind-domain-sdk/src/docmind_domain_sdk/validation.py
+    facts:
+      - options 规范化 UTF-8 配额为 16384 bytes。
+      - 容器深度、总 key 和容器成员配额分别为 8、128 和 256。
+      - SDK 已负责递归 JSON、有限数字、循环检测、配额与隔离复制。
+  dispatch:
+    path: app/domain_dispatch_port.py
+    facts:
+      - dispatch_domain_request 已接受 keyword-only options: Mapping[str, JsonValue] | None。
+      - options 为 None 时 helper 省略 DomainRequest.options；非 None 时显式构造 options。
+      - query 逐字符取自传入 question，端口异常继续安全回落 None。
+  runner:
+    path: app/chat_loop_parts/runner.py
+    facts:
+      - run_chat_loop 当前在既有通用守门之后调用 dispatch_domain_request(domain_dispatch_port, question)。
+      - domain dispatch 发生在普通检索、本地直答和模型生成之前。
+      - runner 当前没有 domain options 注入参数或会话命令。
+  compatibility_facade:
+    path: app/chat_loop.py
+    facts:
+      - run_chat_loop 使用 *args 和 **kwargs 透明转发到 runner，因此本切片不需修改兼容门面。
+  cli:
+    path: ask_notes.py
+    facts:
+      - _parse_args 当前使用 argparse.ArgumentParser 且只有 --notes-dir。
+      - main 在 _parse_args 后才执行 environment defaults、模型、client、索引、RepoState、Host 和聊天循环初始化。
+      - main 通过 create_production_domain_host 创建真实招聘 StaticDomainHost。
+  host:
+    path: app/domain_host/host.py
+    facts:
+      - StaticDomainHost 在 plugin.execute 前复验通用请求边界并透明传入 DomainRequest。
+      - handled 结果返回调用方，其他状态和外层异常沿现有契约回落。
+  composition:
+    path: bootstrap/domain_composition.py
+    facts:
+      - create_domain_host 只组装 EmptyDomainHost 或单一 StaticDomainHost，不接收用户 options。
+  recruitment_plugin:
+    paths:
+      - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/plugin.py
+      - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/request_options.py
+    facts:
+      - PLUGIN_ID 为 org.docmind.recruitment.jd-constraints。
+      - 插件已严格消费自身 payload version "1.0" 和现有七字段。
+      - 插件先识别并提取单 JD，再读取自身 namespace；非 JD、跨域和多 JD 保持 abstain。
+      - 非法自身 payload 对已提取单 JD 返回现有固定 handled 拒绝。
+  test_carriers:
+    - public_tests/domain/test_domain_dispatch_port_empty_host.py
+    - public_tests/domain/test_recruitment_jd_production_wiring_contract.py
+
+developer_finalization_boundary:
+  mode: docs-only
+  docs_only: true
+  allowed_additions:
+    - docs/task_card_cli_domain_options_file_ingress.yaml
+  existing_file_modification: forbidden
+  implementation: forbidden
+  implementation_forbidden_marker: implementation forbidden
+  tests_modification: forbidden
+  pytest: forbidden
+  commit: forbidden
+  amend: forbidden
+  push: forbidden
+  staging: forbidden
+  rule: >-
+    此前开发者级定稿执行只新增本任务卡。docs-only 边界只约束该次定稿执行，不表示未来永久禁止实现；
+    后续实现必须另行授权，并严格遵守本卡的实施文件范围和终审条件。
+
+independent_final_review_boundary:
+  mode: docs-only
+  docs_only: true
+  allowed_modification:
+    - docs/task_card_cli_domain_options_file_ingress.yaml
+  implementation: forbidden
+  implementation_forbidden_marker: implementation forbidden
+  tests_modification: forbidden
+  pytest: forbidden
+  task_card_commit_after_pass: authorized
+  amend: forbidden
+  push: forbidden
+  rule: >-
+    独立终审必须重新核对现行代码与测试，不采信开发者级结论；只允许在本任务卡内做
+    不改变架构的最小修订。PASS 后只允许创建包含本任务卡的本地文档提交，后续 runtime
+    实现及其提交仍需另行授权。
+
+problem_statement:
+  current_capability: >-
+    Python 程序调用方已经可以通过 dispatch_domain_request(..., options=...) 把通用
+    DomainRequest.options 送达 StaticDomainHost 与 RecruitmentJDPlugin.execute；SDK、Host
+    和招聘插件的通用、传输与业务边界均已交付。
+  missing_capability: >-
+    ask_notes.py CLI 没有 structured options 文件入口，runner 没有进程级或会话级
+    options 注入参数，普通交互用户无法显式向 production DomainRequest 提供 options。
+  task_goal: >-
+    新增一个通用 --domain-options-file <path> 入口：进程启动时严格读取一份完整
+    DomainRequest.options JSON object，形成只读会话快照，注入 runner 并只在既有 domain
+    dispatch 点透明传递，同时保持业务解释权、query、守门、回落与无参数路径不变。
+
+current_capability:
+  - Domain SDK protocol 1.1 支持递归 JsonValue、隔离复制、有限数字、循环检测及四项固定配额。
+  - dispatch_domain_request 提供通用 keyword-only options 参数。
+  - StaticDomainHost 执行通用边界复验且不理解业务 key。
+  - 招聘插件是自身 namespace、payload version 和七字段业务校验的最终权威。
+  - production 程序调用链 Python caller -> dispatch -> DomainRequest -> StaticDomainHost -> plugin 已存在。
+
+missing_capability:
+  - CLI 没有 domain options 文件参数。
+  - runner 没有进程级只读 options 快照注入点。
+  - 交互式 production 请求不能由用户显式携带 structured options。
+
+architecture_decision:
+  decision: GO
+  decision_is_final: true
+  selected_path: cli_domain_options_file_process_snapshot
+  canonical_flow: >-
+    --domain-options-file -> strict generic file loader -> public DomainRequest preflight ->
+    args.domain_options snapshot -> run_chat_loop(domain_options=...) -> existing domain dispatch ->
+    DomainRequest -> StaticDomainHost -> RecruitmentJDPlugin.execute
+  invariants:
+    - 文件根 JSON object 直接等于完整 DomainRequest.options，不新增包装层。
+    - CLI 与 runner 只理解通用 JSON options object。
+    - CLI 与 runner 不理解招聘 namespace、payload version、七字段或比较语义。
+    - SDK、Host 和招聘插件保持现有职责与实现不变。
+    - 不再重新进行入口候选方案选择。
+
+cli_contract:
+  argument:
+    spelling: --domain-options-file
+    metavariable: <path>
+    argparse_destination: domain_options
+    optional: true
+    default: null
+    loader_timing: 在 _parse_args() 的真实 argparse 类型转换期间加载和预检。
+  accepted_form: "--domain-options-file <path>"
+  forbidden_alternatives:
+    - inline JSON 参数
+    - --recruitment-rules-* 招聘专属参数
+    - 环境变量规则来源
+    - .env 规则来源
+    - 默认配置文件搜索
+    - 会话命令
+    - 自动长期画像
+  no_argument_behavior:
+    - _parse_args() 产出 domain_options=None。
+    - ask_notes.main() 不创建 synthetic preflight DomainRequest。
+    - 既有帮助以外行为、输出、退出码和交互流程保持不变。
+
+file_wire_contract:
+  root_wire_type: JSON object
+  exact_meaning: 文件根 object 逐值等于完整 DomainRequest.options。
+  valid_examples:
+    empty_object: "{}"
+    multiple_namespaces: >-
+      招聘 namespace 与任意其他合成 namespace 可以共同存在，并作为一个完整 object 透明传递。
+  forbidden_wrapping:
+    - '{"options": {...}} 形式的额外 CLI 包装层'
+    - CLI 重新包装招聘规则
+    - CLI 展开招聘 namespace
+    - runner 投影、删除、改名、排序或改写 key/value
+  generic_only:
+    forbidden_knowledge:
+      - org.docmind.recruitment.jd-constraints
+      - payload version "1.0"
+      - 七个招聘字段
+      - 招聘业务默认值
+      - match/conflict/unknown
+
+raw_file_limit:
+  max_bytes: 65536
+  label: 64 KiB
+  measurement: 原始文件字节长度，包含可能存在的 UTF-8 BOM 和全部空白。
+  order: 必须在 UTF-8 解码与 JSON 解析之前检查。
+  pass_condition: len(raw_bytes) <= 65536
+  reject_condition: len(raw_bytes) > 65536
+  bounded_read_requirement: >-
+    后续实现应以二进制方式至多读取 65537 bytes 或使用等价有界策略；不得先解码或解析
+    再判断上限。
+  source_kind: >-
+    用户提供的路径必须是可读普通文件；目录及 FIFO、socket、设备等非普通文件必须在
+    有界读取前拒绝。实现应使用 is_file、stat/fstat 或严格等价的标准库检查，且任何检查
+    或读取异常都只能进入固定脱敏错误路径。
+  sdk_quota_relationship:
+    normalized_options_limit_bytes: 16384
+    rule: SDK 现有规范化 UTF-8 16 KiB options 配额继续独立生效。
+    invariant: 64 KiB 原始文件上限不能替代、放宽或绕过 SDK 配额。
+
+encoding_contract:
+  accepted:
+    - 严格普通 UTF-8
+    - 文件开头单个 UTF-8 BOM
+  recommended_decoder: 等价于 errors=strict 的 utf-8-sig 解码。
+  rejected:
+    - 其他编码
+    - 自动编码猜测
+    - 容错替换
+    - U+FFFD 替代解码错误
+    - 非文件开头或多余 BOM 导致的非法 JSON
+  third_party_dependency: forbidden
+
+strict_json_contract:
+  parser: Python 标准库 json 的严格配置或行为等价实现。
+  required_rejections:
+    - JSON 语法错误
+    - 根值为 array
+    - 根值为 string
+    - 根值为 number
+    - 根值为 boolean
+    - 根值为 null
+    - 顶层 duplicate object key
+    - 任意嵌套层级 duplicate object key
+    - NaN
+    - Infinity
+    - -Infinity
+    - Python JSON 扩展或其他非标准常量
+  duplicate_policy: duplicate key 必须拒绝，不允许后值覆盖。
+  implementation_constraints:
+    - 使用 object_pairs_hook 或严格等价机制检查每一个 object 的重复 key。
+    - 使用 parse_constant 或严格等价机制拒绝 NaN、Infinity 和 -Infinity。
+    - JSON 解析完成后再以 type(root) is dict 或严格等价判断要求根 object。
+    - 不新增第三方 JSON parser。
+
+file_boundary:
+  required_failures:
+    - 文件不存在
+    - 路径指向目录
+    - 文件不可读
+    - 读取过程中 I/O 错误
+    - 空文件
+    - 只有空白字符
+    - 超过原始 65536 bytes 上限
+  no_mutation:
+    - 不修改源文件内容或 mtime。
+    - 不复制或迁移源文件。
+    - DocMind 不管理用户源 JSON 文件。
+
+public_domain_request_preflight:
+  rationale: SDK 当前没有 standalone public options validator。
+  allowed_imports:
+    module: docmind_domain_sdk
+    symbols:
+      - DomainRequest
+      - JsonValue
+  forbidden_imports:
+    - docmind_domain_sdk.validation.validate_and_copy_options
+    - 任何其他私有 validation helper
+  forbidden_changes:
+    - 修改 SDK
+    - 在 CLI 或 runner 复制递归 JSON 校验算法
+    - 在 CLI 或 runner 复制有限数字、循环或四项配额算法
+  exact_current_dto_construction: |-
+    preflight = DomainRequest(
+        request_id="cli-domain-options-preflight",
+        query="Synthetic domain options preflight.",
+        source_scope=(),
+        options=parsed_root,
+    )
+    snapshot = preflight.options
+  construction_rules:
+    - 只显式提供当前公开 DTO 的三个必要字段与 options。
+    - 不猜测或显式硬编码 protocol_version、locale、focus、deadline_ms 等已有公开默认字段。
+    - synthetic query 固定、非敏感、非空，且不包含任何领域业务词。
+    - request_id 固定且仅用于构造合法 DTO，不自动生成、不进入业务状态。
+    - 读取 preflight.options 作为 SDK 已隔离复制后的进程快照。
+  isolation:
+    - preflight request 不 dispatch。
+    - preflight request 不进入 Host、插件、普通检索、模型或日志。
+    - 不把 request_id 或 query 保存为业务状态。
+    - DTO 通用校验失败统一转换为固定脱敏 CLI 错误。
+    - 入口层不借预检解析任何招聘 namespace 或业务字段。
+
+lifecycle:
+  load_once: 进程启动时在 argparse 阶段读取一次。
+  scope: 对本次交互进程及其会话有效。
+  source_change: 当前进程内源文件变化不热加载，已加载 snapshot 不变。
+  refresh: 重启进程后重新读取；测试以重新调用 loader 模拟刷新。
+  runner_convention: runner 将已校验 snapshot 视为只读。
+  per_request_copy: 每次构造真实 DomainRequest 时继续由 SDK 执行隔离复制。
+  forbidden_storage:
+    - ConversationState
+    - RepoState
+    - SQLite 或其他数据库
+    - 索引
+    - 检索缓存
+    - 日志
+    - 新配置目录
+    - 仓库内 options 副本
+  persistence_meaning: >-
+    上述禁止项专指不得保存 domain_options snapshot、其内容或由其派生的数据，且不得因
+    本入口新增持久化副作用；不改变 run_chat_loop 既有且与 options 无关的 FileChangeStore
+    初始化及其他旧路径行为。
+  source_ownership: 用户显式创建、维护并传入源 JSON 文件；DocMind 不复制、迁移或管理它。
+
+responsibility_split:
+  ask_notes.py:
+    owns:
+      - 解析 --domain-options-file
+      - 二进制读取文件
+      - 在解码前检查 65536 bytes 原始上限
+      - 严格 UTF-8/BOM 解码
+      - 严格 JSON 解析和 duplicate key/非标准常量拒绝
+      - 要求根值为 object
+      - 使用公共 DomainRequest 做通用预检与隔离复制
+      - 将 snapshot 作为 domain_options keyword 注入 run_chat_loop
+    forbidden:
+      - 招聘 namespace、version 或字段解释
+      - 日志记录 options 或路径
+      - 业务默认值
+  runner:
+    owns:
+      - 接受可选 keyword-only domain_options
+      - 在唯一既有 domain dispatch 点按 None/非 None 分支透明传递
+    forbidden:
+      - 解析、修改或持久化 options
+      - 由自然语言改变 options
+      - 会话内查看、设置、替换或清空命令
+      - 把 options 放入 question、检索、local answer 或模型 prompt
+  sdk_and_host:
+    behavior: 保持当前通用验证、隔离复制和透明传递。
+    modification_in_slice: forbidden
+  recruitment_plugin:
+    behavior: >-
+      继续是自身 namespace、schema version "1.0" 和现有七字段业务校验、比较与渲染的唯一权威。
+    modification_in_slice: forbidden
+
+runner_wiring:
+  target: app/chat_loop_parts/runner.py::run_chat_loop
+  parameter:
+    name: domain_options
+    position: keyword-only
+    exact_annotation: "Mapping[str, JsonValue] | None"
+    default: null
+    public_type_sources:
+      - collections.abc.Mapping
+      - docmind_domain_sdk.JsonValue
+  signature_constraints:
+    - 不改变现有 positional 参数顺序。
+    - 不要求修改 app/chat_loop.py，因为其 *args/**kwargs 门面透明转发。
+  dispatch_branch: |-
+    if domain_options is None:
+        domain_result = dispatch_domain_request(domain_dispatch_port, question)
+    else:
+        domain_result = dispatch_domain_request(
+            domain_dispatch_port,
+            question,
+            options=domain_options,
+        )
+  semantic_requirements:
+    - None 时继续省略 options 参数，禁止机械改成 options=None。
+    - 文件内容 {} 是显式空 options，必须进入非 None 分支。
+    - 每次 dispatch 继续由 DomainRequest 产生独立 SDK copy。
+    - runner 在调用前后不得修改 snapshot。
+    - options 不写入 ConversationState 或 RepoState。
+    - options 不根据用户自然语言改变。
+    - options 不传给普通检索、本地直答或模型 prompt。
+  guard_order:
+    invariant: 所有既有通用守门继续发生在 domain dispatch 之前。
+    must_not_add_dispatch:
+      - 文件动作
+      - contextless
+      - system capability
+      - repo meta
+      - smalltalk
+      - out-of-scope
+
+query_integrity:
+  baseline: >-
+    runner 在所有现有 question 变换完成后、送入唯一 domain dispatch 点的最终 question；
+    DomainRequest.query 必须逐字符等于该值。
+  existing_processing:
+    - 原始终端一行或多行先由 _merge_user_question_lines() 合并；其返回值在 runner 中现名为 raw_question，但已不是逐字符原始终端文本。
+    - runner 对合并结果调用 normalize_colloquial_question()，得到初始规范化 question。
+    - 现有 build_corrected_result_set_request() 仍可能在特定结果集序号纠正轮次进一步替换 question。
+    - 本切片不改变、绕过或复制上述任何既有处理，domain_options 也不得影响其结果。
+  invariants:
+    - options 不拼入、前置、后置、序列化或以隐藏标记注入 question。
+    - dispatch 收到的 query 逐字符等于该轮 runner 在既有可选序号纠正后形成的最终 question。
+    - 招聘插件收到的 request.query 与 dispatch query 逐字符相等。
+    - options 不改变 query 的空白、换行、标点或 Unicode 内容。
+
+error_contract:
+  fixed_reason: 无法加载 domain options 文件。请检查文件格式和内容后重试。
+  conversion_scope:
+    - 读取失败
+    - 非文件
+    - 超过 64 KiB
+    - UTF-8 解码失败
+    - JSON 语法错误
+    - duplicate key
+    - NaN、Infinity 或 -Infinity
+    - 根值不是 object
+    - SDK 通用 options 校验失败
+  argparse_path: argparse.ArgumentTypeError 或与当前 argparse 架构等价且不回显参数值的标准错误路径。
+  argparse_redaction_rule: >-
+    argparse type loader 必须捕获文件、解码、JSON 与 DTO 异常，并以不拼接原异常或输入
+    path 的 argparse.ArgumentTypeError(fixed_reason) from None（或严格等价方式）结束；
+    不得依赖会把非法参数值自动写入 stderr 的默认类型转换错误文本。
+  observable_behavior:
+    stderr: argparse 标准 usage、程序名、参数名及固定通用原因可以出现。
+    stdout: empty
+    exit_status: 2
+    exit_status_marker: exit code 2
+    traceback: forbidden
+  redaction:
+    stderr_must_not_contain:
+      - 用户通过 --domain-options-file 提供的源 JSON 文件路径或文件名
+      - 用户文件内容
+      - payload
+      - namespace
+      - 字段名
+      - 规则值
+      - Python repr
+      - Pydantic 或底层异常详情
+      - traceback
+  early_exit_before:
+    - apply_environment_defaults
+    - main 内位于 _parse_args() 之后的 torch/SentenceTransformer 延迟导入与模型加载
+    - client 创建
+    - notes/index 初始化
+    - RepoState 创建
+    - Host 创建
+    - run_chat_loop
+  ordinary_argparse_errors: >-
+    缺少 --domain-options-file 参数值等普通 argparse 语法错误继续使用当前标准行为，
+    不要求转换成固定文件加载原因。
+
+privacy_guard:
+  - 本节约束运行时文件加载、错误输出、stdout、stderr、普通日志、模型输入和持久化副作用；任务卡中的契约性说明不属于运行时记录。
+  - 不记录用户通过 --domain-options-file 提供的源 JSON 文件的绝对路径、相对路径或文件名。
+  - 不记录用户源 JSON 内容及其中的 namespace、未知 key、业务字段或业务值。
+  - 任务卡和 README 可为定义公开契约而使用仓库相对代码路径、公开插件 namespace 常量与纯合成示例；不得包含真实个人、企业、城市、薪资或经历数据。
+  - 不把 options 写入普通日志、stdout 或 stderr。
+  - 不把 options 放入模型 prompt。
+  - 不把 options 写入 ConversationState 或 RepoState。
+  - 不把 options 写入 SQLite、索引或缓存。
+  - 不复制或修改源文件，不创建默认配置，不自动发现文件。
+  - 不根据自然语言补充或推断规则。
+  - 测试使用显式高辨识度合成哨兵验证不回显。
+  - 所有测试、README 和示例数据必须合成、脱敏。
+
+persistence_boundary:
+  source_file:
+    owner: user
+    content_mutation: forbidden
+    mtime_mutation: forbidden
+    copying: forbidden
+  process_memory:
+    allowed: 单次启动形成的 SDK 隔离 snapshot。
+    convention: read_only
+  persistent_targets:
+    ConversationState: forbidden
+    RepoState: forbidden
+    file_change_database: forbidden
+    SQLite: forbidden
+    index: forbidden
+    cache: forbidden
+    logs: forbidden
+    config_directory: forbidden
+  target_semantics: >-
+    forbidden 表示这些目标不得接收 options snapshot、内容、哨兵或派生数据，也不得因
+    --domain-options-file 新增写入；不是要求删除或阻断程序原有、与 options 无关的状态、
+    FileChangeStore、索引或日志行为。
+  repository_artifact: 不新增示例 JSON 或 options 副本。
+
+no_options_compatibility:
+  omitted_cli_argument:
+    parsed_value: null
+    synthetic_preflight_count: 0
+    runner_dispatch_call: dispatch_domain_request(port, question)
+    exact_requirements:
+      - 省略 options keyword。
+      - stdout、stderr、退出码、帮助以外行为和交互流程保持现状。
+      - 旧测试结果不变。
+  explicit_empty_file:
+    file_content: "{}"
+    parsed_value: {}
+    runner_dispatch_call: dispatch_domain_request(port, question, options=domain_options)
+    exact_requirements:
+      - 不折叠成 None。
+      - 传入每个实际 DomainRequest。
+      - 招聘结果与旧无 options 路径完整 DomainResult 相等。
+  other_namespace_only:
+    exact_requirements:
+      - 招聘插件结果与旧路径完整相等。
+      - namespace 不删除、不改名、不排序、不改写。
+  preserved_behavior:
+    - runner 输入和退出命令
+    - 通用守门顺序
+    - 状态更新和 handled 后状态重置
+    - 普通检索与本地直答
+    - 模型生成
+    - 最小 handled profile
+    - handled 短路普通检索
+    - abstain 继续普通路径
+
+business_error_boundary:
+  legal_recruitment_options:
+    - 进入现有招聘插件 adapter。
+    - 使用现有 compare_job_search_rules 与 render_job_rule_comparison。
+    - CLI 与 runner 不做业务判断。
+  invalid_recruitment_payload:
+    - 只要文件满足通用 JSON 与 SDK 边界，CLI 正常启动。
+    - 单 JD 请求由现有插件返回固定 handled 拒绝。
+    - CLI 不提前校验 schema_version 或七字段。
+    - runner 不回显业务错误详情。
+  other_namespaces:
+    - 可与招聘 namespace 共存并完整透明传递。
+    - 当前静态招聘插件只读取自身 namespace。
+    - 不新增中央 namespace registry 或多插件仲裁。
+
+fallback_boundary:
+  abstain_cases_with_recruitment_options:
+    - 非 JD
+    - 跨域文本
+    - 合同文本
+    - 采购文本
+    - 项目需求文本
+    - 多 JD
+  required_behavior:
+    - 插件继续先按现有逻辑 abstain。
+    - runner 继续进入现有普通检索、本地直答或模型回落。
+    - options 不改变回落内容。
+  failures:
+    - 插件异常继续使用现有 dispatch/runner 回落。
+    - protocol 边界失败继续使用现有回落。
+    - non-handled 与非法 result 继续使用现有回落。
+    - 本切片不修改异常策略。
+
+expected_modified_files:
+  future_implementation_only: true
+  exact_count: 6
+  exact_list:
+    - path: ask_notes.py
+      purpose:
+        - 新增 --domain-options-file。
+        - 新增严格通用文件 loader。
+        - 使用公共 DomainRequest 预检并返回 snapshot。
+        - 以 domain_options keyword 注入 run_chat_loop。
+    - path: app/chat_loop_parts/runner.py
+      purpose:
+        - 新增 keyword-only domain_options: Mapping[str, JsonValue] | None = None。
+        - 在现有 domain dispatch 点按 None/非 None 分支透明传递。
+        - 保持无参数省略 options 的调用语义。
+    - path: README.md
+      purpose:
+        - 记录通用 CLI 使用方式、启动读取一次和用户文件所有权。
+        - 明确不自动读取 WorkState、简历或长期画像。
+        - 只使用合成脱敏示例。
+    - path: packages/docmind-recruitment-plugin/README.md
+      purpose:
+        - 更新“CLI 尚未提供入口”的过时描述并指向通用参数。
+        - 保持 namespace、payload 1.0 和七字段契约不变。
+        - 不宣称自动画像、热加载或 MCP 已支持。
+    - path: public_tests/domain/test_domain_dispatch_port_empty_host.py
+      purpose:
+        - 覆盖真实 CLI loader/main wiring、runner 注入、守门、回落、query 保真和无参数精确兼容。
+    - path: public_tests/domain/test_recruitment_jd_production_wiring_contract.py
+      purpose:
+        - 覆盖真实 loader snapshot 到 production Host 与招聘插件的比较、拒绝和 abstain 路径。
+  expansion_rule: >-
+    若实现证明必须新增第 7 个 runtime 或测试文件，或必须修改 SDK、Host、dispatch、插件
+    业务代码、app/chat_loop.py、ConversationState 或其他文件，立即停止并报告 BLOCKED；
+    不得自行扩大范围，必须重新定稿本任务卡。
+
+protected_files_and_paths:
+  exact_or_glob:
+    - packages/docmind-domain-sdk/**
+    - app/domain_dispatch_port.py
+    - app/domain_host/**
+    - bootstrap/domain_composition.py
+    - app/chat_loop.py
+    - app/dialog/**
+    - .env.example
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/**
+    - packages/docmind-recruitment-plugin/pyproject.toml
+    - RepoState 实现
+    - ConversationState 实现
+    - 文件变更数据库
+    - 索引与检索缓存
+    - 日志系统
+    - 现有 protocol 1.0/1.1 schema artifacts
+    - docs/task_card_cli_domain_options_file_ingress.yaml
+  note: >-
+    当前任务卡只在本次 docs-only 定稿中新增；未来实现不得修改本任务卡，且上述受保护
+    路径不得出现 diff。
+
+test_evidence_strategy:
+  principle: >-
+    用 A/B/C 三段稳定、互补证据拼合真实 CLI -> runner -> production host -> plugin 链，
+    不启动真实模型、Embedding、索引或阻塞式终端会话形成巨型测试。
+  segment_a_cli_loader_and_main_wiring:
+    carrier: public_tests/domain/test_domain_dispatch_port_empty_host.py
+    real_components:
+      - argparse
+      - tmp_path 中的 JSON 文件
+      - 通用 loader
+      - _parse_args()
+    requirements:
+      - _parse_args() 通过 monkeypatch sys.argv 使用真实 argparse，monkeypatch 局部且自动恢复。
+      - args.domain_options 等于公共 DomainRequest 预检后的隔离 snapshot。
+      - ask_notes.main() 只 monkeypatch environment/default setup 观察点、模型/client、notes/index/RepoState 和最终 run_chat_loop 等重型启动依赖。
+      - 真实 CLI snapshot 作为 domain_options keyword 传到 run_chat_loop boundary。
+      - 所有失败输入在重型初始化、Host 和 runner 之前以 exit code 2 退出。
+    proves: CLI file -> argparse/loader -> main injection -> run_chat_loop boundary
+  segment_b_runner_transparency:
+    carrier: public_tests/domain/test_domain_dispatch_port_empty_host.py
+    real_components:
+      - 由真实 loader 在该测试内读取等价临时文件所产生的 snapshot
+      - 现有 runner harness
+      - dispatch_domain_request
+      - DomainRequest
+    requirements:
+      - 不以手写业务 mapping 作为唯一证据。
+      - 捕获真实 dispatch 构造的 DomainRequest。
+      - options 值等价但为 SDK 隔离副本，且每次 request 独立。
+      - query 逐字符保真，options 不进入 query。
+      - 无参数使用旧调用方式；所有既有守门仍不 dispatch。
+      - handled、abstain、插件异常与非法结果回落保持不变。
+    proves: run_chat_loop boundary -> runner -> dispatch -> DomainRequest
+  segment_c_production_host_and_recruitment:
+    carrier: public_tests/domain/test_recruitment_jd_production_wiring_contract.py
+    real_components:
+      - ask_notes 的真实 loader
+      - runner 或 dispatch 的真实 options 接线
+      - ask_notes.create_production_domain_host
+      - StaticDomainHost
+      - dispatch_domain_request
+      - RecruitmentJDPlugin.execute
+      - compare_job_search_rules
+      - render_job_rule_comparison
+    requirements:
+      - 将真实 loader snapshot 传入 runner/dispatch 链。
+      - 合法招聘规则得到现有比较 Markdown，并至少形成 MATCH、CONFLICT、UNKNOWN 各一组。
+      - 非法招聘业务 payload 得到现有固定 handled 拒绝。
+      - 非 JD、合同、采购与多 JD 携带相同 options 仍 abstain 并进入现有回落。
+      - 覆盖其他 namespace 共存、{} 与只含其他 namespace 的兼容。
+    proves: runner/dispatch -> production StaticDomainHost -> RecruitmentJDPlugin -> existing comparison/rendering
+  combined_evidence:
+    - A、B、C 合起来构成完整 production 证据链。
+    - 不要求单个测试跨越真实模型、Embedding、索引、终端交互和插件。
+    - 分段测试不得 mock DomainRequest、StaticDomainHost 或 RecruitmentJDPlugin 核心契约。
+    - 主要合法比较路径至少一条不 mock 插件业务执行。
+    - monkeypatch 必须局部、自动恢复且无测试顺序依赖。
+    - A/B/C 不共享可变 snapshot 或进程级测试对象；不同测试可分别让真实 loader 读取等价临时文件。
+
+test_matrix:
+  cli_loader:
+    - 无新参数得到 domain_options=None，且不构造 preflight request。
+    - 合法普通 UTF-8 object。
+    - 文件开头单个 UTF-8 BOM。
+    - 文件开头重复 BOM 或非开头 BOM 固定拒绝为非法 JSON。
+    - 显式空 object {}。
+    - 多 namespace 完整保留。
+    - 原始文件恰好 65536 bytes，使用合法 object 加空白构造且规范化值不超过 SDK 配额时完整接受。
+    - 原始文件 65537 bytes 或更大固定拒绝。
+    - 原始文件不超过 65536 bytes 但规范化值超过 16384 bytes 时仍由公共 DomainRequest 预检拒绝。
+    - 文件不存在。
+    - 路径是目录。
+    - FIFO、socket、设备或等价非普通文件固定拒绝且不进入读取等待。
+    - 权限或替身模拟的读取失败与读取中 I/O 错误。
+    - 非 UTF-8。
+    - 空文件与只有空白字符。
+    - JSON 语法错误。
+    - 根值分别为 array、string、number、bool、null。
+    - 顶层 duplicate key。
+    - 嵌套 duplicate key。
+    - NaN、Infinity、-Infinity。
+    - SDK 深度配额。
+    - SDK 总 key 配额。
+    - SDK 容器成员配额。
+    - SDK 规范化 UTF-8 字节配额。
+    - SDK bool/number/递归 JSON 既有契约未在 loader 复制、替代或放宽。
+    - 所有 loader 错误退出 2，stdout 为空，stderr 含固定原因。
+    - stderr 不含路径、payload、namespace、字段名、规则值、repr、底层异常或 traceback。
+    - 失败发生在 environment defaults、模型、client、索引、RepoState、Host 和 runner 初始化前。
+  snapshot_and_lifecycle:
+    - loader 返回 SDK 隔离副本。
+    - 修改 JSON parser 临时结构后 snapshot 不变。
+    - 源文件读取后内容与 mtime 不变。
+    - 当前进程内修改源文件不改变已加载 snapshot。
+    - 重新调用 loader 读取新内容，模拟进程重启刷新。
+    - runner 不修改 snapshot。
+    - 每个实际 DomainRequest 得到独立 SDK copy。
+    - options snapshot、内容、哨兵或派生数据不写入 ConversationState、RepoState、数据库、索引、缓存或日志，且不因 options 新增持久化写入。
+    - 不在仓库创建 options 副本。
+  runner:
+    - domain_options=None 时保留旧的两参数 dispatch 调用。
+    - "{} 非 None 并显式传递。"
+    - 多 namespace 完整传递。
+    - 普通规范化路径和现有结果集序号纠正路径的最终 query 均逐字符保真，options 不进入 query。
+    - 文件动作守门不 dispatch。
+    - contextless 守门不 dispatch。
+    - system capability 守门不 dispatch。
+    - repo meta 守门不 dispatch。
+    - smalltalk 守门不 dispatch。
+    - out-of-scope 守门不 dispatch。
+    - handled 继续短路普通检索并保持状态重置。
+    - abstain 继续普通回落。
+    - plugin 异常继续普通回落。
+    - 非法 result 继续普通回落。
+    - 既有状态更新与重置行为不变。
+  production_recruitment_chain:
+    - 合法规则调用现有比较与 Markdown 渲染。
+    - MATCH、CONFLICT、UNKNOWN 均由现有算法实际形成。
+    - 非法招聘 payload 返回现有固定 handled 拒绝。
+    - CLI 对通用合法但业务非法的字段不提前拒绝。
+    - 非 JD 携带招聘规则仍 abstain 并回落。
+    - 合同文本携带招聘规则仍 abstain 并回落。
+    - 采购文本携带招聘规则仍 abstain 并回落。
+    - 多 JD 携带招聘规则仍 abstain 并回落。
+    - "{} 与旧路径完整 DomainResult 精确兼容。"
+    - 仅其他 namespace 与旧路径完整 DomainResult 精确兼容。
+    - 无参数与旧路径完整 DomainResult 精确兼容。
+    - runner、dispatch 与插件 query 逐字符保真。
+    - payload 与高辨识度哨兵不进入 stdout、stderr、日志或回落内容。
+    - 招聘插件业务实现无 diff。
+  documentation_and_privacy:
+    - README.md 与招聘插件 README 只记录通用参数、单次加载生命周期、用户文件所有权和插件业务校验边界。
+    - README 示例只使用公开 namespace 与合成脱敏数据，不新增示例 JSON 文件。
+    - runtime、测试、README 和错误输出均不包含机器或账户路径、真实个人、企业、城市、薪资、联系方式或简历经历。
+    - 最终 diff 只包含精确 6 个未来实现文件，protected paths 与用户源文件无变化，且不发生任何 options 相关的仓库内外持久化写入。
+  regression:
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      pytest_cache_provider: disabled
+      warnings: unfiltered
+    future_commands:
+      affected_public_tests: >-
+        PYTHONDONTWRITEBYTECODE=1
+        PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+        .venv/bin/python -m pytest -q -p no:cacheprovider
+        public_tests/domain/test_domain_dispatch_port_empty_host.py
+        public_tests/domain/test_recruitment_jd_production_wiring_contract.py
+      recruitment_plugin_tests: >-
+        PYTHONDONTWRITEBYTECODE=1
+        PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+        .venv/bin/python -m pytest -q -p no:cacheprovider
+        packages/docmind-recruitment-plugin/tests
+      domain_public: >-
+        PYTHONDONTWRITEBYTECODE=1
+        PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+        .venv/bin/python -m pytest -q -p no:cacheprovider public_tests/domain
+      full_pytest: >-
+        PYTHONDONTWRITEBYTECODE=1
+        PYTHONPATH=packages/docmind-domain-sdk/src:packages/docmind-recruitment-plugin/src
+        .venv/bin/python -m pytest -q -p no:cacheprovider
+    required_order:
+      - 受影响 CLI/runner public tests
+      - recruitment production wiring tests
+      - packages/docmind-recruitment-plugin/tests
+      - public_tests/domain
+      - 仓库全量 pytest
+    current_docs_only_rule: 本次不运行 pytest，因为没有 runtime 或测试变化。
+
+documentation_requirements:
+  root_readme:
+    - 记录 --domain-options-file <path> 通用用法。
+    - 明确文件根 object 就是完整 DomainRequest.options。
+    - 明确文件由用户显式创建、维护和传入，DocMind 不复制或管理。
+    - 明确进程启动读取一次、会话内只读、无热加载，重启才刷新。
+    - 明确不会自动读取 WorkState、简历或长期画像。
+    - 明确具体业务 payload 仍由对应插件校验。
+    - 明确完全无参数时行为不变。
+    - 示例仅使用合成 namespace 或现有招聘 namespace 的合成字段值。
+    - 不新增示例 JSON 文件。
+  recruitment_plugin_readme:
+    - 删除或更新“当前 runner 与交互式 CLI 尚未提供 structured options 规则来源”的过时描述。
+    - 指向通用 --domain-options-file，不增加招聘专属 CLI 参数。
+    - 保持 PLUGIN_ID、payload version "1.0" 和七字段契约不变。
+    - 不宣称自动画像、热加载、MCP、多插件动态发现或长期配置已支持。
+  privacy:
+    - 不使用真实公司、候选人、城市、薪资或个人经历。
+    - 使用某公司A、候选人X、示例城市甲、合成数值或等价脱敏值。
+
+non_goals:
+  - 长期求职画像
+  - WorkState 自动读取或创建
+  - 简历自动读取
+  - 自然语言隐式提取规则
+  - 根据聊天历史推断规则
+  - MCP
+  - 外部 transport
+  - 多 JD 比较
+  - 新招聘规则字段
+  - 评分
+  - 匹配百分比
+  - 自动投递
+  - 自动淘汰
+  - 前端界面
+  - inline JSON CLI 参数
+  - 招聘专属 CLI 参数
+  - 会话内设置、查看、替换或清空规则命令
+  - 文件热加载
+  - 文件监听
+  - 自动搜索默认配置文件
+  - 环境变量规则来源
+  - .env 规则来源
+  - 持久化 options
+  - 动态插件发现
+  - 多插件仲裁
+  - namespace registry
+  - capability negotiation
+  - 修改 SDK
+  - 修改 Host
+  - 修改 dispatch
+  - 修改招聘插件 adapter、比较或渲染
+  - 新增示例 JSON 文件
+  - 新依赖
+
+acceptance_min:
+  - repository_baseline 的 branch、三个提交 hash、ahead/behind 与两个阶段各自记录的工作区状态精确成立。
+  - 独立终审提交前唯一变化为 docs/task_card_cli_domain_options_file_ingress.yaml。
+  - GO 与唯一 --domain-options-file 方案明确，不重新进行方案选择。
+  - 文件根 object 直接等于完整 DomainRequest.options，无包装层。
+  - 65536 bytes、严格 UTF-8/单 BOM 与 strict JSON/duplicate key 契约完整冻结。
+  - 只通过公共 DomainRequest 做通用预检，不导入私有 helper、不复制 SDK 算法。
+  - 固定脱敏原因、stderr、stdout 为空和 exit code 2 契约完整冻结。
+  - runner 的 Mapping[str, JsonValue] | None 类型、keyword-only 参数和 None/{} 分支精确冻结。
+  - query 保真、业务插件权威、守门顺序和回落边界保持不变。
+  - 单次启动 snapshot、无热加载、SDK 每请求复制与无持久化边界完整冻结。
+  - 后续实现文件精确为 6 个，所有 protected paths 完整冻结。
+  - A/B/C 分段 production 证据链和完整测试矩阵已冻结。
+  - no-options、{}、其他 namespace、handled、abstain、异常与非法结果兼容已冻结。
+  - README、隐私守门与全部非目标已冻结。
+  - 当前任务卡通过 YAML、UTF-8、乱码、关键词和 git diff --check 自检。
+  - 独立终审未实现 runtime、未修改测试或其他文档；PASS 后只提交本任务卡，未 amend、未 push。
+
+completion_line:
+  current_task_card_complete_when:
+    - 开发者级任务卡定稿完成，decision 为 GO。
+    - 独立终审重新核对现行代码与测试后结论为 PASS，并仅在本任务卡内完成必要最小修订。
+    - 独立终审 docs-only 质量门通过，且只创建包含本任务卡的本地文档提交。
+    - 状态明确为等待单独实现授权，runtime implementation 与实现提交仍未授权。
+  future_implementation_complete_when:
+    - 另行取得明确实现授权且独立终审允许实施。
+    - 只修改 expected_modified_files 中精确 6 个文件，不修改本任务卡。
+    - test_evidence_strategy 的 A/B/C 全部有自动化证据。
+    - test_matrix、文档、隐私、兼容和受保护路径检查全部通过。
+    - 经过实现后的独立终审后才允许创建合规提交。
+  incomplete_or_blocked_if:
+    - 需要修改第 7 个 runtime 或测试文件。
+    - 需要修改 SDK、Host、dispatch、插件业务、app/chat_loop.py 或任一状态实现。
+    - loader 或 runner 需要理解招聘 namespace、version、字段或业务语义。
+    - 无法同时保持 None 省略调用与 {} 显式调用。
+    - 无法在 argparse 阶段以固定脱敏错误于重型初始化前退出。
+    - query、守门、回落、状态或普通检索行为必须变化。
+    - 任何 protected path 出现 diff。
+
+future_execution_rules:
+  implementation_requires_separate_authorization: true
+  independent_final_review_before_implementation: required
+  task_card_modification_during_implementation: forbidden
+  exact_six_file_scope: required
+  scope_expansion: forbidden
+  scope_conflict_action: 停止并报告 BLOCKED，指出冲突代码路径与需重新决策条目，重新定稿任务卡。
+  implementation_review_before_commit: required
+  commit_without_review: forbidden
+  push_without_separate_authorization: forbidden
+  rollback_if_later_needed: 使用独立提交的 revert；不得使用 reset、restore、checkout、stash 或 clean。
+
+docs_only_quality_gate:
+  yaml_parse: |-
+    PYTHONDONTWRITEBYTECODE=1 .venv/bin/python - <<'PY'
+    from pathlib import Path
+    import yaml
+
+    path = Path("docs/task_card_cli_domain_options_file_ingress.yaml")
+    text = path.read_text(encoding="utf-8")
+    data = yaml.safe_load(text)
+
+    assert isinstance(data, dict)
+    assert "\ufffd" not in text
+    assert text.endswith("\n")
+
+    print("TASK_CARD_YAML_OK")
+    PY
+  utf8_and_mojibake: |-
+    .venv/bin/python - <<'PY'
+    from pathlib import Path
+
+    path = Path("docs/task_card_cli_domain_options_file_ingress.yaml")
+    text = path.read_text(encoding="utf-8")
+
+    assert "\ufffd" not in text
+
+    mojibake_markers = (
+        "\u951f\u65a4\u62f7",
+        "\u70eb\u70eb\u70eb",
+        "\u5c6f\u5c6f\u5c6f",
+    )
+
+    for marker in mojibake_markers:
+        assert marker not in text
+
+    print("TASK_CARD_UTF8_OK")
+    PY
+  required_content_markers:
+    - --domain-options-file
+    - "65536"
+    - UTF-8
+    - BOM
+    - duplicate
+    - NaN
+    - Infinity
+    - DomainRequest
+    - domain_options
+    - ConversationState
+    - RepoState
+    - stderr
+    - exit code 2
+    - ask_notes.py
+    - app/chat_loop_parts/runner.py
+    - public_tests/domain/test_domain_dispatch_port_empty_host.py
+    - public_tests/domain/test_recruitment_jd_production_wiring_contract.py
+    - docs-only
+    - implementation forbidden
+    - GO
+  git_checks:
+    - git status --short
+    - git diff --name-status
+    - git diff --stat
+    - git diff --check
+    - git diff --cached --name-status
+  required_results:
+    - 暂存区为空。
+    - 唯一变更是新任务卡文件。
+    - runtime、测试和其他文档均无变化。
+    - YAML 解析、UTF-8、结尾换行、乱码与 required markers 检查通过。
+    - git diff --check 通过。
+    - 不运行 pytest。
+
+deliverables:
+  developer_finalization_run:
+    - docs/task_card_cli_domain_options_file_ingress.yaml
+    - 开发者级 YAML、UTF-8、乱码、内容与 diff 自检记录
+  independent_final_review_run:
+    - 现行代码、公开 API、测试承载点与权威任务卡的独立交叉核对记录
+    - 仅含 docs/task_card_cli_domain_options_file_ingress.yaml 的本地文档提交
+    - 明确等待单独实现授权
+  explicitly_absent:
+    - runtime 实现
+    - 测试修改
+    - 示例 JSON 文件
+    - implementation commit
+    - amend
+    - push
+
+commit_boundary:
+  independent_final_review_task_card_commit:
+    subject: "docs(cli): 定稿 domain options 文件入口任务卡"
+    body:
+      - "目标: 冻结通用 CLI domain options 文件入口首切片。"
+      - "手段: 明确严格文件加载、runner 透明传递、隐私边界和分段全链测试契约。"
+    files:
+      - docs/task_card_cli_domain_options_file_ingress.yaml
+    amend: forbidden
+    push: forbidden
+  future_implementation_commit:
+    authorization: separate_required
+    independent_review_before_commit: required
+    task_card_modification: forbidden
+    push: forbidden
