@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
-from docmind_domain_sdk import DomainResult
+from docmind_domain_sdk import DomainResult, JsonValue
 
 from ai.repo_meta.category import resolve_repo_content_category_scope
 from ai.structured_skill_summary import summarize_structured_skill_summary_with_remote
@@ -52,6 +53,7 @@ def run_chat_loop(
     notes_dir: Path,
     change_log_file: Path,
     domain_dispatch_port: DomainDispatchPort,
+    domain_options: Mapping[str, JsonValue] | None = None,
     question_recorder=None,
 ):
     from app import chat_loop as runtime
@@ -249,7 +251,14 @@ def run_chat_loop(
                     is_content_answer=False,
                 )
                 continue
-            domain_result = dispatch_domain_request(domain_dispatch_port, question)
+            if domain_options is None:
+                domain_result = dispatch_domain_request(domain_dispatch_port, question)
+            else:
+                domain_result = dispatch_domain_request(
+                    domain_dispatch_port,
+                    question,
+                    options=domain_options,
+                )
             if (
                 isinstance(domain_result, DomainResult)
                 and domain_result.status == "handled"

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import gc
 import inspect
+import json
+import os
+import socket
 import sys
 import warnings
 from pathlib import Path
@@ -187,6 +191,7 @@ def _run_turn(
     initial_focus="focus.md",
     use_real_dialog_events=False,
     material_indices=None,
+    domain_options=None,
 ):
     question = "哪些文档里提到了检索策略？"
     state = initial_state or ConversationState(
@@ -402,8 +407,360 @@ def _run_turn(
         notes_dir=tmp_path,
         change_log_file=tmp_path / "changes.jsonl",
         domain_dispatch_port=port,
+        domain_options=domain_options,
     )
     return runtime.conversation_state, captured, fake_models
+
+
+def _parse_cli(monkeypatch, path: Path | None = None):
+    argv = ["docmind-test"]
+    if path is not None:
+        argv.extend(["--domain-options-file", str(path)])
+    monkeypatch.setattr(sys, "argv", argv)
+    return ask_notes._parse_args()
+
+
+def _assert_cli_file_failure(monkeypatch, capsys, path: Path, *secrets: str):
+    with pytest.raises(SystemExit) as caught:
+        _parse_cli(monkeypatch, path)
+
+    output = capsys.readouterr()
+    assert caught.value.code == 2
+    assert output.out == ""
+    assert output.err.startswith("usage: docmind-test")
+    assert "argument --domain-options-file:" in output.err
+    assert ask_notes._DOMAIN_OPTIONS_FILE_ERROR in output.err
+    for secret in (str(path), path.name, *secrets):
+        assert secret not in output.err
+    assert "Traceback" not in output.err
+    assert "ValidationError" not in output.err
+    assert "repr(" not in output.err
+
+
+def test_cli_without_domain_options_skips_preflight(monkeypatch):
+    def fail_preflight(**_kwargs):
+        raise AssertionError("preflight must not be constructed")
+
+    monkeypatch.setattr(ask_notes, "DomainRequest", fail_preflight)
+
+    args = _parse_cli(monkeypatch)
+
+    assert args.domain_options is None
+
+
+def test_cli_missing_domain_options_value_keeps_standard_argparse_error(
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setattr(sys, "argv", ["docmind-test", "--domain-options-file"])
+
+    with pytest.raises(SystemExit) as caught:
+        ask_notes._parse_args()
+
+    output = capsys.readouterr()
+    assert caught.value.code == 2
+    assert output.out == ""
+    assert "argument --domain-options-file: expected one argument" in output.err
+    assert ask_notes._DOMAIN_OPTIONS_FILE_ERROR not in output.err
+
+
+@pytest.mark.parametrize("with_bom", [False, True])
+def test_cli_loads_strict_utf8_object_and_single_leading_bom(
+    monkeypatch,
+    tmp_path,
+    with_bom,
+):
+    path = tmp_path / "synthetic-options.json"
+    raw = json.dumps(
+        {
+            "org.example.alpha": {"enabled": True, "count": 2},
+            "org.example.beta": [None, "value"],
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    path.write_bytes((b"\xef\xbb\xbf" if with_bom else b"") + raw)
+
+    args = _parse_cli(monkeypatch, path)
+
+    assert args.domain_options == {
+        "org.example.alpha": {"enabled": True, "count": 2},
+        "org.example.beta": [None, "value"],
+    }
+
+
+def test_cli_accepts_explicit_empty_object_and_exact_raw_byte_limit(
+    monkeypatch,
+    tmp_path,
+):
+    empty_path = tmp_path / "empty-object.json"
+    empty_path.write_bytes(b"{}")
+    assert _parse_cli(monkeypatch, empty_path).domain_options == {}
+
+    limit_path = tmp_path / "exact-limit.json"
+    limit_path.write_bytes(b"{}" + b" " * (65536 - 2))
+    assert limit_path.stat().st_size == 65536
+    assert _parse_cli(monkeypatch, limit_path).domain_options == {}
+
+
+def test_cli_snapshot_is_isolated_read_once_and_refreshes_only_on_reload(
+    monkeypatch,
+    tmp_path,
+):
+    path = tmp_path / "lifecycle-options.json"
+    first_raw = b'{"org.example.synthetic":{"revision":1}}'
+    path.write_bytes(first_raw)
+    before = path.stat()
+
+    first = _parse_cli(monkeypatch, path).domain_options
+    after = path.stat()
+    assert path.read_bytes() == first_raw
+    path.write_bytes(b'{"org.example.synthetic":{"revision":2}}')
+
+    assert first == {"org.example.synthetic": {"revision": 1}}
+    assert first["org.example.synthetic"]["revision"] == 1
+    assert after.st_mtime_ns == before.st_mtime_ns
+    assert after.st_size == before.st_size == len(first_raw)
+    second = _parse_cli(monkeypatch, path).domain_options
+    assert second == {"org.example.synthetic": {"revision": 2}}
+    assert first == {"org.example.synthetic": {"revision": 1}}
+
+
+def test_cli_snapshot_is_sdk_copy_of_parser_output(monkeypatch, tmp_path):
+    path = tmp_path / "parser-copy.json"
+    path.write_bytes(b"{}")
+    parsed = {"org.example.synthetic": {"items": [1]}}
+    monkeypatch.setattr(ask_notes.json, "loads", lambda *_args, **_kwargs: parsed)
+
+    snapshot = _parse_cli(monkeypatch, path).domain_options
+    parsed["org.example.synthetic"]["items"].append(2)
+
+    assert snapshot == {"org.example.synthetic": {"items": [1]}}
+    assert snapshot is not parsed
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(b"", id="empty"),
+        pytest.param(b" \n\t", id="whitespace"),
+        pytest.param(b'{"PRIVATE_FIELD_SENTINEL":', id="syntax"),
+        pytest.param(b"[]", id="array-root"),
+        pytest.param(b'"PRIVATE_VALUE_SENTINEL"', id="string-root"),
+        pytest.param(b"17", id="number-root"),
+        pytest.param(b"true", id="boolean-root"),
+        pytest.param(b"null", id="null-root"),
+        pytest.param(
+            b'{"PRIVATE_FIELD_SENTINEL":1,"PRIVATE_FIELD_SENTINEL":2}',
+            id="top-level-duplicate",
+        ),
+        pytest.param(
+            b'{"outer":{"PRIVATE_FIELD_SENTINEL":1,"PRIVATE_FIELD_SENTINEL":2}}',
+            id="nested-duplicate",
+        ),
+        pytest.param(b'{"PRIVATE_FIELD_SENTINEL":NaN}', id="nan"),
+        pytest.param(b'{"PRIVATE_FIELD_SENTINEL":Infinity}', id="infinity"),
+        pytest.param(b'{"PRIVATE_FIELD_SENTINEL":-Infinity}', id="negative-infinity"),
+        pytest.param(b"\xff\xfe{}", id="non-utf8"),
+        pytest.param(b"\xef\xbb\xbf\xef\xbb\xbf{}", id="repeated-bom"),
+        pytest.param(b" \xef\xbb\xbf{}", id="non-leading-bom"),
+    ],
+)
+def test_cli_rejects_invalid_encoding_json_and_root_without_disclosure(
+    monkeypatch,
+    tmp_path,
+    capsys,
+    raw,
+):
+    path = tmp_path / "PRIVATE-PATH-SENTINEL.json"
+    path.write_bytes(raw)
+
+    _assert_cli_file_failure(
+        monkeypatch,
+        capsys,
+        path,
+        "PRIVATE_FIELD_SENTINEL",
+        "PRIVATE_VALUE_SENTINEL",
+    )
+
+
+def test_cli_rejects_file_over_raw_byte_limit_with_bounded_read(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    path = tmp_path / "PRIVATE-LARGE-SENTINEL.json"
+    path.write_bytes(b"{}" + b" " * (65537 - 2))
+
+    _assert_cli_file_failure(monkeypatch, capsys, path, "65537")
+
+
+@pytest.mark.parametrize(
+    "quota",
+    ["encoded_bytes", "depth", "total_keys", "container_items"],
+)
+def test_cli_delegates_sdk_quota_rejections_to_public_domain_request(
+    monkeypatch,
+    tmp_path,
+    capsys,
+    quota,
+):
+    if quota == "encoded_bytes":
+        options = {"value": "x" * MAX_OPTIONS_ENCODED_BYTES}
+    elif quota == "depth":
+        options = _nested_options(MAX_OPTIONS_DEPTH + 1)
+    elif quota == "total_keys":
+        options = {f"key-{index}": index for index in range(MAX_OPTIONS_TOTAL_KEYS + 1)}
+    else:
+        options = {"items": [None] * MAX_OPTIONS_CONTAINER_ITEMS}
+    path = tmp_path / f"PRIVATE-{quota}-SENTINEL.json"
+    path.write_text(json.dumps(options), encoding="utf-8")
+    assert path.stat().st_size <= 65536
+
+    _assert_cli_file_failure(monkeypatch, capsys, path, quota, "value", "key-0")
+
+
+def test_cli_delegates_recursive_json_rules_without_copying_sdk_validator(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    path = tmp_path / "PRIVATE-CYCLE-SENTINEL.json"
+    path.write_bytes(b"{}")
+    cycle = {}
+    cycle["cycle"] = cycle
+    monkeypatch.setattr(ask_notes.json, "loads", lambda *_args, **_kwargs: cycle)
+
+    _assert_cli_file_failure(monkeypatch, capsys, path, "cycle")
+
+
+def test_cli_rejects_non_regular_files_and_fifo_swap_before_blocking_read(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    missing = tmp_path / "PRIVATE-MISSING-SENTINEL.json"
+    _assert_cli_file_failure(monkeypatch, capsys, missing, "MISSING")
+
+    directory = tmp_path / "PRIVATE-DIRECTORY-SENTINEL"
+    directory.mkdir()
+    _assert_cli_file_failure(monkeypatch, capsys, directory, "DIRECTORY")
+
+    fifo = tmp_path / "PRIVATE-FIFO-SENTINEL"
+    os.mkfifo(fifo)
+    _assert_cli_file_failure(monkeypatch, capsys, fifo, "FIFO")
+
+    socket_path = tmp_path / "PRIVATE-SOCKET-SENTINEL"
+    bound_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        bound_socket.bind(str(socket_path))
+        _assert_cli_file_failure(monkeypatch, capsys, socket_path, "SOCKET")
+    finally:
+        bound_socket.close()
+
+    device_path = tmp_path / "PRIVATE-DEVICE-SENTINEL"
+    device_path.write_bytes(b"{}")
+    swapped_fifo = tmp_path / "PRIVATE-SWAPPED-FIFO-SENTINEL"
+    os.mkfifo(swapped_fifo)
+    original_stat = os.stat
+
+    def staged_stat(candidate, *args, **kwargs):
+        if os.fspath(candidate) == os.fspath(device_path):
+            return SimpleNamespace(st_mode=ask_notes.stat.S_IFCHR)
+        if os.fspath(candidate) == os.fspath(swapped_fifo):
+            return SimpleNamespace(st_mode=ask_notes.stat.S_IFREG)
+        return original_stat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(ask_notes.os, "stat", staged_stat)
+    _assert_cli_file_failure(monkeypatch, capsys, device_path, "DEVICE")
+    _assert_cli_file_failure(monkeypatch, capsys, swapped_fifo, "SWAPPED-FIFO")
+
+
+@pytest.mark.parametrize("failure_stage", ["open", "fstat", "read", "close"])
+def test_cli_redacts_open_read_and_close_failures(
+    monkeypatch,
+    tmp_path,
+    capsys,
+    failure_stage,
+):
+    path = tmp_path / f"PRIVATE-{failure_stage}-SENTINEL.json"
+    path.write_bytes(b"{}")
+    original_open = open
+
+    class FailingStream:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.stream.close()
+            if failure_stage == "close":
+                raise OSError("PRIVATE_CLOSE_DETAIL")
+
+        def fileno(self):
+            if failure_stage == "fstat":
+                raise OSError("PRIVATE_FSTAT_DETAIL")
+            return self.stream.fileno()
+
+        def read(self, size):
+            assert size == 65537
+            if failure_stage == "read":
+                raise OSError("PRIVATE_READ_DETAIL")
+            return self.stream.read(size)
+
+    def failing_open(*args, **kwargs):
+        if failure_stage == "open":
+            raise PermissionError("PRIVATE_OPEN_DETAIL")
+        return FailingStream(original_open(*args, **kwargs))
+
+    monkeypatch.setattr(ask_notes, "open", failing_open, raising=False)
+
+    _assert_cli_file_failure(
+        monkeypatch,
+        capsys,
+        path,
+        "PRIVATE_OPEN_DETAIL",
+        "PRIVATE_FSTAT_DETAIL",
+        "PRIVATE_READ_DETAIL",
+        "PRIVATE_CLOSE_DETAIL",
+    )
+
+
+def test_invalid_cli_file_exits_before_runtime_initialization(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    path = tmp_path / "PRIVATE-EARLY-EXIT-SENTINEL.json"
+    path.write_bytes(b"[]")
+    calls = []
+
+    def forbidden(*_args, **_kwargs):
+        calls.append(True)
+        raise AssertionError("runtime initialization must not run")
+
+    monkeypatch.setattr(sys, "argv", ["docmind-test", "--domain-options-file", str(path)])
+    for name in (
+        "apply_environment_defaults",
+        "build_logger",
+        "scan_repository",
+        "load_or_build_embeddings",
+        "create_production_domain_host",
+        "run_chat_loop",
+    ):
+        monkeypatch.setattr(ask_notes, name, forbidden)
+
+    with pytest.raises(SystemExit) as caught:
+        ask_notes.main()
+
+    output = capsys.readouterr()
+    assert caught.value.code == 2
+    assert calls == []
+    assert output.out == ""
+    assert ask_notes._DOMAIN_OPTIONS_FILE_ERROR in output.err
+    assert str(path) not in output.err
+    assert path.name not in output.err
 
 
 def test_empty_host_satisfies_sync_port_and_has_no_side_effects(capsys):
@@ -665,7 +1022,11 @@ def test_composition_root_creates_and_injects_host(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "google", fake_google)
     monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-key")
-    monkeypatch.setattr(ask_notes, "_parse_args", lambda: SimpleNamespace(notes_dir=None))
+    monkeypatch.setattr(
+        ask_notes,
+        "_parse_args",
+        lambda: SimpleNamespace(notes_dir=None, domain_options=None),
+    )
     monkeypatch.setattr(ask_notes, "apply_environment_defaults", lambda: None)
     monkeypatch.setattr(ask_notes, "build_logger", _Logger)
     monkeypatch.setattr(ask_notes, "_resolve_notes_dir", lambda *_args: tmp_path)
@@ -684,7 +1045,65 @@ def test_composition_root_creates_and_injects_host(monkeypatch, tmp_path):
     ask_notes.main()
 
     assert captured["kwargs"]["domain_dispatch_port"] is host
+    assert captured["kwargs"]["domain_options"] is None
     assert isinstance(captured["kwargs"]["domain_dispatch_port"], DomainDispatchPort)
+
+
+def test_main_wires_real_cli_loader_snapshot_to_runner(monkeypatch, tmp_path):
+    captured = {}
+    path = tmp_path / "synthetic-main-options.json"
+    path.write_text(
+        json.dumps(
+            {
+                "org.example.alpha": {"enabled": True},
+                "org.example.beta": {"threshold": 3},
+            }
+        ),
+        encoding="utf-8",
+    )
+    host = EmptyDomainHost()
+    fake_torch = ModuleType("torch")
+    fake_torch.cuda = SimpleNamespace(is_available=lambda: False)
+    fake_torch.backends = SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False))
+    fake_sentence = ModuleType("sentence_transformers")
+    fake_sentence.SentenceTransformer = lambda *_args, **_kwargs: object()
+    fake_google = ModuleType("google")
+    fake_google.__path__ = []
+    fake_genai = ModuleType("google.genai")
+    fake_genai.Client = lambda **_kwargs: object()
+    fake_google.genai = fake_genai
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_sentence)
+    monkeypatch.setitem(sys.modules, "google", fake_google)
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["docmind-test", "--domain-options-file", str(path)],
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-key")
+    monkeypatch.setattr(ask_notes, "apply_environment_defaults", lambda: None)
+    monkeypatch.setattr(ask_notes, "build_logger", _Logger)
+    monkeypatch.setattr(ask_notes, "_resolve_notes_dir", lambda *_args: tmp_path)
+    monkeypatch.setattr(ask_notes, "_resolve_cache_file", lambda *_args: tmp_path / "cache.npz")
+    monkeypatch.setattr(ask_notes, "_resolve_change_log_file", lambda *_args: tmp_path / "changes.db")
+    monkeypatch.setattr(ask_notes, "build_debug_question_recorder", lambda **_kwargs: object())
+    monkeypatch.setattr(ask_notes, "scan_repository", lambda *_args: object())
+    monkeypatch.setattr(ask_notes, "load_or_build_embeddings", lambda *_args: object())
+    monkeypatch.setattr(ask_notes, "create_production_domain_host", lambda: host)
+    monkeypatch.setattr(
+        ask_notes,
+        "run_chat_loop",
+        lambda *args, **kwargs: captured.update({"args": args, "kwargs": kwargs}),
+    )
+
+    ask_notes.main()
+
+    assert captured["kwargs"]["domain_options"] == {
+        "org.example.alpha": {"enabled": True},
+        "org.example.beta": {"threshold": 3},
+    }
+    assert captured["kwargs"]["domain_dispatch_port"] is host
 
 
 def test_empty_host_dispatch_preserves_normal_retrieval_chain(monkeypatch, tmp_path):
@@ -716,6 +1135,154 @@ def test_empty_host_dispatch_preserves_normal_retrieval_chain(monkeypatch, tmp_p
 
 
 @pytest.mark.parametrize(
+    "file_options",
+    [
+        None,
+        {},
+        {
+            "org.example.alpha": {"items": [1, 2]},
+            "org.example.beta": {"enabled": True},
+        },
+    ],
+)
+def test_runner_preserves_none_call_shape_and_explicit_options(
+    monkeypatch,
+    tmp_path,
+    file_options,
+):
+    if file_options is None:
+        snapshot = None
+    else:
+        path = tmp_path / "runner-call-shape.json"
+        path.write_text(json.dumps(file_options), encoding="utf-8")
+        snapshot = _parse_cli(monkeypatch, path).domain_options
+    before = copy.deepcopy(snapshot)
+    calls = []
+
+    def capture_dispatch(*args, **kwargs):
+        calls.append((args, kwargs))
+        return None
+
+    monkeypatch.setattr(runner, "dispatch_domain_request", capture_dispatch)
+    _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=EmptyDomainHost(),
+        domain_options=snapshot,
+    )
+
+    assert len(calls) == 1
+    assert len(calls[0][0]) == 2
+    if snapshot is None:
+        assert calls[0][1] == {}
+    else:
+        assert calls[0][1] == {"options": snapshot}
+        assert calls[0][1]["options"] is snapshot
+    assert snapshot == before
+
+
+def test_runner_real_dispatch_creates_independent_sdk_copy_per_request(
+    monkeypatch,
+    tmp_path,
+):
+    path = tmp_path / "runner-copy-options.json"
+    path.write_text(
+        json.dumps({"org.example.synthetic": {"items": [1, 2]}}),
+        encoding="utf-8",
+    )
+    snapshot = _parse_cli(monkeypatch, path).domain_options
+    before = copy.deepcopy(snapshot)
+    plugin = _NeutralPlugin(lambda request: _domain_result(request, "abstain"))
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+    _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=["合成领域请求甲", "合成领域请求乙"],
+        domain_options=snapshot,
+    )
+
+    assert len(plugin.execute_requests) == 2
+    first, second = plugin.execute_requests
+    assert first.options == second.options == snapshot == before
+    assert first.options is not snapshot
+    assert second.options is not snapshot
+    assert first.options is not second.options
+    assert first.options["org.example.synthetic"] is not snapshot["org.example.synthetic"]
+    assert first.options["org.example.synthetic"] is not second.options["org.example.synthetic"]
+    assert first.options["org.example.synthetic"]["items"] is not second.options[
+        "org.example.synthetic"
+    ]["items"]
+    assert snapshot == before
+
+
+def test_runner_preserves_normalized_query_and_keeps_options_out_of_query(
+    monkeypatch,
+    tmp_path,
+):
+    raw_question = "请 看 下 合成记录？"
+    path = tmp_path / "runner-query-options.json"
+    path.write_text(
+        json.dumps({"org.example.synthetic": {"marker": "OPTIONS_QUERY_SENTINEL"}}),
+        encoding="utf-8",
+    )
+    snapshot = _parse_cli(monkeypatch, path).domain_options
+    state = ConversationState()
+    port = _SpyPort(state)
+
+    _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=port,
+        scripted_questions=[raw_question],
+        domain_options=snapshot,
+    )
+
+    assert len(port.requests) == 1
+    expected = runner.normalize_colloquial_question(raw_question)
+    assert port.requests[0].query == expected
+    assert port.requests[0].options == snapshot
+    assert "OPTIONS_QUERY_SENTINEL" not in port.requests[0].query
+    assert "org.example.synthetic" not in port.requests[0].query
+
+
+def test_runner_preserves_corrected_result_set_query_with_options(
+    monkeypatch,
+    tmp_path,
+):
+    path = tmp_path / "runner-correction-options.json"
+    path.write_text(
+        json.dumps({"org.example.synthetic": {"enabled": True}}),
+        encoding="utf-8",
+    )
+    snapshot = _parse_cli(monkeypatch, path).domain_options
+    state = ConversationState(
+        mode="content",
+        last_user_question="查看第4个文件",
+        last_answer_text="当前结果集中只有 2 个文件，请选择第 1～2 个",
+        last_answer_type="enumeration_file",
+        last_result_set_items=["scope-a.md", "scope-b.md"],
+        last_result_set_entity_type="文件",
+        last_result_set_selectable=True,
+    )
+    port = _SpyPort(state)
+
+    _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=port,
+        scripted_questions=["改成第2个文件"],
+        initial_state=state,
+        domain_options=snapshot,
+    )
+
+    assert len(port.requests) == 1
+    assert port.requests[0].query == "查看第2个文件"
+    assert port.requests[0].options == snapshot
+
+
+@pytest.mark.parametrize(
     "gate",
     ["file_action", "contextless", "system_capability", "repo_meta", "smalltalk", "out_of_scope"],
 )
@@ -723,7 +1290,13 @@ def test_common_guards_do_not_dispatch(monkeypatch, tmp_path, gate):
     state = ConversationState()
     port = _SpyPort(state)
 
-    _run_turn(monkeypatch, tmp_path, port=port, gate=gate)
+    _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=port,
+        gate=gate,
+        domain_options={"org.example.synthetic": {"enabled": True}},
+    )
 
     assert port.requests == []
 
@@ -731,12 +1304,16 @@ def test_common_guards_do_not_dispatch(monkeypatch, tmp_path, gate):
 def test_empty_host_reaches_controlled_generation_boundary(monkeypatch, tmp_path):
     state = ConversationState()
     port = _SpyPort(state)
+    options = {
+        "org.example.synthetic": {"marker": "MODEL-PROMPT-OPTIONS-SENTINEL"}
+    }
 
     state, captured, fake_models = _run_turn(
         monkeypatch,
         tmp_path,
         port=port,
         generate=True,
+        domain_options=options,
     )
 
     assert len(port.requests) == 1
@@ -749,6 +1326,12 @@ def test_empty_host_reaches_controlled_generation_boundary(monkeypatch, tmp_path
     assert captured["materials"][0]["question"] == port.requests[0].query
     assert captured["materials"][0]["selected_source_files"] == ["scope-a.md"]
     assert captured["printed"] == captured["state_updates"] == ["受控模型回答"]
+    assert "MODEL-PROMPT-OPTIONS-SENTINEL" not in repr(captured["prompts"])
+    assert "org.example.synthetic" not in repr(captured["prompts"])
+    assert "MODEL-PROMPT-OPTIONS-SENTINEL" not in repr(vars(state))
+    for generated_path in tmp_path.iterdir():
+        if generated_path.is_file():
+            assert b"MODEL-PROMPT-OPTIONS-SENTINEL" not in generated_path.read_bytes()
     assert state.last_route == "normal_retrieval"
 
 
@@ -760,7 +1343,13 @@ def test_static_minimal_handled_result_is_presented_once_and_short_circuits_retr
     plugin = _NeutralPlugin(_domain_result)
     host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
 
-    state, captured, fake_models = _run_turn(monkeypatch, tmp_path, port=host)
+    options = {"org.example.synthetic": {"enabled": True}}
+    state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        domain_options=options,
+    )
     output = capsys.readouterr()
 
     assert len(plugin.execute_requests) == 1
@@ -768,6 +1357,7 @@ def test_static_minimal_handled_result_is_presented_once_and_short_circuits_retr
     assert isinstance(request, DomainRequest)
     assert request.query == "哪些文档里提到了检索策略？"
     assert request.source_scope == ()
+    assert request.options == options
     assert plugin.other_calls == []
     assert plugin.execute_loops[0].is_closed()
     assert captured["printed"] == ["Synthetic handled result."]
@@ -799,7 +1389,12 @@ def test_runner_unhandled_statuses_preserve_normal_retrieval_behavior(
     plugin = _NeutralPlugin(lambda request: _domain_result(request, status))
     host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
 
-    state, captured, fake_models = _run_turn(monkeypatch, tmp_path, port=host)
+    state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        domain_options={"org.example.synthetic": {"enabled": True}},
+    )
 
     assert len(plugin.execute_requests) == 1
     assert captured["printed"] == captured["state_updates"] == ["受控本地结果"]
@@ -809,6 +1404,25 @@ def test_runner_unhandled_statuses_preserve_normal_retrieval_behavior(
     assert state.last_route == "normal_retrieval"
     assert state.last_result_set_items == ["scope-a.md", "scope-b.md"]
     assert state.last_selected_candidate == "候选项X"
+
+
+def test_runner_plugin_exception_preserves_existing_fallback(monkeypatch, tmp_path):
+    plugin = _NeutralPlugin(lambda _request: RuntimeError("synthetic execute failure"))
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+    state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        domain_options={"org.example.synthetic": {"enabled": True}},
+    )
+
+    assert len(plugin.execute_requests) == 1
+    assert captured["printed"] == captured["state_updates"] == ["受控本地结果"]
+    assert len(captured["search"]) == len(captured["materials"]) == 1
+    assert captured["prompts"] == []
+    assert fake_models.calls == []
+    assert state.last_route == "normal_retrieval"
 
 
 @pytest.mark.parametrize("variant", ["warnings", "focus_clear"])
@@ -856,7 +1470,12 @@ def test_runner_malformed_or_non_domain_result_uses_existing_fallback(
     else:
         port = SimpleNamespace(dispatch=lambda _request: {"status": "handled"})
 
-    state, captured, fake_models = _run_turn(monkeypatch, tmp_path, port=port)
+    state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=port,
+        domain_options={"org.example.synthetic": {"enabled": True}},
+    )
 
     assert captured["printed"] == ["受控本地结果"]
     assert captured["memory_calls"] == [

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import json
+import sys
 from pathlib import Path
 
 from docmind_domain_sdk import DomainRequest
@@ -143,19 +145,36 @@ def _recruitment_options(rules: dict[str, object]):
     }
 
 
-def test_production_dispatch_reaches_existing_comparison_markdown() -> None:
+def _load_cli_options(monkeypatch, tmp_path, options):
+    path = tmp_path / "synthetic-domain-options.json"
+    path.write_text(json.dumps(options, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["docmind-test", "--domain-options-file", str(path)],
+    )
+    return ask_notes._parse_args().domain_options
+
+
+def test_cli_loader_to_production_host_reaches_existing_comparison_markdown(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    options = _recruitment_options(
+        {
+            "minimum_monthly_salary_k": 21,
+            "require_double_weekends": True,
+            "allow_outsourcing": False,
+        }
+    )
+    options["org.example.synthetic"] = {"marker": "coexisting-namespace"}
+    snapshot = _load_cli_options(monkeypatch, tmp_path, options)
     host = ask_notes.create_production_domain_host()
 
     result = dispatch_domain_request(
         host,
         SYNTHETIC_JD,
-        options=_recruitment_options(
-            {
-                "minimum_monthly_salary_k": 14,
-                "require_double_weekends": True,
-                "allow_outsourcing": False,
-            }
-        ),
+        options=snapshot,
     )
 
     assert isinstance(host, StaticDomainHost)
@@ -165,6 +184,14 @@ def test_production_dispatch_reaches_existing_comparison_markdown() -> None:
     assert "- 薪资：" in result.answer_markdown
     assert "- 工作制：" in result.answer_markdown
     assert "- 外包：" in result.answer_markdown
+    assert "### 明确符合" in result.answer_markdown
+    assert "### 明确冲突" in result.answer_markdown
+    assert "### 信息缺失或需要确认" in result.answer_markdown
+    match_section, remainder = result.answer_markdown.split("### 明确冲突", 1)
+    conflict_section, unknown_section = remainder.split("### 信息缺失或需要确认", 1)
+    assert "- 工作制：JD 明确为双休，满足显式规则。" in match_section
+    assert "- 薪资：JD 月薪上限 20K 低于显式规则下限 21K。" in conflict_section
+    assert "- 外包：JD 未明确是否外包。" in unknown_section
     assert result.evidence == ()
     assert result.warnings == ()
     assert result.error is None
@@ -172,6 +199,7 @@ def test_production_dispatch_reaches_existing_comparison_markdown() -> None:
 
 def test_production_dispatch_transparently_preserves_query_and_options(
     monkeypatch,
+    tmp_path,
 ) -> None:
     observed = []
     original_execute = RecruitmentJDPlugin.execute
@@ -181,12 +209,16 @@ def test_production_dispatch_transparently_preserves_query_and_options(
         return await original_execute(self, request)
 
     monkeypatch.setattr(RecruitmentJDPlugin, "execute", capture_execute)
-    options = _recruitment_options(
-        {
-            "allowed_locations": ["示例城市甲"],
-            "candidate_education_level": "associate",
-            "candidate_relevant_years": 3,
-        }
+    options = _load_cli_options(
+        monkeypatch,
+        tmp_path,
+        _recruitment_options(
+            {
+                "allowed_locations": ["示例城市甲"],
+                "candidate_education_level": "associate",
+                "candidate_relevant_years": 3,
+            }
+        ),
     )
     host = ask_notes.create_production_domain_host()
 
@@ -199,6 +231,7 @@ def test_production_dispatch_transparently_preserves_query_and_options(
 
 def test_production_dispatch_no_options_and_other_namespace_are_exact_noops(
     monkeypatch,
+    tmp_path,
 ) -> None:
     fixed_id = type("FixedRequestId", (), {"hex": "production-noop-request"})()
     monkeypatch.setattr(
@@ -206,13 +239,21 @@ def test_production_dispatch_no_options_and_other_namespace_are_exact_noops(
         lambda: fixed_id,
     )
     host = ask_notes.create_production_domain_host()
+    monkeypatch.setattr(sys, "argv", ["docmind-test"])
+    omitted = ask_notes._parse_args().domain_options
+    empty_options = _load_cli_options(monkeypatch, tmp_path, {})
+    other_options = _load_cli_options(
+        monkeypatch,
+        tmp_path,
+        {"org.example.contract": {"synthetic": "value"}},
+    )
 
-    baseline = dispatch_domain_request(host, SYNTHETIC_JD)
-    empty = dispatch_domain_request(host, SYNTHETIC_JD, options={})
+    baseline = dispatch_domain_request(host, SYNTHETIC_JD) if omitted is None else None
+    empty = dispatch_domain_request(host, SYNTHETIC_JD, options=empty_options)
     other = dispatch_domain_request(
         host,
         SYNTHETIC_JD,
-        options={"org.example.contract": {"synthetic": "value"}},
+        options=other_options,
     )
 
     assert baseline is not None
@@ -221,18 +262,26 @@ def test_production_dispatch_no_options_and_other_namespace_are_exact_noops(
     assert baseline.answer_markdown.startswith("## JD 明确约束\n\n")
 
 
-def test_production_dispatch_invalid_payload_returns_fixed_handled_rejection() -> None:
+def test_cli_accepts_generic_but_business_invalid_payload_for_plugin_rejection(
+    monkeypatch,
+    tmp_path,
+    capsys,
+    caplog,
+) -> None:
+    options = _recruitment_options(
+        {
+            "minimum_monthly_salary_k": 987654.25,
+            "synthetic_unknown_rule": "示例隐私哨兵",
+        }
+    )
+    snapshot = _load_cli_options(monkeypatch, tmp_path, options)
+    assert snapshot == options
     host = ask_notes.create_production_domain_host()
 
     result = dispatch_domain_request(
         host,
         SYNTHETIC_JD,
-        options=_recruitment_options(
-            {
-                "minimum_monthly_salary_k": 987654.25,
-                "synthetic_unknown_rule": "示例城市隐私哨兵",
-            }
-        ),
+        options=snapshot,
     )
 
     assert result is not None
@@ -243,11 +292,72 @@ def test_production_dispatch_invalid_payload_returns_fixed_handled_rejection() -
     assert result.evidence == ()
     assert result.warnings == ()
     assert result.error is None
+    output = capsys.readouterr()
+    assert output.out == output.err == ""
     for sentinel in (
         PLUGIN_ID,
         "minimum_monthly_salary_k",
         "synthetic_unknown_rule",
         "987654.25",
-        "示例城市隐私哨兵",
+        "示例隐私哨兵",
     ):
         assert sentinel not in result.answer_markdown
+        assert sentinel not in caplog.text
+
+
+def test_recruitment_options_do_not_claim_adjacent_cross_domain_or_multiple_jd(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    snapshot = _load_cli_options(
+        monkeypatch,
+        tmp_path,
+        _recruitment_options({"require_double_weekends": True}),
+    )
+    second_jd = SYNTHETIC_JD.replace(
+        "Python AI 应用开发工程师",
+        "合成数据开发工程师",
+        1,
+    )
+    queries = (
+        "这是一段完全合成的普通说明。",
+        "合同条款：履约要求为按期交付，工作地点以书面通知为准。",
+        "采购规格：技术要求包含接口文档，经验参数仅用于供应商说明。",
+        "项目需求说明：开发地点为示例机房，要求提交测试记录。",
+        SYNTHETIC_JD + "\n\n" + second_jd,
+    )
+    host = ask_notes.create_production_domain_host()
+
+    results = [
+        dispatch_domain_request(host, query, options=snapshot)
+        for query in queries
+    ]
+
+    assert results == [None] * len(queries)
+
+
+def test_options_payload_and_sentinel_never_reach_output_logs_or_abstain_result(
+    monkeypatch,
+    tmp_path,
+    capsys,
+    caplog,
+) -> None:
+    sentinel = "HIGH-DISCLOSURE-SYNTHETIC-SENTINEL"
+    snapshot = _load_cli_options(
+        monkeypatch,
+        tmp_path,
+        {"org.example.synthetic": {"marker": sentinel}},
+    )
+    host = ask_notes.create_production_domain_host()
+
+    result = dispatch_domain_request(
+        host,
+        "合同条款：本合成文本只描述交付记录。",
+        options=snapshot,
+    )
+
+    output = capsys.readouterr()
+    assert result is None
+    assert output.out == output.err == ""
+    assert sentinel not in caplog.text
+    assert "org.example.synthetic" not in caplog.text

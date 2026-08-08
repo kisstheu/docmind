@@ -98,6 +98,7 @@ python ask_notes.py
 可选参数与环境变量：
 
 - `--notes-dir <path>`：指定知识库目录（优先级高于环境变量）
+- `--domain-options-file <path>`：显式读取通用 domain options JSON 文件
 - `DOCMIND_NOTES_DIR=<path>`：指定默认知识库目录
 - `DOCMIND_MATCH_LOG_LIMIT=<int>`：控制命中明细日志最大行数（默认 60）
 - `DOCMIND_DEBUG_SAVE_QUESTIONS=1`：开启问句追踪日志（写入 `logs/debug_questions/`）
@@ -115,6 +116,29 @@ python ask_notes.py
 - `DOCMIND_INDEX_OLLAMA_RETRIES=<int>`：建库标签提取重试次数（默认 0）
 
 说明：参数/环境变量名中的 `notes` 为历史兼容命名，实际可指向任意本地文档/资料目录。
+
+### Domain options 文件
+
+`--domain-options-file <path>` 接受一个由用户显式创建、维护并传入的 UTF-8 JSON 文件。
+文件根 object 直接就是完整的 `DomainRequest.options`，不需要额外的 `options` 包装层。例如：
+
+```json
+{
+  "org.example.synthetic": {
+    "mode": "compact",
+    "enabled": true
+  }
+}
+```
+
+```bash
+python ask_notes.py --domain-options-file ./synthetic-domain-options.json
+```
+
+DocMind 只在进程启动时读取一次该文件，并在当前会话内将加载后的快照视为只读；不会热
+加载源文件，修改后需重启进程才会刷新。源文件始终由用户管理，DocMind 不复制、迁移或
+管理它，也不会自动读取 WorkState、简历或长期画像来补充 options。具体 namespace 的
+业务 payload 仍由对应插件校验。完全不传该参数时，既有启动与交互行为不变。
 
 问句追踪开启后，最近一次运行仍写入
 `logs/debug_questions/last_run_questions.log`，各次运行日志按启动月份写入
@@ -280,4 +304,3 @@ DocMind/
 * 本地文档与资料的对话式使用方式
 * 多轮问题的处理方式
 * 简单的信息整理能力
-

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
+import stat
 import time
 from pathlib import Path
 
+from docmind_domain_sdk import DomainRequest, JsonValue
 from docmind_recruitment_plugin import PLUGIN_ID, RecruitmentJDPlugin
 
 from app.chat_loop import run_chat_loop
@@ -15,6 +18,58 @@ from bootstrap.env_setup import apply_environment_defaults
 from infra.debug_question_trace import build_debug_question_recorder
 from infra.logging_setup import build_logger
 from retrieval.repo_index import load_or_build_embeddings, scan_repository
+
+
+_DOMAIN_OPTIONS_FILE_MAX_BYTES = 65536
+_DOMAIN_OPTIONS_FILE_ERROR = "无法加载 domain options 文件。请检查文件格式和内容后重试。"
+
+
+def _strict_json_object(pairs: list[tuple[str, JsonValue]]) -> dict[str, JsonValue]:
+    value: dict[str, JsonValue] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON object key")
+        value[key] = item
+    return value
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise ValueError("non-standard JSON constant")
+
+
+def _load_domain_options_file(path: str) -> dict[str, JsonValue]:
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            raise ValueError("not a regular file")
+        with open(
+            path,
+            "rb",
+            opener=lambda file_path, flags: os.open(
+                file_path,
+                flags | getattr(os, "O_NONBLOCK", 0),
+            ),
+        ) as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError("not a regular file")
+            raw = stream.read(_DOMAIN_OPTIONS_FILE_MAX_BYTES + 1)
+        if len(raw) > _DOMAIN_OPTIONS_FILE_MAX_BYTES:
+            raise ValueError("file is too large")
+        parsed = json.loads(
+            raw.decode("utf-8-sig", errors="strict"),
+            object_pairs_hook=_strict_json_object,
+            parse_constant=_reject_json_constant,
+        )
+        if type(parsed) is not dict:
+            raise ValueError("root JSON value must be an object")
+        preflight = DomainRequest(
+            request_id="cli-domain-options-preflight",
+            query="Synthetic domain options preflight.",
+            source_scope=(),
+            options=parsed,
+        )
+        return preflight.options
+    except Exception:
+        raise argparse.ArgumentTypeError(_DOMAIN_OPTIONS_FILE_ERROR) from None
 
 
 def _slugify_path_name(path: Path) -> str:
@@ -34,6 +89,14 @@ def _parse_args() -> argparse.Namespace:
         "--notes-dir",
         default=None,
         help="Path to notes directory. Overrides DOCMIND_NOTES_DIR.",
+    )
+    parser.add_argument(
+        "--domain-options-file",
+        dest="domain_options",
+        default=None,
+        metavar="<path>",
+        type=_load_domain_options_file,
+        help="Path to a JSON object used as DomainRequest.options.",
     )
     return parser.parse_args()
 
@@ -200,6 +263,7 @@ def main():
         notes_dir=notes_dir,
         change_log_file=change_log_file,
         domain_dispatch_port=domain_host,
+        domain_options=args.domain_options,
         question_recorder=question_recorder,
     )
 

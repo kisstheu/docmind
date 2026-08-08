@@ -96,6 +96,9 @@ result = dispatch_domain_request(
 ```
 
 该入口经过真实 `dispatch_domain_request`、production `StaticDomainHost` 和
-`RecruitmentJDPlugin.execute`。当前 runner 与交互式 CLI 尚未提供 structured options
-规则来源；长期画像、简历读取和 MCP 也尚未接入。本插件不会从环境变量、文件、数据库、
-聊天历史或长期状态隐式加载规则。
+`RecruitmentJDPlugin.execute`。交互式 CLI 可通过通用
+`--domain-options-file <path>` 读取完整的 `DomainRequest.options` JSON object；这不是招聘
+专属参数，namespace、payload version `"1.0"` 与上述七字段契约保持不变。文件仅在进程
+启动时读取一次，会话内不热加载，源文件由用户创建和维护。长期画像、简历自动读取、MCP、
+多插件动态发现和长期配置仍未接入；本插件不会从环境变量、数据库、聊天历史或长期状态
+隐式加载规则。
