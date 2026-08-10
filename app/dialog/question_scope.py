@@ -11,7 +11,10 @@ from app.dialog.result_set import (
     looks_like_result_set_comparison_followup,
     resolve_file_result_set_selection,
 )
-from app.dialog.task_semantics import is_detail_explanation_request
+from app.dialog.task_semantics import (
+    is_detail_explanation_request,
+    is_document_evaluation_request,
+)
 from app.dialog_utils import is_content_followup_question, is_summary_followup_request
 from app.chat_text.file_lookup import (
     has_explicit_focus_reference,
@@ -40,6 +43,7 @@ class QuestionSignals:
     detail_explanation_request: bool
     summary_followup_request: bool
     context_dependent_question: bool
+    document_evaluation_request: bool
 
 
 @dataclass(frozen=True)
@@ -80,6 +84,7 @@ def analyze_question_signals(
             question,
             last_effective_search_query,
         ),
+        document_evaluation_request=is_document_evaluation_request(question),
     )
 
 

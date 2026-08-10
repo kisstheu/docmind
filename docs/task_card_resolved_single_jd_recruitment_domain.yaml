@@ -1,0 +1,173 @@
+version: 1
+
+task_id: resolved_single_jd_recruitment_domain
+title: 知识库单 JD 全文接入 recruitment domain
+decision: GO
+implementation_status: authorized
+
+baseline:
+  branch: main
+  head: ac810eba727d1acb5d3cd2376d2f35a601ae50fc
+  upstream: origin/main
+  ahead_behind: [0, 0]
+  worktree: clean
+
+task_goal: >-
+  当正常对话已唯一解析到一份知识库 JD 时，使用现有 RepoState 全文和现有
+  session domain_options 调用 production RecruitmentJDPlugin，handled 时返回既有
+  comparison Markdown，不要求用户把 JD 重新输入 Domain 入口。
+
+problem_statement:
+  confirmed_cases:
+    - CASE_B：Domain dispatch 当前发生在知识库资料解析之前。
+    - CASE_C：唯一文件的完整 RepoState.docs 正文没有进入 DomainRequest.query。
+  current_flow: >-
+    自然语言问句 -> 通用守门与 route -> DomainRequest(query=问句) -> plugin abstain ->
+    文件/result-set/focus 范围 -> chunks -> 普通 retrieval/RAG。
+  missing_flow: >-
+    唯一资料路径 -> RepoState.docs 完整正文 -> DomainRequest.query -> 既有 RecruitmentJDPlugin。
+
+architecture_decision:
+  selected_path: conditional_resolved_document_domain_opportunity
+  flow: >-
+    保留 direct Domain dispatch；普通检索完成唯一文件解析后，仅在本轮存在领域无关的
+    单文档评价/适配意图时，用该路径精确映射 RepoState.docs，并给予同一 production
+    Domain Host 一次 resolved-document opportunity。handled 时短路后续本地回答和 RAG，
+    abstain、异常或不安全映射时继续原 fallback。
+  why_not_unconditional_second_dispatch:
+    - 唯一文件只说明资料范围，不等于请求领域比较。
+    - 摘要、解释、定位、枚举等单文件请求不得把全文交给所有 Domain plugin。
+    - 二次 opportunity 必须同时满足明确评价意图、唯一 resolved path 和唯一安全全文映射。
+  direct_domain_compatibility: >-
+    首次 direct Domain 请求若 handled，沿现有位置立即返回，不进入检索，也不会执行
+    resolved-document opportunity。
+  side_effect_boundary: >-
+    追加 opportunity 是条件式而非全局双 dispatch；只在首次 Domain 未 handled、检索已唯一
+    解析资料且评价意图成立时发生，不会重复执行一次已 handled 的 comparison。
+
+intent_contract:
+  representation: QuestionSignals 内最小不可变内部信号
+  domain_neutral: true
+  positive_semantics:
+    - 对当前对象作开放式评价
+    - 判断对象是否满足、符合、适合或匹配明确条件、要求、标准、目标或偏好
+    - 显式要求评价、评估或判断当前对象
+  forbidden_trigger_basis:
+    - JD、岗位、职位等招聘专有词
+    - 公司、行业、地域、薪资等业务词表
+    - 仅因解析到唯一文件
+  generic_validation_domains:
+    - 招聘资料
+    - 合同条款
+    - 采购方案
+
+resolved_document_contract:
+  source: RepoState
+  path_source:
+    - ScopeDecision.result_scope_paths 的唯一项（result-set ordinal 或 focus continuation）
+    - retrieval materials 解析出的唯一 current_focus_file（首轮明确文件引用）
+  mapping: >-
+    resolved path 必须在 RepoState.paths 中精确出现且只出现一次，对应索引必须存在于
+    RepoState.docs，正文必须是非空字符串；否则不 dispatch 并保持 fallback。
+  forbidden_sources:
+    - Path.read_text 或其他磁盘重读
+    - top-k chunks 拼接
+    - 新 document store
+    - recruitment 专属 ingest
+
+domain_request_contract:
+  query: 与 resolved path 对应的完整 RepoState.docs 文本，不能拼接自然语言问句
+  options: runner 当前 domain_options 原样传给既有 dispatch helper
+  source_scope: 保持现有空 tuple
+  unchanged:
+    - DomainRequest DTO
+    - protocol 1.1
+    - options schema
+    - StaticDomainHost contract
+    - RecruitmentJDPlugin contract
+
+non_goals:
+  - 持久化 job-search rules
+  - 新 options 来源
+  - SDK/protocol 修改
+  - plugin recognition、parser、rules adapter、comparison 或 renderer 修改
+  - 多 JD
+  - 技术栈语义比较
+  - 排序、评分或投递建议
+  - 新 CLI 文件入口
+  - RAG、retrieval 或 chunking 重构
+  - profile、settings、长期画像或新规则持久化系统
+
+acceptance:
+  orchestration:
+    - 首轮唯一文件引用把完整正文和现有 options 交给 production Domain Host并返回 comparison。
+    - 真实 result-set ordinal 状态将第 N 个文件全文作为 query，而非序号问句。
+    - 真实 focus continuation 状态将 focus 文件全文作为 query。
+    - handled 后不进入普通本地 retrieval answer 或远程 RAG generation。
+  completeness:
+    - 合成长 JD 超过普通每文件 context 预算。
+    - 插件捕获的 DomainRequest.query 与 RepoState.docs 全文严格相等。
+    - 位于文件尾部且能被现有插件提取的约束参与 comparison。
+  fallback:
+    - 唯一非 JD 文件触发 plugin abstain 并保持普通 retrieval/RAG。
+    - 歧义文件不选择全文、不触发 resolved-document dispatch。
+    - 无可解析文件保持现状。
+    - domain_options 缺失、空对象或不含 recruitment namespace 时不伪造规则。
+    - direct Domain handled 请求不重复执行。
+  options:
+    - session domain_options 的键和值原样进入 resolved DomainRequest.options。
+
+privacy_guard:
+  - 测试资料只使用某公司A、候选人X、示例城市A等合成脱敏内容。
+  - 不提交真实 JD、真实规则快照、联系方式、地址或 secret。
+
+editable_scope:
+  allow:
+    - app/dialog/question_scope.py
+    - app/dialog/task_semantics.py
+    - app/chat_loop_parts/runner.py
+    - app/resolved_document_domain.py
+    - public_tests/domain/**
+    - public_tests/state/**
+    - docs/task_card_resolved_single_jd_recruitment_domain.yaml
+  deny:
+    - packages/docmind-domain-sdk/**
+    - packages/docmind-recruitment-plugin/src/**
+    - retrieval/**
+    - tests/**
+
+verification:
+  order:
+    - UTF-8 与乱码扫描
+    - changed Python py_compile
+    - targeted orchestration、scope 与 production wiring tests
+    - result-set、focus、ordinal 与 recruitment plugin regressions
+    - public_tests/domain
+    - runner/chat-loop 合理回归集
+    - 全量 pytest
+    - 临时合成资料库人工 trace
+  required_trace_fields:
+    - original question
+    - resolved file path
+    - resolved full-doc length
+    - DomainRequest.query length
+    - query 是否等于 RepoState.docs
+    - options namespace
+    - domain dispatch 次数
+    - plugin result
+    - 是否进入 RAG
+
+deferred_finding:
+  case: CASE_D
+  statement: >-
+    正常产品中的长期 structured job-search rules 来源仍未解决，本任务有意仅复用现有
+    session domain_options / --domain-options-file 快照，不设计后续系统。
+
+git_delivery:
+  local_commit_required: true
+  push_authorized: false
+  message_contract:
+    title: "feat(domain): 知识库单 JD 全文接入招聘比较"
+    body:
+      - 目标必须描述自然语言唯一解析后的全文招聘比较结果。
+      - 手段必须描述条件式 resolved-document opportunity 与 fallback 兼容性。

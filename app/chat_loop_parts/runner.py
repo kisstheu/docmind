@@ -20,6 +20,10 @@ from app.dialog.result_set import (
     materialize_single_file_result_set_question,
 )
 from app.domain_dispatch_port import DomainDispatchPort, dispatch_domain_request
+from app.resolved_document_domain import (
+    has_unique_repo_display_name,
+    resolve_repo_document,
+)
 from app.chat_retrieval_flow import (
     build_retrieval_materials,
     build_safe_final_prompt,
@@ -40,6 +44,38 @@ from app.file_actions.loop import handle_file_action_turn
 from infra.file_change_store import FileChangeStore
 from retrieval.search_engine import determine_query_flags
 import app.chat_loop_handlers as _loop_handlers
+
+
+def _minimal_handled_domain_answer(domain_result) -> str | None:
+    if not (
+        isinstance(domain_result, DomainResult)
+        and domain_result.status == "handled"
+        and isinstance(domain_result.answer_markdown, str)
+        and bool(domain_result.answer_markdown.strip())
+        and domain_result.focus_update.mode == "preserve"
+        and not domain_result.focus_update.items
+        and domain_result.focus_update.selected is None
+        and not domain_result.evidence
+        and not domain_result.warnings
+        and domain_result.error is None
+    ):
+        return None
+    return domain_result.answer_markdown
+
+
+def _dispatch_with_session_options(
+    domain_dispatch_port: DomainDispatchPort,
+    query: str,
+    domain_options: Mapping[str, JsonValue] | None,
+):
+    if domain_options is None:
+        return dispatch_domain_request(domain_dispatch_port, query)
+    return dispatch_domain_request(
+        domain_dispatch_port,
+        query,
+        options=domain_options,
+    )
+
 
 def run_chat_loop(
     repo_state,
@@ -251,28 +287,15 @@ def run_chat_loop(
                     is_content_answer=False,
                 )
                 continue
-            if domain_options is None:
-                domain_result = dispatch_domain_request(domain_dispatch_port, question)
-            else:
-                domain_result = dispatch_domain_request(
-                    domain_dispatch_port,
-                    question,
-                    options=domain_options,
-                )
-            if (
-                isinstance(domain_result, DomainResult)
-                and domain_result.status == "handled"
-                and isinstance(domain_result.answer_markdown, str)
-                and bool(domain_result.answer_markdown.strip())
-                and domain_result.focus_update.mode == "preserve"
-                and not domain_result.focus_update.items
-                and domain_result.focus_update.selected is None
-                and not domain_result.evidence
-                and not domain_result.warnings
-                and domain_result.error is None
-            ):
-                print_answer(domain_result.answer_markdown, start_qa)
-                append_memory(memory_buffer, question, domain_result.answer_markdown)
+            domain_result = _dispatch_with_session_options(
+                domain_dispatch_port,
+                question,
+                domain_options,
+            )
+            domain_answer = _minimal_handled_domain_answer(domain_result)
+            if domain_answer is not None:
+                print_answer(domain_answer, start_qa)
+                append_memory(memory_buffer, question, domain_answer)
                 runtime.conversation_state = ConversationState()
                 current_focus_file = None
                 last_relevant_indices = []
@@ -377,6 +400,7 @@ def run_chat_loop(
                 )
                 if len(scope_decision.result_scope_paths) == 1:
                     current_focus_file = scope_decision.result_scope_paths[0]
+            focus_before_retrieval = current_focus_file
             materials = build_retrieval_materials(
                 question=question,
                 search_query=search_query,
@@ -399,6 +423,52 @@ def run_chat_loop(
             ):
                 current_focus_file = scope_decision.result_scope_paths[0]
             last_relevant_indices = materials["relevant_indices"]
+            resolved_domain_path = None
+            if (
+                scope_decision.result_scope_paths is not None
+                and len(scope_decision.result_scope_paths) == 1
+            ):
+                resolved_domain_path = scope_decision.result_scope_paths[0]
+            elif (
+                focus_before_retrieval is None
+                and current_focus_file
+                and has_unique_repo_display_name(repo_state, current_focus_file)
+            ):
+                resolved_domain_path = current_focus_file
+
+            if (
+                question_signals.document_evaluation_request
+                and resolved_domain_path is not None
+            ):
+                resolved_document = resolve_repo_document(
+                    repo_state,
+                    resolved_domain_path,
+                )
+                if resolved_document is not None:
+                    logger.info(
+                        "🧭 [资料全文领域机会] "
+                        f"唯一文件={resolved_document.path} | "
+                        f"全文字符数={len(resolved_document.text)}"
+                    )
+                    resolved_domain_result = _dispatch_with_session_options(
+                        domain_dispatch_port,
+                        resolved_document.text,
+                        domain_options,
+                    )
+                    resolved_domain_answer = _minimal_handled_domain_answer(
+                        resolved_domain_result
+                    )
+                    if resolved_domain_answer is not None:
+                        print_answer(resolved_domain_answer, start_qa)
+                        append_memory(
+                            memory_buffer,
+                            question,
+                            resolved_domain_answer,
+                        )
+                        runtime.conversation_state = ConversationState()
+                        current_focus_file = None
+                        last_relevant_indices = []
+                        continue
             focused_file_content_followup = bool(
                 current_focus_file
                 and event.name == "content_followup"

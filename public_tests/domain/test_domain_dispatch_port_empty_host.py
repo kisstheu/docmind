@@ -33,9 +33,11 @@ from docmind_domain_sdk import (
     PluginError,
     ProtocolViolationError,
 )
+from docmind_recruitment_plugin import PLUGIN_ID, RecruitmentJDPlugin
 
 
 _PLUGIN_ID = "org.example.neutral"
+_UNSET = object()
 
 
 class _Logger:
@@ -191,7 +193,9 @@ def _run_turn(
     initial_focus="focus.md",
     use_real_dialog_events=False,
     material_indices=None,
+    material_focus=_UNSET,
     domain_options=None,
+    repo_state=None,
 ):
     question = "哪些文档里提到了检索策略？"
     state = initial_state or ConversationState(
@@ -351,7 +355,11 @@ def _run_turn(
         else:
             selected_indices = [2, 0]
         return {
-            "current_focus_file": kwargs["current_focus_file"],
+            "current_focus_file": (
+                kwargs["current_focus_file"]
+                if material_focus is _UNSET
+                else material_focus
+            ),
             "relevant_indices": list(selected_indices),
             "inventory_candidates_text": "稳定候选",
             "context_text": "稳定上下文",
@@ -397,7 +405,7 @@ def _run_turn(
 
     monkeypatch.setattr(runner, "update_state_after_retrieval_answer", fake_update)
     captured["runner_return"] = runner.run_chat_loop(
-        SimpleNamespace(),
+        SimpleNamespace() if repo_state is None else repo_state,
         None,
         SimpleNamespace(models=fake_models),
         "model-id",
@@ -1707,3 +1715,363 @@ def test_valid_pending_action_still_precedes_domain_dispatch(
     assert captured["search"] == captured["materials"] == captured["prompts"] == []
     assert fake_models.calls == []
     assert state.pending_action_type == pending_action_type
+
+
+_RESOLVED_JD_PATH = "招聘/某公司A-Python岗位.md"
+_LONG_SYNTHETIC_JD = "\n".join(
+    [
+        "职位名称：Python 应用开发工程师",
+        "岗位职责：负责某公司A的合成知识库功能与可重复验证记录。",
+        "任职要求：",
+        "1. 熟悉 Python；",
+        "2. 了解 FastAPI；",
+        "3. 具有合成检索项目经验。",
+        "工作地点：示例城市A",
+        "工作制：双休",
+        *[
+            f"补充记录{index:03d}：此段仅为脱敏合成占位信息。"
+            for index in range(240)
+        ],
+        "是否外包：是",
+    ]
+)
+_RECRUITMENT_OPTIONS = {
+    PLUGIN_ID: {
+        "schema_version": "1.0",
+        "explicit_rules": {
+            "allow_outsourcing": False,
+            "require_double_weekends": True,
+        },
+    },
+    "org.example.synthetic": {"marker": "coexisting-namespace"},
+}
+
+
+def _repo_with_documents(paths, docs):
+    return SimpleNamespace(paths=list(paths), docs=list(docs))
+
+
+def _capture_recruitment_execute(monkeypatch):
+    observed = []
+    original_execute = RecruitmentJDPlugin.execute
+
+    async def capture_execute(self, request):
+        observed.append(request)
+        return await original_execute(self, request)
+
+    monkeypatch.setattr(RecruitmentJDPlugin, "execute", capture_execute)
+    return observed
+
+
+def _selectable_jd_state(paths, *, focus_file=None):
+    answer = "\n".join(
+        f"{index}. {path}" for index, path in enumerate(paths, 1)
+    )
+    return ConversationState(
+        mode="content",
+        last_user_question="列出合成资料",
+        last_route="normal_retrieval",
+        last_content_user_question="列出合成资料",
+        last_content_route="normal_retrieval",
+        last_effective_search_query="合成资料",
+        last_answer_text=answer,
+        last_answer_preview=answer,
+        last_answer_type="enumeration_file",
+        last_result_set_items=list(paths),
+        last_result_set_entity_type="文件",
+        last_result_set_selectable=True,
+        last_result_set_focus_file=focus_file,
+    )
+
+
+def test_first_turn_unique_file_reference_dispatches_complete_repo_document(
+    monkeypatch,
+    tmp_path,
+):
+    observed = _capture_recruitment_execute(monkeypatch)
+    host = create_domain_host(
+        plugin=RecruitmentJDPlugin(),
+        expected_plugin_id=PLUGIN_ID,
+    )
+    repo_state = _repo_with_documents(
+        [_RESOLVED_JD_PATH],
+        [_LONG_SYNTHETIC_JD],
+    )
+    question = "看看某公司A-Python岗位怎么样"
+
+    state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=[question],
+        initial_state=ConversationState(),
+        initial_focus=None,
+        use_real_dialog_events=True,
+        material_focus=_RESOLVED_JD_PATH,
+        material_indices=[[0]],
+        domain_options=_RECRUITMENT_OPTIONS,
+        repo_state=repo_state,
+        generate=True,
+    )
+
+    assert len(_LONG_SYNTHETIC_JD) > 3_000
+    assert [request.query for request in observed] == [
+        question,
+        repo_state.docs[0],
+    ]
+    assert observed[1].query == _LONG_SYNTHETIC_JD
+    assert observed[1].options == _RECRUITMENT_OPTIONS
+    assert captured["printed"][0].startswith("## 单 JD 显式规则比较\n\n")
+    assert "JD 明确为外包" in captured["printed"][0]
+    assert captured["state_updates"] == captured["prompts"] == []
+    assert fake_models.calls == []
+    assert state == ConversationState()
+
+
+def test_result_set_ordinal_dispatches_selected_full_document(
+    monkeypatch,
+    tmp_path,
+):
+    observed = _capture_recruitment_execute(monkeypatch)
+    host = create_domain_host(
+        plugin=RecruitmentJDPlugin(),
+        expected_plugin_id=PLUGIN_ID,
+    )
+    paths = ["招聘/资料甲.md", _RESOLVED_JD_PATH, "招聘/资料丙.md"]
+    repo_state = _repo_with_documents(
+        paths,
+        ["合成资料甲。", _LONG_SYNTHETIC_JD, "合成资料丙。"],
+    )
+    question = "第 2 个怎么样"
+
+    _state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=[question],
+        initial_state=_selectable_jd_state(paths),
+        initial_focus=None,
+        use_real_dialog_events=True,
+        material_indices=[[0]],
+        domain_options=_RECRUITMENT_OPTIONS,
+        repo_state=repo_state,
+        generate=True,
+    )
+
+    assert [request.query for request in observed] == [question, repo_state.docs[1]]
+    assert observed[1].query != question
+    assert observed[1].options == _RECRUITMENT_OPTIONS
+    assert captured["materials"][0]["allowed_paths"] == {_RESOLVED_JD_PATH}
+    assert captured["printed"][0].startswith("## 单 JD 显式规则比较\n\n")
+    assert captured["prompts"] == []
+    assert fake_models.calls == []
+
+
+def test_focus_continuation_dispatches_focused_full_document(
+    monkeypatch,
+    tmp_path,
+):
+    observed = _capture_recruitment_execute(monkeypatch)
+    host = create_domain_host(
+        plugin=RecruitmentJDPlugin(),
+        expected_plugin_id=PLUGIN_ID,
+    )
+    repo_state = _repo_with_documents(
+        [_RESOLVED_JD_PATH],
+        [_LONG_SYNTHETIC_JD],
+    )
+    state = _selectable_jd_state(
+        [_RESOLVED_JD_PATH],
+        focus_file=_RESOLVED_JD_PATH,
+    )
+    question = "这个 JD 符合我的求职条件吗"
+
+    _state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=[question],
+        initial_state=state,
+        initial_focus=_RESOLVED_JD_PATH,
+        use_real_dialog_events=True,
+        material_indices=[[0]],
+        domain_options=_RECRUITMENT_OPTIONS,
+        repo_state=repo_state,
+        generate=True,
+    )
+
+    assert [request.query for request in observed] == [question, repo_state.docs[0]]
+    assert observed[1].options == _RECRUITMENT_OPTIONS
+    assert captured["materials"][0]["allowed_paths"] == {_RESOLVED_JD_PATH}
+    assert captured["printed"][0].startswith("## 单 JD 显式规则比较\n\n")
+    assert captured["prompts"] == []
+    assert fake_models.calls == []
+
+
+def test_unique_non_jd_abstains_and_preserves_normal_retrieval_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    observed = _capture_recruitment_execute(monkeypatch)
+    host = create_domain_host(
+        plugin=RecruitmentJDPlugin(),
+        expected_plugin_id=PLUGIN_ID,
+    )
+    path = "合同/合成服务条款.md"
+    repo_state = _repo_with_documents(
+        [path],
+        ["合同条款：本合成文本仅约定按期交付和验收记录。"],
+    )
+
+    state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=["看看合成服务条款怎么样"],
+        initial_state=ConversationState(),
+        initial_focus=None,
+        use_real_dialog_events=True,
+        material_focus=path,
+        material_indices=[[0]],
+        domain_options=_RECRUITMENT_OPTIONS,
+        repo_state=repo_state,
+    )
+
+    assert len(observed) == 2
+    assert observed[1].query == repo_state.docs[0]
+    assert captured["printed"] == captured["state_updates"] == ["受控本地结果"]
+    assert len(captured["materials"]) == 1
+    assert captured["prompts"] == []
+    assert fake_models.calls == []
+    assert state.last_route == "normal_retrieval"
+
+
+def test_ambiguous_display_name_does_not_dispatch_a_guessed_document(
+    monkeypatch,
+    tmp_path,
+):
+    observed = _capture_recruitment_execute(monkeypatch)
+    host = create_domain_host(
+        plugin=RecruitmentJDPlugin(),
+        expected_plugin_id=PLUGIN_ID,
+    )
+    paths = ["目录甲/同名资料.md", "目录乙/同名资料.md"]
+    repo_state = _repo_with_documents(paths, [_LONG_SYNTHETIC_JD] * 2)
+
+    _state, captured, _fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=["看看同名资料怎么样"],
+        initial_state=ConversationState(),
+        initial_focus=None,
+        use_real_dialog_events=True,
+        material_focus=paths[0],
+        material_indices=[[0, 1]],
+        domain_options=_RECRUITMENT_OPTIONS,
+        repo_state=repo_state,
+    )
+
+    assert [request.query for request in observed] == ["看看同名资料怎么样"]
+    assert captured["printed"] == ["受控本地结果"]
+    assert len(captured["materials"]) == 1
+
+
+def test_evaluation_without_resolved_file_keeps_existing_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    observed = _capture_recruitment_execute(monkeypatch)
+    host = create_domain_host(
+        plugin=RecruitmentJDPlugin(),
+        expected_plugin_id=PLUGIN_ID,
+    )
+
+    _state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=["这个方案怎么样"],
+        initial_state=ConversationState(),
+        initial_focus=None,
+        use_real_dialog_events=True,
+        material_focus=None,
+        material_indices=[[]],
+        domain_options=_RECRUITMENT_OPTIONS,
+        repo_state=_repo_with_documents([], []),
+    )
+
+    assert [request.query for request in observed] == ["这个方案怎么样"]
+    assert captured["printed"] == captured["state_updates"] == ["受控本地结果"]
+    assert len(captured["materials"]) == 1
+    assert captured["prompts"] == []
+    assert fake_models.calls == []
+
+
+@pytest.mark.parametrize(
+    "options",
+    [{}, {"org.example.synthetic": {"enabled": True}}],
+)
+def test_resolved_document_does_not_invent_missing_recruitment_rules(
+    monkeypatch,
+    tmp_path,
+    options,
+):
+    observed = _capture_recruitment_execute(monkeypatch)
+    host = create_domain_host(
+        plugin=RecruitmentJDPlugin(),
+        expected_plugin_id=PLUGIN_ID,
+    )
+    repo_state = _repo_with_documents(
+        [_RESOLVED_JD_PATH],
+        [_LONG_SYNTHETIC_JD],
+    )
+
+    _state, captured, _fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=["看看某公司A-Python岗位怎么样"],
+        initial_state=ConversationState(),
+        initial_focus=None,
+        use_real_dialog_events=True,
+        material_focus=_RESOLVED_JD_PATH,
+        material_indices=[[0]],
+        domain_options=options,
+        repo_state=repo_state,
+        generate=True,
+    )
+
+    assert observed[1].options == options
+    assert captured["printed"][0].startswith("## JD 明确约束\n\n")
+    assert "## 单 JD 显式规则比较" not in captured["printed"][0]
+
+
+def test_direct_domain_jd_is_handled_once_without_resolved_document_retry(
+    monkeypatch,
+    tmp_path,
+):
+    observed = _capture_recruitment_execute(monkeypatch)
+    host = create_domain_host(
+        plugin=RecruitmentJDPlugin(),
+        expected_plugin_id=PLUGIN_ID,
+    )
+
+    _state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=[_LONG_SYNTHETIC_JD],
+        initial_state=ConversationState(),
+        initial_focus=None,
+        use_real_dialog_events=True,
+        domain_options=_RECRUITMENT_OPTIONS,
+        repo_state=_repo_with_documents([], []),
+        generate=True,
+    )
+
+    assert len(observed) == 1
+    assert observed[0].query == _LONG_SYNTHETIC_JD
+    assert captured["materials"] == captured["prompts"] == []
+    assert captured["printed"][0].startswith("## 单 JD 显式规则比较\n\n")
+    assert fake_models.calls == []

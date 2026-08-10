@@ -92,6 +92,40 @@ def test_question_signals_materialize_previous_search_query_dependency():
     assert with_anchor.context_dependent_question is True
 
 
+@pytest.mark.parametrize(
+    "question",
+    [
+        "看看某公司A这个合成岗位怎么样。",
+        "这份合同符合我们的验收条件吗？",
+        "判断一下该采购方案是否满足现有标准。",
+    ],
+)
+def test_document_evaluation_signal_generalizes_across_domains(question):
+    signals = analyze_question_signals(
+        question,
+        last_effective_search_query="合成主题",
+    )
+
+    assert signals.document_evaluation_request is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "这份岗位资料列了哪些要求？",
+        "总结一下这份合同条款。",
+        "第二份采购方案再详细说说。",
+    ],
+)
+def test_document_evaluation_signal_does_not_claim_adjacent_content_requests(question):
+    signals = analyze_question_signals(
+        question,
+        last_effective_search_query="合成主题",
+    )
+
+    assert signals.document_evaluation_request is False
+
+
 def test_question_signals_are_immutable():
     signals = analyze_question_signals(
         "再总结一下。",

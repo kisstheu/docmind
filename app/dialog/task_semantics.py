@@ -31,6 +31,15 @@ _DETAIL_FOLLOWUPS = (
     "细说", "再分析", "分析一下", "分析下",
 )
 
+_OPEN_EVALUATION_TERMS = (
+    "怎么样", "咋样", "好不好", "值不值得", "是否值得", "合不合适",
+)
+_EXPLICIT_EVALUATION_TERMS = (
+    "评价一下", "评价下", "评估一下", "评估下", "判断一下", "判断下",
+)
+_FIT_OPERATORS = ("符合", "满足", "适合", "匹配")
+_FIT_CRITERIA = ("条件", "要求", "标准", "目标", "需求", "偏好", "规则")
+
 
 def _normalize(text: str) -> str:
     return re.sub(r"[，。！？、,.!?；;：:\s]+", "", (text or "").strip().lower())
@@ -95,6 +104,20 @@ def is_detail_explanation_request(question: str) -> bool:
     return any(term in q for term in _DETAIL_FOLLOWUPS)
 
 
+def is_document_evaluation_request(question: str) -> bool:
+    """Identify a domain-neutral request to evaluate one resolved document."""
+    q = _normalize(question)
+    if not q:
+        return False
+    if any(term in q for term in _OPEN_EVALUATION_TERMS):
+        return True
+    if any(term in q for term in _EXPLICIT_EVALUATION_TERMS):
+        return True
+    return any(operator in q for operator in _FIT_OPERATORS) and any(
+        criterion in q for criterion in _FIT_CRITERIA
+    )
+
+
 def classify_answer_mode(
     question: str,
     *,
@@ -134,6 +157,7 @@ __all__ = [
     "is_comparison_or_ranking_request",
     "is_complex_answer_mode",
     "is_detail_explanation_request",
+    "is_document_evaluation_request",
     "is_recommendation_request",
     "is_selected_candidate_detail_request",
 ]
