@@ -356,6 +356,7 @@ def _run_turns(
     repo_paths: list[str],
     state: ConversationState,
     repo_chunks: list[str] | None = None,
+    domain_dispatch_port=None,
 ):
     inputs = iter([*questions, "q"])
     allowed_paths: list[object] = []
@@ -402,9 +403,59 @@ def _run_turns(
         logger,
         notes_dir=tmp_path / "notes",
         change_log_file=tmp_path / "changes.db",
-        domain_dispatch_port=EmptyDomainHost(),
+        domain_dispatch_port=domain_dispatch_port or EmptyDomainHost(),
     )
     return allowed_paths, query_result_sets, client
+
+
+class _RecordingEmptyDomainHost(EmptyDomainHost):
+    def __init__(self):
+        self.calls = []
+
+    def dispatch(self, request):
+        self.calls.append(request)
+        return None
+
+
+def test_runner_rejects_unmapped_generated_ordinal_before_domain_retrieval_or_model(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    old_files = ["合成资料甲.md", "合成资料乙.md", "合成资料丙.md"]
+    generated_answer = "1. 合成岗位A\n2. 合成岗位B\n3. 合成岗位C"
+    state = ConversationState(
+        last_route="normal_retrieval",
+        last_content_route="normal_retrieval",
+        last_content_user_question="有哪些岗位？",
+        last_effective_search_query="合成岗位",
+        last_answer_text=generated_answer,
+        last_answer_preview=generated_answer,
+        last_answer_type=None,
+        last_result_set_items=list(old_files),
+        last_result_set_entity_type="文件",
+        last_result_set_selectable=False,
+    )
+    domain_host = _RecordingEmptyDomainHost()
+
+    allowed, query_sets, client = _run_turns(
+        monkeypatch,
+        tmp_path,
+        questions=["第 2 个怎么样？"],
+        repo_paths=old_files,
+        state=state,
+        domain_dispatch_port=domain_host,
+    )
+
+    output = capsys.readouterr().out
+    assert "无法可靠确定" in output
+    assert "明确" in output
+    assert allowed == []
+    assert query_sets == []
+    assert client.models.calls == []
+    assert domain_host.calls == []
+    assert chat_runtime.conversation_state.last_result_set_items == old_files
+    assert chat_runtime.conversation_state.last_result_set_selectable is False
 
 
 class _AcceptanceModelsStub(_ModelsStub):

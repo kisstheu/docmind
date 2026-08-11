@@ -136,7 +136,7 @@ def test_question_signals_are_immutable():
         signals.summary_followup_request = False
 
 
-def test_scope_decision_without_selectable_file_result_set():
+def test_scope_decision_without_selectable_file_result_set_rejects_ordinal():
     state = ConversationState(
         last_result_set_items=["资料甲.md"],
         last_result_set_entity_type="文件",
@@ -150,7 +150,9 @@ def test_scope_decision_without_selectable_file_result_set():
     )
 
     assert decision.visible_file_paths == ()
-    assert decision.file_result_set_selection is None
+    assert decision.file_result_set_selection is not None
+    assert decision.file_result_set_selection.paths == ()
+    assert "无法可靠确定" in (decision.file_result_set_selection.rejection or "")
     assert decision.selected_file_paths is None
     assert decision.result_scope_paths is None
 

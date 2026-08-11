@@ -9,6 +9,7 @@ from app.dialog.result_set import (
     has_explicit_single_file_result_reference,
     has_selectable_result_set,
     looks_like_result_set_comparison_followup,
+    reject_unmapped_file_result_set_ordinal,
     resolve_file_result_set_selection,
 )
 from app.dialog.task_semantics import (
@@ -115,14 +116,27 @@ def decide_file_result_set_scope(
             if str(path or "").strip()
         )
 
-    file_result_set_selection = resolve_file_result_set_selection(
-        question,
-        visible_file_paths,
-        focus_file=effective_focus_file,
-    )
+    file_result_set_selection = None
+    if (
+        state.last_result_set_entity_type == "文件"
+        and state.last_result_set_items
+        and not visible_file_paths
+    ):
+        file_result_set_selection = reject_unmapped_file_result_set_ordinal(
+            question
+        )
+    if file_result_set_selection is None:
+        file_result_set_selection = resolve_file_result_set_selection(
+            question,
+            visible_file_paths,
+            focus_file=effective_focus_file,
+        )
     selected_file_paths = (
         file_result_set_selection.paths
-        if file_result_set_selection is not None
+        if (
+            file_result_set_selection is not None
+            and file_result_set_selection.rejection is None
+        )
         else None
     )
     selected_result_set_item_turn = bool(
@@ -140,6 +154,12 @@ def decide_file_result_set_scope(
     result_scope_paths: tuple[str, ...] | None = None
     if selected_file_paths is not None:
         result_scope_paths = selected_file_paths
+    elif (
+        signals.file_set_content_question
+        and state.last_result_set_entity_type == "文件"
+        and state.last_result_set_items
+    ):
+        result_scope_paths = tuple(state.last_result_set_items)
     elif (
         effective_focus_file
         and state.last_result_set_entity_type == "文件"

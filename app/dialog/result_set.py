@@ -125,6 +125,10 @@ _SELECTION_HELP = (
     "当前只支持选择单个文件或整个文件集合。"
     "请改为“第 N 个文件再展开”或“这些文件分别讲了什么”。"
 )
+_UNMAPPED_ORDINAL_HELP = (
+    "我无法可靠确定这个序号对应哪个文件或对象。"
+    "请明确要查看的文件名或对象名称。"
+)
 _ALL_FILE_REFERENCE_PATTERNS = (
     r"(?:这些|上述|前面|上面)(?:文件|文档|资料|记录|材料)",
     r"^(?:(?:请|帮我|麻烦|给我))?(?:(?:比较一下|对比一下|比较|对比))?(?:这些|它们|上述)",
@@ -177,6 +181,15 @@ def has_explicit_single_file_result_reference(question: str) -> bool:
         _extract_file_result_set_index(question) is not None
         and not _has_explicit_non_file_ordinal_target(question)
     )
+
+
+def reject_unmapped_file_result_set_ordinal(
+    question: str,
+) -> FileResultSetSelection | None:
+    """Reject an ordinal when retained file context is not the visible enumeration."""
+    if not has_explicit_single_file_result_reference(question):
+        return None
+    return FileResultSetSelection(rejection=_UNMAPPED_ORDINAL_HELP)
 
 
 def file_result_set_display_name(path: str) -> str:

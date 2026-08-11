@@ -125,7 +125,11 @@ def _looks_like_group_reference_result_set_followup(question: str) -> bool:
 def _looks_like_file_topic_result_set_followup(question: str, state: "ConversationState | None") -> bool:
     if state is None:
         return False
-    if state.last_result_set_entity_type != "文件" or not has_selectable_result_set(
+    if state.last_result_set_entity_type != "文件" or not state.last_result_set_items:
+        return False
+    if looks_like_file_set_content_question(question):
+        return True
+    if not has_selectable_result_set(
         state.last_result_set_items,
         state.last_result_set_entity_type,
         state.last_answer_text or state.last_answer_preview,
@@ -136,7 +140,7 @@ def _looks_like_file_topic_result_set_followup(question: str, state: "Conversati
         return True
     if has_explicit_single_file_result_reference(question):
         return True
-    return looks_like_file_set_content_question(question)
+    return False
 
 
 @dataclass

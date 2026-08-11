@@ -414,6 +414,11 @@ def update_state_after_retrieval_answer(
             and prev_result_set_entity_type in entity_to_answer_type
             and bool(prev_result_set_items)
         )
+        generated_unmaterialized_enumeration = (
+            preserve_result_set_on_result_set_followup
+            and not scope_decision.requires_result_set_generation
+            and bool(extract_numbered_items(answer_text))
+        )
         preserve_file_scope_on_content_question = (
             preserve_result_set_on_result_set_followup
             and prev_result_set_entity_type == "文件"
@@ -543,6 +548,14 @@ def update_state_after_retrieval_answer(
             state.last_result_set_selectable = False
             state.last_result_set_focus_file = None
             logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
+
+        if generated_unmaterialized_enumeration and state.last_result_set_items:
+            state.last_answer_type = None
+            state.last_result_set_selectable = False
+            logger.debug(
+                "🛡️ [结果集序号安全] 当前可见枚举未物化可靠内部集合，"
+                "保留旧结果集上下文但撤销序号选择资格"
+            )
 
     if state.last_result_set_entity_type != "文件":
         state.last_result_set_summary_text = None

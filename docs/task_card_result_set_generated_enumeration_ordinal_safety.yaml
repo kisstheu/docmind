@@ -1,0 +1,156 @@
+version: 1
+
+task_name: result_set_generated_enumeration_ordinal_safety
+
+title: 生成枚举 ordinal 安全守门
+
+task_goal: >-
+  当 result-set followup 生成新的用户可见枚举，但没有可靠物化为新的内部可引用集合时，
+  保留必要的旧集合上下文，同时撤销该回答的 ordinal selectability，防止后续“第 N 个”
+  静默引用旧 result set。
+
+task_kind: p0_result_set_referential_integrity_fix
+implementation_status: authorized_for_implementation
+
+baseline:
+  branch: main
+  head: 7853a15782861715ceb92df5fa1930b2f871f87a
+  commit: "feat(domain): 知识库单 JD 全文接入招聘比较"
+  upstream: origin/main
+  ahead_behind: 0/0
+  worktree: clean
+  preflight_commands:
+    - git status --short --branch
+    - git rev-parse HEAD
+    - git rev-list --left-right --count HEAD...origin/main
+    - git log --oneline --decorate -15
+
+root_cause: >-
+  result-set followup 的远程生成回答形成了新的用户可见编号列表，但 infer_answer_type
+  未识别出可物化的新内部集合，extract_file_items 也为空。状态写回随后保留旧文件集合，
+  又通过旧 entity=文件 恢复 enumeration_file，并沿用既有 selectable=True，导致下一轮
+  ordinal resolver 把新可见列表的“第 N 个”错误绑定到旧文件 candidates[N-1]。
+
+state_invariant:
+  context_preservation: >-
+    last_result_set_items 与 last_result_set_entity_type 可以继续保存旧集合，供不依赖序号的
+    整体集合追问使用，不因一次生成回答而粗暴清空。
+  ordinal_selectability: >-
+    只有当前回答确实物化出与用户可见编号集合一致的已知内部候选集合时，
+    last_result_set_selectable 才允许为 true；生成了新编号列表但没有可靠 mapping 时必须 false。
+  fail_closed: >-
+    当前回答不可安全 ordinal 时，“第 N 个”不得进入旧文件选择、错误文件 Domain、错误文件 RAG
+    或远程猜测，必须在本地稳定拒绝或要求用户明确对象名称。
+  proof_boundary: >-
+    安全证明基于当前回答是否物化出已知内部集合，而不是 visible/internal 数量是否相同；
+    display item 不得被假设为 source filename。
+
+implementation_constraints:
+  - 从状态写回 invariant 修复，不增加岗位或招聘专用判断。
+  - 优先复用 last_result_set_selectable、last_answer_type、last_result_set_entity_type、last_result_set_items 与现有 state helper。
+  - 复用现有本地选择拒绝/澄清路径，不调用远程模型解释不可安全的 ordinal。
+  - 不解析远程模型输出猜测 item 到 source 的映射。
+  - 不以列表数量一致作为安全证明。
+  - 不清空仍有上下文价值的旧 result set。
+  - 新增或修改规则必须覆盖命中、相邻不误触发与跨域反例。
+
+editable_scope:
+  allow:
+    - docs/task_card_result_set_generated_enumeration_ordinal_safety.yaml
+    - app/chat_state_helpers.py
+    - app/dialog/result_set.py
+    - app/dialog/question_scope.py
+    - app/dialog/state_machine.py
+    - app/chat_loop_parts/runner.py
+    - public_tests/state/**
+    - public_tests/domain/**
+  deny:
+    - packages/docmind-recruitment-plugin/**
+    - retrieval/**
+    - examples/**
+    - tests/**
+    - test_notes/**
+
+non_goals:
+  - 不建立通用岗位实体模型。
+  - 不建立 item 到 source provenance 框架。
+  - 不修改 recruitment plugin。
+  - 不修 OCR JD recognition。
+  - 不修 job-search rules 来源。
+  - 不修 evaluation intent。
+  - 不改变 RAG 内容生成。
+  - 不清空仍有上下文价值的旧 result set。
+  - 不根据远程生成内容猜测来源文件。
+
+deferred_defects:
+  - OCR JD recognition/extraction 对裸标题和字段格式的识别不足。
+  - 普通启动缺少用户自然可用的 structured job-search rules 来源。
+  - 带前缀自述的 evaluation intent 可能被“研究”误触发 action_request。
+
+privacy_guard:
+  - 测试仅使用合成文件名、合成岗位名和离线替身。
+  - 不写入真实公司名、人名、联系方式、真实 JD 或用户知识库内容。
+  - 不依赖本地私有资料或用户数据目录绝对路径。
+
+test_matrix:
+  t1_real_file_enumeration:
+    setup: 用户可见文件枚举与内部 A.md、B.md、C.md 一一对应。
+    expect: “第 2 个怎么样？”继续选中 B.md。
+  t2_generated_enumeration_without_mapping:
+    setup: 旧 14 文件可选号，result-set followup 生成 10 项岗位列表且未物化 source mapping。
+    expect: 保留旧文件上下文，但清除 file enumeration 回答类型并禁用 ordinal；后续序号本地澄清。
+  t3_equal_count_without_mapping:
+    setup: 旧 3 文件，生成 3 项新编号列表且无 mapping。
+    expect: 即使数量相同也禁用 ordinal。
+  t4_context_preservation:
+    setup: 生成列表使 ordinal 失效。
+    expect: 现有不依赖 ordinal 的集合追问仍可继续使用旧文件 context。
+  t5_repo_meta_regression:
+    setup: “当前有哪些文档？”形成真实文件列表。
+    expect: 后续第二项仍按文件结果集解析。
+  t6_ordinal_correction_and_focus:
+    setup: 已有合法文件结果集。
+    expect: 第 N 个、越界纠正和单项 focus continuation 合同继续通过。
+  t7_cross_domain_counterexample:
+    setup: 合同、采购等普通知识库 result-set followup 生成无 provenance 的新编号列表。
+    expect: 同样禁止引用旧 candidates，不依赖招聘词。
+
+acceptance:
+  - 生成型新枚举仍正常显示给用户。
+  - 未物化可靠内部集合时，旧文件集合不再冒充当前可见 enumeration。
+  - 后续裸 ordinal 不选择旧文件、不调用错误文件 Domain、不进入错误文件 RAG、不调用远程模型猜测。
+  - 本地反馈明确说明无法可靠确定序号所指对象，并提示用户明确名称。
+  - 旧文件集合按现有设计继续保留为非 ordinal context。
+  - 真实文件枚举、ordinal correction、focus continuation 与 repo-meta file enumeration 不回归。
+  - 相同数量的生成列表仍 fail closed。
+  - 至少一类非招聘生成枚举跨域反例通过。
+
+verification:
+  task_card:
+    - UTF-8 可解码且无 BOM。
+    - yaml.safe_load 可解析并递归检查无重复键。
+  static:
+    - .venv/bin/python -m py_compile app/chat_state_helpers.py app/dialog/result_set.py app/dialog/question_scope.py app/chat_loop_parts/runner.py
+    - git diff --check
+    - 乱码扫描、隐私扫描与生成物检查无命中。
+  targeted:
+    - PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider public_tests/state
+    - PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider public_tests/state/test_repo_meta_generic_file_list_scope_contract.py
+  runner_and_loop:
+    - 运行 runner/chat loop 相关定向测试。
+  domain:
+    - PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider public_tests/domain
+  full:
+    - >-
+      PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider
+      tests packages/docmind-domain-sdk/tests packages/docmind-recruitment-plugin/tests
+      public_tests test_query_router_repo_meta.py
+  trace:
+    - 使用脱敏合成状态重放“旧文件集合 → 生成编号列表 → 第 2 个怎么样？”。
+    - 使用真实内部文件枚举重放“文件列表 → 第 2 个”。
+
+deliverables:
+  - 正式任务卡。
+  - 最小状态 invariant 修复。
+  - tracked public_tests 回归测试与受控 trace 证据。
+  - 本地 commit；不 push。
