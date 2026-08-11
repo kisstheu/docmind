@@ -1,0 +1,243 @@
+version: 1
+
+title: 受控单 JD OCR 结构识别与提取
+
+task_goal: >
+  让 RecruitmentJDPlugin 在不依赖 Core 预处理、不降低跨域安全边界的前提下，
+  确定性识别并提取真实知识库中常见的受控单 JD OCR 文本形态，使无 rules 时输出
+  JD 明确约束，有现有 structured rules 时输出单 JD 显式规则比较。
+
+inputs:
+  private_sample_source: private_local_knowledge_base
+  real_read_only_samples:
+    committed: false
+    count: 2
+    labels:
+      - private_ocr_sample_a
+      - private_ocr_sample_b
+  baseline_commit: b5fd659c758e9d60876c0a93e6a60f988a32cafa
+
+non_goals:
+  - 不修改 Core、runner 或 Domain orchestration。
+  - 不修改 Domain SDK、protocol 或 Host 生命周期。
+  - 不解决普通用户 structured rules 的长期来源。
+  - 不解决带前缀评价问句的 evaluation intent。
+  - 不支持多 JD、招聘总览或严重残缺 OCR。
+  - 不使用 LLM、职位词库、公司词库或技术栈语义评分做解析。
+  - 不增加用户 profile、settings、WorkState 或简历自动读取。
+  - 不增加自动投递、排序、推荐或岗位好坏判断。
+  - 不复制真实 JD、公司、人名、联系方式或地址到测试和 fixture。
+  - 不以降低全局四字段阈值作为适配捷径。
+
+audit_facts:
+  recognition_strong_evidence:
+    - 正文去除批准的单句抽取指令后至少有 80 个非空白字符。
+    - 至少一个批准的岗位名称标签和至少一个批准的任职要求 section 标签。
+    - 全部显式岗位名称经最小规范化后唯一、非空。
+    - 只存在一个完整的“岗位名称标签 -> 任职要求 section”块。
+    - 问号、评价、比较、建议、外部访问、结合简历或偏好等意图会 fail closed。
+  title_label_allowlist:
+    - 岗位名称
+    - 职位名称
+    - 招聘岗位
+    - 招聘职位
+  requirement_section_allowlist:
+    - 任职要求
+    - 岗位要求
+    - 职位要求
+    - 技能要求
+    - 技术要求
+    - 任职资格
+    - 岗位资格
+  duty_section_allowlist:
+    - 岗位职责
+    - 职位职责
+    - 工作职责
+    - 职责描述
+    - 岗位描述
+    - 职位描述
+    - 工作内容
+  approved_instruction_failure: >
+    _strip_approved_instruction() 以首个已知 label 之前的全部文本为 prefix；真实 OCR 的
+    裸视觉标题、薪资、页面控件和 metadata 都进入该 prefix，而 prefix 不能完整匹配批准的
+    单句抽取指令，因此当前 recognition 在显式 title label 检查之前即拒绝。
+  extraction_fields:
+    - 岗位名称
+    - 薪资
+    - 工作地点
+    - 工作制
+    - 加班或大小周
+    - 外包
+    - 驻场
+    - 学历
+    - 经验
+    - 技术要求
+  minimum_evidence_contract: >
+    execute handled 必须至少有 4 个无冲突有效字段，且岗位名称与技术要求必须在其中；
+    冲突的非标题字段可展示但不计数。这是 extraction 完整性与误识别安全门，不是单纯
+    recognition 分数。本切片保持该全局合同不变。
+  comparison_fields:
+    - 薪资
+    - 工作制与加班或大小周
+    - 外包
+    - 驻场
+    - 工作地点
+    - 学历
+    - 经验
+  display_only_fields:
+    - 岗位名称
+    - 技术要求作为未评分原文证据展示，不参与技术栈匹配或语义评分。
+  existing_false_positive_guards:
+    - 最小长度、批准标签、唯一标题和唯一完整 JD block 联合守门。
+    - 非抽取意图、问号、外部链接、简历或偏好结合请求整体 abstain。
+    - 技术要求只从批准 requirement section 中按确定性片段规则抽取。
+    - 至少四字段且必须包含岗位名称与技术要求。
+  existing_multi_jd_rejection: >
+    canonical 路径按显式 title occurrence 分块；不同规范化标题或两个
+    “title occurrence -> requirement occurrence”完整块均 abstain，即使标题相同。
+
+design:
+  canonical_path:
+    behavior: 保持现有显式 title label、section、字段与四字段合同，不改变输出顺序和 Markdown。
+    compatibility:
+      - 支持现有四种 title labels。
+      - 支持现有七种 requirement labels。
+      - options={} 与空显式 rules 继续输出“## JD 明确约束”。
+      - 合法非空显式 rules 继续输出“## 单 JD 显式规则比较”。
+  ocr_compatible_shape:
+    all_required: true
+    evidence:
+      - query 是完整 OCR 正文，不接受额外自然语言前缀或后缀指令。
+      - 正文至少 80 个非空白字符，且没有问号或既有 rejected intent。
+      - 不含任何 canonical title label；canonical 与 OCR 形态不混用。
+      - 首个非空行是 2 至 48 个非空白字符的唯一视觉标题候选，不含标签分隔符、句末标点或问句标点。
+      - 第二个非空行必须整体匹配唯一、确定的 K/千元月薪区间；只允许有限 OCR 前导括号噪声。
+      - 视觉标题内至少一个长度不小于 2 的拉丁字母数字 token 在后续职责或任职正文中原样复现；token 来自当前文档，不使用职位词库。
+      - 职责 heading 与 requirement heading 各恰好一次，均带中文或半角冒号，且职责在任职之前。
+      - 职责 heading 之前最多 16 个非空行，限制视觉 header 搜索区域。
+      - 职责 heading 之前的 metadata 区恰好包含一个月薪区间和一个确定的经验年限区间。
+      - requirement section 必须仍能按既有技术片段规则得到技术要求。
+    extracted_fields:
+      - 岗位名称取首个非空行原文。
+      - 薪资只取第二个非空行中的完整月薪区间，不保留 OCR 前导噪声。
+      - 经验只取职责前 bounded metadata 中唯一的“下限-上限年”区间原文。
+      - 技术要求继续只取 requirement section 内符合既有确定性规则的原文片段。
+    deliberately_unknown:
+      - 地点与经验粘连且含 OCR 噪声时不猜地点边界。
+      - 学历、工作时间、外包、驻场没有确定 label 或本切片冻结位置模式时保持 UNKNOWN。
+      - 不从任意数字、城市词或学历词全局扫描并补字段。
+    minimum_evidence: >
+      OCR 路径通过岗位名称、薪资、经验、技术要求满足既有至少四字段合同；不降低阈值，
+      不把 shape evidence 伪装成业务字段。
+  requirement_boundary:
+    rule: >
+      OCR requirement 技术片段在招聘页面尾部控件/地址 heading 前停止；只支持当前确认的
+      精确 UI 边界行形态，避免把联系人、公司卡片或地址区域当成技术要求。
+  fail_closed:
+    - 首行无法唯一作为视觉标题、第二行不是唯一月薪区间或标题 token 未在 JD 正文复现。
+    - 缺少职责或 requirement section、顺序错误、重复 section 或 section 标点被破坏。
+    - header 超出 bounded region，或薪资/经验 metadata 缺失、重复、冲突。
+    - 出现 canonical title label 与 OCR 裸标题混合形态。
+    - 出现简历、合同、采购或项目式独立 section heading，如个人简历、项目经历、合同条款、采购规格或供应商资格。
+    - 出现两套职责与 requirement 结构、多 JD 或仅岗位名称列表。
+    - extraction 不能得到技术要求或不能达到既有四字段门槛。
+
+privacy_guard:
+  - 两份真实 OCR 仅用于不落盘只读验证，不进入 Git diff、测试参数、fixture、日志快照或提交消息。
+  - 正式测试只使用保持版式的脱敏合成 OCR 文本。
+  - 合成样本使用某公司A、候选人X、示例城市甲和虚构岗位内容。
+  - 最终报告只列匿名样本标签、长度、状态、字段名集合和 Markdown section，不粘贴真实字段值或正文。
+
+false_positive_negatives:
+  - id: N1
+    shape: 含 Python、岗位、要求、工作等零散词的普通技术文章
+    expected: abstain
+  - id: N2
+    shape: 含学历、工作经验、Python、项目经历的个人简历
+    expected: abstain
+  - id: N3
+    shape: 招聘讨论、分析或评价问句
+    expected: abstain
+  - id: N4
+    shape: 含要求、地点、金额、技术要求、资格的合同或采购文本
+    expected: abstain
+  - id: N5
+    shape: 两个视觉标题和两套职责/任职 section 的多 JD
+    expected: abstain
+  - id: N6
+    shape: 多岗位名称列表但没有单一 JD 结构的招聘总览
+    expected: abstain
+  - id: N7
+    shape: 只有裸标题与任职要求，缺少职责和受控 metadata
+    expected: abstain
+  - id: N8
+    shape: 标题或 section 被破坏、无法确定结构的 OCR 噪声
+    expected: abstain
+  - id: N9
+    shape: 公司名或页面标题占据首行，实际岗位标题不满足首行合同
+    expected: abstain
+
+editable_scope:
+  allow:
+    - docs/task_card_recruitment_single_jd_ocr_structure_support.yaml
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/recognition.py
+    - packages/docmind-recruitment-plugin/src/docmind_recruitment_plugin/extraction.py
+    - packages/docmind-recruitment-plugin/README.md
+    - packages/docmind-recruitment-plugin/tests/test_plugin_contract.py
+    - public_tests/domain/test_recruitment_jd_production_wiring_contract.py
+  deny:
+    - app/**
+    - ask_notes.py
+    - bootstrap/**
+    - packages/docmind-domain-sdk/**
+    - requirements.txt
+    - test_notes/**
+
+verification:
+  order:
+    - .venv/bin/python -m py_compile changed Python files
+    - .venv/bin/python -m pytest -q targeted OCR tests
+    - .venv/bin/python -m pytest -q packages/docmind-recruitment-plugin/tests
+    - .venv/bin/python -m pytest -q production Domain wiring tests
+    - .venv/bin/python -m pytest -q public_tests/domain
+    - .venv/bin/python -m pytest -q
+  static_checks:
+    - git diff --check
+    - git diff --name-only
+    - git diff --stat
+    - git status --short
+    - changed tracked text privacy scan using .git/info/pii_terms.txt
+    - mojibake scan for changed Chinese source and tests
+    - no .egg-info, real JD fixture, logs, secrets or environment products in commit
+  real_read_only_report_fields:
+    - anonymous sample label
+    - length
+    - probe disposition
+    - execute({}) status
+    - execute(valid synthetic rules) status
+    - extracted field names only
+    - handled status and Markdown section type
+
+acceptance_min:
+  - canonical structured JD tests remain unchanged and pass.
+  - synthetic OCR Shape A and Shape B both probe claim and execute handled.
+  - 两个 OCR shape 在 options={} 下输出“## JD 明确约束”。
+  - 两个 OCR shape 在合法 recruitment options 下输出“## 单 JD 显式规则比较”。
+  - N1 至 N9 全部纯 abstain，且多 JD、简历、合同、采购和评价问句不被 claim。
+  - 两份真实 OCR RepoState.docs 正文均从 abstain 变为 handled，或在不放宽规则时如实报告 PARTIAL/BLOCKED。
+  - 完整 synthetic OCR JD 经现有 dispatch_domain_request 与 production StaticDomainHost handled。
+  - 全局四字段阈值、canonical 合同、options schema 与 comparison Markdown 不变。
+  - Core、runner、SDK 均无 diff；插件承担 OCR 结构识别与提取。
+  - 全部测试、编码、隐私、diff 和 Git 质量门通过后创建一个本地 commit，但不 push。
+
+deferred_defects:
+  - normal-user structured rules source
+  - prefaced evaluation intent
+
+deliverables:
+  - 正式 task card
+  - 插件内受控 OCR recognition 与 extraction 改动
+  - 两类脱敏 synthetic OCR positive tests 与强负例
+  - production Domain dispatch integration regression
+  - 真实 OCR 不落盘只读验证摘要
+  - 本地中文规范 commit，明确不 push

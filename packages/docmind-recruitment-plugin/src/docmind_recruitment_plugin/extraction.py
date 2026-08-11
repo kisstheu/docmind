@@ -111,7 +111,11 @@ def _technical_fragments(
     match: StructuralMatch,
     occurrence: LabelOccurrence,
 ) -> list[str]:
-    content = value_after(match.text, occurrence, match.occurrences)
+    if match.requirement_content_ends:
+        index = match.requirement_occurrences.index(occurrence)
+        content = match.text[occurrence.value_start : match.requirement_content_ends[index]]
+    else:
+        content = value_after(match.text, occurrence, match.occurrences)
     fragments = _deduplicate(_FRAGMENT_SPLIT.split(_LIST_MARKER.sub("\n", content)))
     return [
         fragment
@@ -125,17 +129,27 @@ def extract_constraints(query: str) -> ExtractionResult | None:
     if match is None:
         return None
 
-    values: dict[str, str] = {"岗位名称": match.title_values[0]}
-    valid_fields = {"岗位名称"}
+    values: dict[str, str] = {
+        "岗位名称": match.title_values[0],
+        **dict(match.pre_extracted_fields),
+    }
+    valid_fields = set(values)
     for field_name, labels in FIELD_LABELS.items():
         field_values = _field_values(match, labels)
         if not field_values:
             continue
-        if len(field_values) == 1:
+        existing = values.get(field_name)
+        if len(field_values) == 1 and (
+            existing is None
+            or "".join(existing.casefold().split())
+            == "".join(field_values[0].casefold().split())
+        ):
             values[field_name] = field_values[0]
             valid_fields.add(field_name)
         else:
-            values[field_name] = "；".join(field_values) + "（原文存在冲突）"
+            conflict_values = ([existing] if existing is not None else []) + field_values
+            values[field_name] = "；".join(_deduplicate(conflict_values)) + "（原文存在冲突）"
+            valid_fields.discard(field_name)
 
     technical_values: list[str] = []
     for occurrence in match.requirement_occurrences:

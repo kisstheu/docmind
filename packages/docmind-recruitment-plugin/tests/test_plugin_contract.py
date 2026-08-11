@@ -31,6 +31,7 @@ from docmind_recruitment_plugin import (
     PLUGIN_ID,
     PLUGIN_VERSION,
     RecruitmentJDPlugin,
+    extract_constraints,
 )
 
 
@@ -63,6 +64,59 @@ ALTERNATE_JD = """提取下面岗位中明确写出的条件
 薪酬范围：薪资面议
 工作制度：周一至周五
 学历要求：本科及以上"""
+
+OCR_JD_A = """NimbusAgent应用工程师
+15-20K
+☆收藏
+立即沟通
+示例城市甲 1-3年
+职位描述
+不合适
+微信扫码分享
+△举报
+岗位职责：
+1.与某公司A的合成业务团队协作，把流程转化为可重复执行的 NimbusAgent 工作流；
+2.负责接口联调、自动化测试、运行监控和技术文档维护。
+任职要求：
+1.本科及以上学历，计算机相关专业；
+2.1-3年开发经验，熟悉 Python，掌握 SQL；
+3.熟练使用 Docker，了解 FastAPI；
+4.具备良好沟通能力和责任心。
+联系人X
+本周活跃
+去App
+某公司A·招聘人员
+与BOSS随时沟通
+工作地址
+●示例地址A"""
+
+OCR_JD_B = """OrionAI应用开发工程师（J00001）
+）18-25K
+☆收藏
+立即沟通
+示例城市乙白3-5年本科
+职位描述
+不合适
+微信扫码分享
+△举报
+Java
+Docker
+MySQL
+Python
+工作职责：
+岗位职责
+1、参与 OrionAI 应用的需求分析、方案设计、编码、测试与上线；
+2、负责服务日常维护、性能调优和问题排查，维护清晰的交付记录。
+任职资格：
+1、本科及以上学历，3-5年软件开发经验；
+2、熟练掌握 Python 或 Java，熟悉 Docker，了解 CI/CD；
+3、掌握数据库索引优化，能独立完成模块开发与调试；
+4、具备良好的跨团队协作能力。
+联系人X 本周活跃
+去App
+某公司A·招聘人员
+工作地址
+●示例地址B"""
 
 
 def _request(
@@ -232,6 +286,118 @@ def test_supported_structured_jd_is_handled(query: str) -> None:
 
     validate_result_boundary(request, result, expected_plugin_id=PLUGIN_ID)
     _assert_handled_profile(result)
+
+
+@pytest.mark.parametrize("query", (OCR_JD_A, OCR_JD_B))
+def test_controlled_ocr_jd_claims_and_handles_without_rules(query: str) -> None:
+    request = _request(query, options={})
+    probe = asyncio.run(RecruitmentJDPlugin().probe(request))
+    result = asyncio.run(RecruitmentJDPlugin().execute(request))
+    extracted = extract_constraints(query)
+
+    assert probe.disposition == "claim"
+    assert probe.reason_code == "recruitment.structured-jd"
+    _assert_handled_profile(result)
+    assert extracted is not None
+    assert tuple(name for name, _ in extracted.fields) == (
+        "岗位名称",
+        "薪资",
+        "经验",
+        "技术要求",
+    )
+    assert "BOSS" not in result.answer_markdown
+    assert "示例地址" not in result.answer_markdown
+
+
+@pytest.mark.parametrize("query", (OCR_JD_A, OCR_JD_B))
+def test_controlled_ocr_jd_handles_with_structured_rules(query: str) -> None:
+    result = _execute(
+        query,
+        options=_recruitment_options(
+            {
+                "minimum_monthly_salary_k": 16,
+                "candidate_relevant_years": 2,
+                "allowed_locations": ["示例城市甲"],
+            }
+        ),
+    )
+
+    assert result.status == "handled"
+    assert result.answer_markdown.startswith("## 单 JD 显式规则比较\n\n")
+    assert "- 薪资：" in result.answer_markdown
+    assert "- 经验年限：" in result.answer_markdown
+    assert "- 工作地点：JD 未明确工作地点。" in result.answer_markdown
+
+
+@pytest.mark.parametrize(
+    ("case_id", "query"),
+    (
+        (
+            "N1",
+            "Python 技术文章\n本文讨论岗位、工作与要求等词语在搜索系统中的普通用法，"
+            "并介绍一段完全合成的接口实现和测试记录。",
+        ),
+        (
+            "N2",
+            "NimbusCandidate个人简历\n15-20K\n示例城市甲1-3年本科\n项目经历\n"
+            "工作职责：维护 NimbusCandidate 合成项目记录。"
+            "\n任职要求：熟悉 Python；掌握 SQL。",
+        ),
+        (
+            "N3",
+            OCR_JD_A + "\n这个岗位要求 Python，我觉得薪资 15K 是否合适？",
+        ),
+        (
+            "N3-instruction-suffix",
+            OCR_JD_A + "\n请整理这份 JD 的明确约束",
+        ),
+        (
+            "N4-contract",
+            "AtlasAPI合同验收范围\n15-20K\n示例地点甲1-3年\n合同条款\n"
+            "工作职责：核验 AtlasAPI 接口文档和交付记录。\n"
+            "任职资格：熟悉 Python；掌握 SQL；了解 Docker。",
+        ),
+        (
+            "N4-procurement",
+            "OrionAPI采购规格\n15-20K\n示例地点乙1-3年\n供应商资格\n"
+            "工作职责：提交 OrionAPI 测试材料和验收记录。\n"
+            "任职要求：熟悉 Python；掌握 SQL；了解 Docker。",
+        ),
+        ("N5", OCR_JD_A + "\n\n" + OCR_JD_B),
+        (
+            "N6",
+            "招聘岗位总览\n15-20K\n示例城市甲1-3年\nNimbusAgent工程师\n"
+            "OrionAI工程师\nAtlas数据工程师\n欢迎关注后续招聘信息。",
+        ),
+        (
+            "N7",
+            "NimbusAgent应用工程师\n任职要求：熟悉 Python，掌握 SQL，"
+            "具备1-3年经验并能维护 NimbusAgent 服务。",
+        ),
+        (
+            "N8",
+            "NimbusAgent应用工程师\n15-20K\n示例城市甲1-3年\n岗位职贵\n"
+            "负责 NimbusAgent 流程开发。\n任职要水\n熟悉 Python，掌握 SQL。",
+        ),
+        (
+            "N9",
+            "某公司A\nNimbusAgent应用工程师\n15-20K\n示例城市甲1-3年\n"
+            "岗位职责：负责 NimbusAgent 流程开发和交付。\n"
+            "任职要求：熟悉 Python，掌握 SQL，了解 Docker。",
+        ),
+    ),
+)
+def test_controlled_ocr_false_positive_matrix_abstains(
+    case_id: str,
+    query: str,
+) -> None:
+    request = _request(query)
+    probe = asyncio.run(RecruitmentJDPlugin().probe(request))
+    result = asyncio.run(RecruitmentJDPlugin().execute(request))
+
+    assert case_id.startswith("N")
+    assert probe.disposition == "abstain"
+    _assert_abstain(result)
 
 
 @pytest.mark.parametrize(

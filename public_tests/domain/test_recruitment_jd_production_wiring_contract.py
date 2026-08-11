@@ -29,6 +29,28 @@ SYNTHETIC_JD = """请整理这份 JD 中明确写出的岗位约束
 经验要求：2 年以上
 薪资：15K–20K"""
 
+SYNTHETIC_OCR_JD = """NimbusAgent应用工程师
+15-20K
+☆收藏
+立即沟通
+示例城市甲1-3年本科
+职位描述
+不合适
+微信扫码分享
+岗位职责：
+1.负责某公司A的 NimbusAgent 工作流、接口测试和交付记录维护；
+2.按既定流程完成服务监控与问题排查。
+任职要求：
+1.本科及以上学历，1-3年开发经验；
+2.熟悉 Python，掌握 SQL；
+3.使用 Docker，了解 FastAPI；
+4.具备良好沟通能力。
+联系人X 本周活跃
+去App
+某公司A·招聘人员
+工作地址
+●示例地址A"""
+
 
 def _request(query: str) -> DomainRequest:
     return DomainRequest(
@@ -109,6 +131,38 @@ def test_default_production_host_handles_supported_jd_without_network(
     assert result.warnings == ()
     assert result.error is None
     assert network_attempts == []
+
+
+def test_production_dispatch_handles_controlled_ocr_jd_without_rules() -> None:
+    host = ask_notes.create_production_domain_host()
+
+    result = dispatch_domain_request(host, SYNTHETIC_OCR_JD, options={})
+
+    assert isinstance(host, StaticDomainHost)
+    assert result is not None
+    assert result.status == "handled"
+    assert result.answer_markdown.startswith("## JD 明确约束\n\n")
+    assert "- 岗位名称：NimbusAgent应用工程师" in result.answer_markdown
+    assert "- 薪资：15-20K" in result.answer_markdown
+    assert "- 经验：1-3年" in result.answer_markdown
+
+
+def test_production_dispatch_handles_controlled_ocr_jd_with_rules() -> None:
+    host = ask_notes.create_production_domain_host()
+    options = _recruitment_options(
+        {
+            "minimum_monthly_salary_k": 16,
+            "candidate_relevant_years": 2,
+        }
+    )
+
+    result = dispatch_domain_request(host, SYNTHETIC_OCR_JD, options=options)
+
+    assert result is not None
+    assert result.status == "handled"
+    assert result.answer_markdown.startswith("## 单 JD 显式规则比较\n\n")
+    assert "- 薪资：" in result.answer_markdown
+    assert "- 经验年限：" in result.answer_markdown
 
 
 def test_default_production_host_maps_plugin_abstain_to_none() -> None:

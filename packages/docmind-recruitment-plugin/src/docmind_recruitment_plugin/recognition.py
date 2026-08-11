@@ -21,6 +21,15 @@ REQUIREMENT_LABELS = (
     "任职资格",
     "岗位资格",
 )
+DUTY_LABELS = (
+    "岗位职责",
+    "职位职责",
+    "工作职责",
+    "职责描述",
+    "岗位描述",
+    "职位描述",
+    "工作内容",
+)
 FIELD_LABELS = {
     "薪资": ("薪资范围", "薪酬范围", "薪资", "薪酬"),
     "工作地点": ("工作地点", "办公地点"),
@@ -33,13 +42,7 @@ FIELD_LABELS = {
 }
 
 _STRUCTURAL_LABELS = (
-    "岗位职责",
-    "职位职责",
-    "工作职责",
-    "职责描述",
-    "岗位描述",
-    "职位描述",
-    "工作内容",
+    *DUTY_LABELS,
     "公司介绍",
     "福利待遇",
     "职位福利",
@@ -95,6 +98,32 @@ _REJECTED_INTENT_PATTERNS = tuple(
         r"(?:还需要|请补充|需要追问).{0,20}(?:信息|内容)",
     )
 )
+_OCR_SALARY_LINE = re.compile(
+    r"^[)）\]】]?\s*(?P<value>\d+(?:\.\d+)?\s*(?:[kK千])?\s*"
+    r"[-–—~～至到]\s*\d+(?:\.\d+)?\s*[kK千](?:元)?"
+    r"(?:\s*/?\s*(?:月|每月))?)\s*$"
+)
+_OCR_EXPERIENCE_RANGE = re.compile(
+    r"(?<![\d.])(?P<value>\d+(?:\.\d+)?\s*[-–—~～至到]\s*"
+    r"\d+(?:\.\d+)?\s*年)"
+)
+_OCR_TITLE_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])[A-Za-z][A-Za-z0-9+#]*(?:[._/-][A-Za-z0-9+#]+)*"
+)
+_OCR_EXCLUDED_SECTION = re.compile(
+    r"^\s*(?:个人简历|求职意向|教育经历|项目经历|工作经历|"
+    r"合同条款|采购需求|采购规格|供应商资格|招标要求|交付要求|项目需求)"
+    r"\s*[:：]?\s*$",
+    re.MULTILINE,
+)
+_OCR_TRAILING_BOUNDARY = re.compile(
+    r"^[^\r\n]*(?:本周活跃)\s*$|^\s*(?:去App|工作地址)\s*[:：]?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_OCR_TITLE_FORBIDDEN = re.compile(r"[:：；;。！？?]")
+_OCR_MAX_HEADER_LINES = 16
+_OCR_MIN_TITLE_CHARACTERS = 2
+_OCR_MAX_TITLE_CHARACTERS = 48
 
 
 @dataclass(frozen=True)
@@ -111,6 +140,9 @@ class StructuralMatch:
     title_occurrences: tuple[LabelOccurrence, ...]
     requirement_occurrences: tuple[LabelOccurrence, ...]
     title_values: tuple[str, ...]
+    shape: str = "canonical"
+    pre_extracted_fields: tuple[tuple[str, str], ...] = ()
+    requirement_content_ends: tuple[int, ...] = ()
 
 
 def normalize_title(value: str) -> str:
@@ -186,9 +218,27 @@ def _count_complete_blocks(
     return blocks
 
 
-def recognize_query(query: str) -> StructuralMatch | None:
-    if _has_rejected_intent(query):
-        return None
+def _nonempty_lines(text: str) -> tuple[tuple[str, int], ...]:
+    lines: list[tuple[str, int]] = []
+    for match in re.finditer(r"[^\r\n]+", text):
+        value = match.group().strip()
+        if value:
+            lines.append((value, match.start()))
+    return tuple(lines)
+
+
+def _has_repeated_ocr_title_token(title: str, body: str) -> bool:
+    tokens = {
+        match.group().casefold()
+        for match in _OCR_TITLE_TOKEN.finditer(title)
+        if len("".join(character for character in match.group() if character.isalnum()))
+        >= 2
+    }
+    body_folded = body.casefold()
+    return any(token in body_folded for token in tokens)
+
+
+def _recognize_canonical(query: str) -> StructuralMatch | None:
     text, instruction_is_valid = _strip_approved_instruction(query)
     if not instruction_is_valid:
         return None
@@ -223,3 +273,87 @@ def recognize_query(query: str) -> StructuralMatch | None:
         requirement_occurrences=requirement_occurrences,
         title_values=title_values,
     )
+
+
+def _recognize_ocr(query: str) -> StructuralMatch | None:
+    text = query.strip()
+    if "?" in text or "？" in text:
+        return None
+    if sum(not character.isspace() for character in text) < MINIMUM_JD_CHARACTERS:
+        return None
+    if _OCR_EXCLUDED_SECTION.search(text) is not None:
+        return None
+    lines = _nonempty_lines(text)
+    if any(_ALLOWED_INSTRUCTION.fullmatch(line) is not None for line, _ in lines):
+        return None
+
+    occurrences = find_label_occurrences(text)
+    if any(item.label in TITLE_LABELS for item in occurrences):
+        return None
+    duty_occurrences = tuple(item for item in occurrences if item.label in DUTY_LABELS)
+    requirement_occurrences = tuple(
+        item for item in occurrences if item.label in REQUIREMENT_LABELS
+    )
+    if len(duty_occurrences) != 1 or len(requirement_occurrences) != 1:
+        return None
+    duty = duty_occurrences[0]
+    requirement = requirement_occurrences[0]
+    if duty.start >= requirement.start:
+        return None
+
+    header_lines = tuple(
+        item for item in lines if item[1] < duty.start
+    )
+    if len(header_lines) < 3 or len(header_lines) > _OCR_MAX_HEADER_LINES:
+        return None
+    title = header_lines[0][0]
+    title_length = sum(not character.isspace() for character in title)
+    if not (_OCR_MIN_TITLE_CHARACTERS <= title_length <= _OCR_MAX_TITLE_CHARACTERS):
+        return None
+    if _OCR_TITLE_FORBIDDEN.search(title) is not None:
+        return None
+
+    salary_matches = tuple(
+        (index, match.group("value").strip())
+        for index, (line, _) in enumerate(header_lines)
+        if (match := _OCR_SALARY_LINE.fullmatch(line)) is not None
+    )
+    if len(salary_matches) != 1 or salary_matches[0][0] != 1:
+        return None
+    experience_values = tuple(
+        match.group("value").strip()
+        for line, _ in header_lines
+        for match in _OCR_EXPERIENCE_RANGE.finditer(line)
+    )
+    if len(experience_values) != 1:
+        return None
+
+    trailing = _OCR_TRAILING_BOUNDARY.search(text, requirement.value_start)
+    requirement_end = trailing.start() if trailing is not None else len(text)
+    if requirement_end <= requirement.value_start:
+        return None
+    if not _has_repeated_ocr_title_token(title, text[duty.start:requirement_end]):
+        return None
+
+    return StructuralMatch(
+        text=text,
+        occurrences=occurrences,
+        title_occurrences=(),
+        requirement_occurrences=requirement_occurrences,
+        title_values=(title,),
+        shape="ocr",
+        pre_extracted_fields=(
+            ("薪资", salary_matches[0][1]),
+            ("经验", experience_values[0]),
+        ),
+        requirement_content_ends=(requirement_end,),
+    )
+
+
+def recognize_query(query: str) -> StructuralMatch | None:
+    if _has_rejected_intent(query):
+        return None
+    canonical = _recognize_canonical(query)
+    if canonical is not None:
+        return canonical
+    return _recognize_ocr(query)
