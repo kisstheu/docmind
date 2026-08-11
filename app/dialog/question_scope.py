@@ -162,7 +162,6 @@ def decide_file_result_set_scope(
         result_scope_paths = tuple(state.last_result_set_items)
     elif (
         effective_focus_file
-        and state.last_result_set_entity_type == "文件"
         and event_name == "content_followup"
         and not signals.file_set_content_question
     ):

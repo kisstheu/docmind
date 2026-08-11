@@ -961,6 +961,60 @@ def test_runner_scopes_generic_focus_reference_to_current_file(
     assert query_sets == [["系统设计.md"]]
 
 
+def test_ordinary_document_demonstrative_continuation_keeps_normal_retrieval(
+    monkeypatch,
+    tmp_path,
+):
+    paths = ["会议记录.md", "技术笔记.txt"]
+    host = _RecordingEmptyDomainHost()
+
+    allowed, query_sets, client = _run_turns(
+        monkeypatch,
+        tmp_path,
+        questions=["这个文件主要讲什么？"],
+        repo_paths=paths,
+        state=_focused_file_state(paths, "会议记录.md"),
+        repo_chunks=[
+            "会议记录说明合成议题和后续动作。",
+            "技术笔记说明合成接口设计。",
+        ],
+        domain_dispatch_port=host,
+    )
+
+    assert [request.query for request in host.calls] == ["这个文件主要讲什么？"]
+    assert allowed == [{"会议记录.md"}]
+    assert query_sets == [["会议记录.md"]]
+    assert len(client.models.calls) == 1
+
+
+def test_focused_file_rename_request_stays_in_file_action_path(tmp_path):
+    notes_dir = tmp_path / "notes"
+    notes_dir.mkdir()
+    source_name = "资料甲.md"
+    (notes_dir / source_name).write_text("合成测试内容", encoding="utf-8")
+
+    handled, state, focus_file = handle_rename_request_action(
+        question="把这个文件重命名",
+        start_qa=0.0,
+        state=ConversationState(),
+        memory_buffer=[],
+        current_focus_file=source_name,
+        repo_state=SimpleNamespace(
+            paths=[source_name],
+            docs=["合成测试内容"],
+            doc_records=[],
+        ),
+        repo_paths=[source_name],
+        notes_dir=notes_dir,
+    )
+
+    assert handled is True
+    assert state.last_local_topic == "rename_preview"
+    assert state.pending_action_type == "rename"
+    assert state.pending_action_source_path == source_name
+    assert focus_file == source_name
+
+
 @pytest.mark.parametrize(
     "question",
     [

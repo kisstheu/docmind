@@ -42,7 +42,14 @@ def build_chat_config(repo_state):
     )
 
 
-def try_handle_contextless_followup(question: str, state: ConversationState, event, logger) -> str | None:
+def try_handle_contextless_followup(
+    question: str,
+    state: ConversationState,
+    event,
+    logger,
+    *,
+    has_focused_document_reference: bool = False,
+) -> str | None:
     route_hint = getattr(event, "route_hint", None)
     if route_hint in {"repo_meta", "smalltalk", "system_capability"}:
         return None
@@ -50,6 +57,8 @@ def try_handle_contextless_followup(question: str, state: ConversationState, eve
     if not _looks_like_contextless_followup_question(question):
         return None
     if not is_context_dependent_question(question, state.last_effective_search_query):
+        return None
+    if has_focused_document_reference:
         return None
     if _has_usable_followup_context(state):
         return None

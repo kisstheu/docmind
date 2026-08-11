@@ -192,6 +192,8 @@ def _run_turn(
     initial_state=None,
     initial_focus="focus.md",
     use_real_dialog_events=False,
+    use_real_contextless_guard=False,
+    use_real_state_updates=False,
     material_indices=None,
     material_focus=_UNSET,
     domain_options=None,
@@ -280,11 +282,12 @@ def _run_turn(
         "apply_event_to_state",
         real_apply_event_to_state if use_real_dialog_events else lambda current, _event: current,
     )
-    monkeypatch.setattr(
-        runtime,
-        "try_handle_contextless_followup",
-        lambda **_kwargs: "守门回答" if gate == "contextless" else None,
-    )
+    if not use_real_contextless_guard:
+        monkeypatch.setattr(
+            runtime,
+            "try_handle_contextless_followup",
+            lambda **_kwargs: "守门回答" if gate == "contextless" else None,
+        )
     route = gate if gate in {
         "system_capability",
         "repo_meta",
@@ -399,8 +402,18 @@ def _run_turn(
 
     monkeypatch.setattr(runner, "append_memory", capture_append_memory)
 
-    def fake_update(current, _question, answer, _logger, **_kwargs):
+    real_update_state_after_retrieval_answer = runner.update_state_after_retrieval_answer
+
+    def fake_update(current, current_question, answer, current_logger, **kwargs):
         captured["state_updates"].append(answer)
+        if use_real_state_updates:
+            return real_update_state_after_retrieval_answer(
+                current,
+                current_question,
+                answer,
+                current_logger,
+                **kwargs,
+            )
         return current
 
     monkeypatch.setattr(runner, "update_state_after_retrieval_answer", fake_update)
@@ -1807,6 +1820,7 @@ def test_first_turn_unique_file_reference_dispatches_complete_repo_document(
         initial_state=ConversationState(),
         initial_focus=None,
         use_real_dialog_events=True,
+        use_real_state_updates=True,
         material_focus=_RESOLVED_JD_PATH,
         material_indices=[[0]],
         domain_options=_RECRUITMENT_OPTIONS,
@@ -1823,9 +1837,12 @@ def test_first_turn_unique_file_reference_dispatches_complete_repo_document(
     assert observed[1].options == _RECRUITMENT_OPTIONS
     assert captured["printed"][0].startswith("## 单 JD 显式规则比较\n\n")
     assert "JD 明确为外包" in captured["printed"][0]
-    assert captured["state_updates"] == captured["prompts"] == []
+    assert captured["state_updates"] == captured["printed"]
+    assert captured["prompts"] == []
     assert fake_models.calls == []
-    assert state == ConversationState()
+    assert state.last_route == "normal_retrieval"
+    assert state.last_content_user_question == question
+    assert state.last_answer_text == captured["printed"][0]
 
 
 def test_result_set_ordinal_dispatches_selected_full_document(
@@ -1904,6 +1921,58 @@ def test_focus_continuation_dispatches_focused_full_document(
     assert observed[1].options == _RECRUITMENT_OPTIONS
     assert captured["materials"][0]["allowed_paths"] == {_RESOLVED_JD_PATH}
     assert captured["printed"][0].startswith("## 单 JD 显式规则比较\n\n")
+    assert captured["prompts"] == []
+    assert fake_models.calls == []
+
+
+def test_resolved_jd_handled_preserves_focus_for_demonstrative_continuation(
+    monkeypatch,
+    tmp_path,
+):
+    observed = _capture_recruitment_execute(monkeypatch)
+    host = create_domain_host(
+        plugin=RecruitmentJDPlugin(),
+        expected_plugin_id=PLUGIN_ID,
+    )
+    repo_state = _repo_with_documents(
+        [_RESOLVED_JD_PATH],
+        [_LONG_SYNTHETIC_JD],
+    )
+    questions = [
+        "第 1 个怎么样",
+        "这个 JD 符合我的求职条件吗",
+    ]
+
+    state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=questions,
+        initial_state=_selectable_jd_state([_RESOLVED_JD_PATH]),
+        initial_focus=None,
+        use_real_dialog_events=True,
+        use_real_contextless_guard=True,
+        use_real_state_updates=True,
+        material_indices=[[0], [0]],
+        domain_options={},
+        repo_state=repo_state,
+        generate=True,
+    )
+
+    assert [request.query for request in observed] == [
+        questions[0],
+        repo_state.docs[0],
+        questions[1],
+        repo_state.docs[0],
+    ]
+    assert captured["dialog_inputs"][1]["focused_file"] == _RESOLVED_JD_PATH
+    assert captured["events"][1].name == "content_followup"
+    assert captured["materials"][1]["allowed_paths"] == {_RESOLVED_JD_PATH}
+    assert [answer.startswith("## JD 明确约束\n\n") for answer in captured["printed"]] == [
+        True,
+        True,
+    ]
+    assert state.last_result_set_focus_file == _RESOLVED_JD_PATH
     assert captured["prompts"] == []
     assert fake_models.calls == []
 

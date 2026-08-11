@@ -185,6 +185,10 @@ def run_chat_loop(
                 state=runtime.conversation_state,
                 event=event,
                 logger=logger,
+                has_focused_document_reference=bool(
+                    current_focus_file
+                    and question_signals.explicit_focus_reference
+                ),
             )
             if local_answer is not None:
                 print_answer(local_answer, start_qa)
@@ -465,9 +469,16 @@ def run_chat_loop(
                             question,
                             resolved_domain_answer,
                         )
-                        runtime.conversation_state = ConversationState()
-                        current_focus_file = None
-                        last_relevant_indices = []
+                        runtime.conversation_state = update_state_after_retrieval_answer(
+                            runtime.conversation_state,
+                            question,
+                            resolved_domain_answer,
+                            logger,
+                            event_name=event.name,
+                            focused_file=current_focus_file,
+                            question_signals=question_signals,
+                            scope_decision=scope_decision,
+                        )
                         continue
             focused_file_content_followup = bool(
                 current_focus_file

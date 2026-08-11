@@ -7,6 +7,7 @@ from typing import Optional
 from app.context_anchor import is_context_dependent_question
 from app.chat_text.file_lookup import (
     has_explicit_focus_reference,
+    looks_like_focused_file_content_question,
     looks_like_file_set_content_question,
     looks_like_standalone_general_question,
 )
@@ -247,6 +248,21 @@ def detect_dialog_event(
 
     if file_topic_result_set_followup:
         return DialogEvent(name="result_set_followup", route_hint="normal_retrieval")
+
+    if (
+        current_result_set_focus_file
+        and prev_route in {"normal_retrieval", "repo_meta"}
+        and not is_standalone_general_question
+        and looks_like_focused_file_content_question(question)
+        and looks_like_repo_topic_question(question, state)
+    ):
+        if prev_q:
+            return DialogEvent(
+                name="content_followup",
+                route_hint="normal_retrieval",
+                merged_query=f"{prev_q} {question}",
+            )
+        return DialogEvent(name="content_followup", route_hint="normal_retrieval")
 
     if state.last_route == "repo_meta" and last_topic == "list_files" and is_list_format_modifier(question):
         return DialogEvent(name="repo_meta_request", route_hint="repo_meta")

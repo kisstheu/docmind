@@ -4,13 +4,22 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+from app.chat_loop_handlers import (
+    CONTEXTLESS_FOLLOWUP_REPLY,
+    try_handle_contextless_followup,
+)
 from app.dialog.question_scope import (
     QuestionSignals,
     ScopeDecision,
     analyze_question_signals,
     decide_file_result_set_scope,
 )
-from app.dialog.state_machine import ConversationState
+from app.dialog.state_machine import ConversationState, DialogEvent
+
+
+class _LoggerStub:
+    def info(self, *_args, **_kwargs):
+        return None
 
 
 def _selectable_file_state(
@@ -136,6 +145,105 @@ def test_question_signals_are_immutable():
         signals.summary_followup_request = False
 
 
+@pytest.mark.parametrize(
+    "question",
+    [
+        "这个 JD 符合我的求职条件吗？",
+        "这个岗位怎么样？",
+        "这个文件主要讲什么？",
+        "再看看这个 JD 的经验要求。",
+        "再看下这个合同的验收要求。",
+        "再看一下这个采购方案的交付条件。",
+    ],
+)
+def test_explicit_reference_with_unique_focus_bypasses_contextless_guard(question):
+    focus_file = "示例JD.md"
+    state = ConversationState(
+        last_route="normal_retrieval",
+        last_content_route="normal_retrieval",
+        last_result_set_items=[focus_file],
+        last_result_set_entity_type="文件",
+        last_result_set_selectable=True,
+        last_result_set_focus_file=focus_file,
+    )
+    signals = analyze_question_signals(
+        question,
+        last_effective_search_query=None,
+    )
+    decision = decide_file_result_set_scope(
+        question,
+        signals=signals,
+        state=state,
+        current_focus_file=focus_file,
+        event_name="content_followup",
+    )
+
+    assert signals.explicit_focus_reference is True
+    assert decision.result_scope_paths == (focus_file,)
+    assert try_handle_contextless_followup(
+        question,
+        state,
+        DialogEvent(name="content_followup", route_hint="normal_retrieval"),
+        _LoggerStub(),
+        has_focused_document_reference=True,
+    ) is None
+
+
+def test_focus_reference_lead_in_does_not_claim_standalone_request():
+    signals = analyze_question_signals(
+        "再看看 Python 生成器怎么工作。",
+        last_effective_search_query=None,
+    )
+
+    assert signals.explicit_focus_reference is False
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        ConversationState(),
+        ConversationState(
+            last_result_set_items=["资料甲.md", "资料乙.md"],
+            last_result_set_entity_type="文件",
+            last_result_set_selectable=True,
+        ),
+    ],
+)
+def test_demonstrative_jd_without_unique_focus_remains_contextless(state):
+    question = "这个 JD 符合我的求职条件吗？"
+    signals = analyze_question_signals(
+        question,
+        last_effective_search_query=None,
+    )
+    decision = decide_file_result_set_scope(
+        question,
+        signals=signals,
+        state=state,
+        current_focus_file=None,
+        event_name="unknown",
+    )
+
+    assert decision.effective_focus_file is None
+    assert decision.result_scope_paths is None
+    assert try_handle_contextless_followup(
+        question,
+        state,
+        DialogEvent(name="unknown"),
+        _LoggerStub(),
+        has_focused_document_reference=False,
+    ) == CONTEXTLESS_FOLLOWUP_REPLY
+
+
+def test_genuine_subjectless_followup_without_context_stays_rejected():
+    assert try_handle_contextless_followup(
+        "继续",
+        ConversationState(),
+        DialogEvent(name="unknown"),
+        _LoggerStub(),
+        has_focused_document_reference=False,
+    ) == CONTEXTLESS_FOLLOWUP_REPLY
+
+
 def test_scope_decision_without_selectable_file_result_set_rejects_ordinal():
     state = ConversationState(
         last_result_set_items=["资料甲.md"],
@@ -254,6 +362,25 @@ def test_scope_decision_content_followup_inherits_single_file_focus():
     assert decision.effective_focus_file == "记录乙.txt"
     assert decision.result_scope_paths == ("记录乙.txt",)
     assert decision.query_result_set_items == ("记录乙.txt",)
+    assert decision.has_single_focus_scope is True
+
+
+def test_scope_decision_inherits_unique_runtime_focus_without_result_set():
+    state = ConversationState(
+        last_route="normal_retrieval",
+        last_content_route="normal_retrieval",
+    )
+
+    signals, decision = _decide(
+        "这个文件主要讲什么？",
+        state,
+        event_name="content_followup",
+        current_focus_file="会议记录.md",
+    )
+
+    assert signals.explicit_focus_reference is True
+    assert decision.effective_focus_file == "会议记录.md"
+    assert decision.result_scope_paths == ("会议记录.md",)
     assert decision.has_single_focus_scope is True
 
 

@@ -1,0 +1,165 @@
+version: 1
+
+task_id: focused_document_reference_no_subject_guard
+title: 唯一文档焦点下显式指代绕过错误无主语短路
+decision: GO
+implementation_status: authorized
+
+baseline:
+  branch: main
+  head: 88ce31c1b99d7b622dd7b22737cb9d276807659f
+  upstream: origin/main
+  ahead_behind: [0, 0]
+  worktree: clean_before_red_test
+
+task_goal: >-
+  当会话已有可靠唯一文档 focus，且当前问句通过现有语义明确指向该文档时，
+  不得被“无主语/无上下文追问”守门提前拒绝；应继续进入既有 dialog scope、
+  retrieval 和 Domain orchestration，同时保持无 focus、歧义 context 和真正无主语
+  问句的 fail-closed 行为。
+
+diagnosis:
+  red_test: >-
+    单项文件结果集经“第 1 个怎么样”建立 focus，并由 resolved-document
+    RecruitmentJDPlugin handled；紧接“这个 JD 符合我的求职条件吗”时，修复前
+    第二轮没有到达 direct Domain、retrieval 或 resolved-document Domain。
+  exact_guard:
+    function: app.chat_loop_handlers.try_handle_contextless_followup
+    predicate: >-
+      _looks_like_contextless_followup_question + is_context_dependent_question +
+      not _has_usable_followup_context
+  ordering: >-
+    runner 先执行 file action，再计算 QuestionSignals、DialogEvent 和 ScopeDecision；
+    no-subject guard 随后运行，但早于 apply_event_to_state、route、retrieval 和
+    resolved-document Domain opportunity。
+  reference_predicate:
+    function: app.chat_text.file_lookup.has_explicit_focus_reference
+    existing_behavior: >-
+      已能将句首“这个 JD”“这个岗位”“这个文件”识别为显式当前对象引用，
+      QuestionSignals.explicit_focus_reference 也会物化该事实。
+  state_loss: >-
+    resolved-document Domain handled 分支无条件写入空 ConversationState，并清空
+    current_focus_file 与 last_relevant_indices；因此下一轮已建立的单文件焦点消失。
+  guard_blind_spot: >-
+    no-subject guard 不读取 current_focus_file、last_result_set_focus_file、
+    QuestionSignals 或 ScopeDecision；即使构造仅含可靠 focus 的状态，它也不把 focus
+    视为可用上下文。
+  repo_topic_ordering_gap: >-
+    “这个文件主要讲什么”虽不会命中 no-subject，但现有 repo-topic 判断早于单文件
+    focus continuation，导致显式文件内容追问丢失单文件 scope。
+  phrase_gap: >-
+    guard 的 subject hint 只覆盖“文件/文档/资料”等通用名词，不含 JD 或岗位；
+    “这个 JD”“这个岗位”又会命中短追问 marker，故在上下文被清空后被拒绝。
+
+frozen_contract:
+  positive: >-
+    可靠唯一文档 focus 与 explicit_focus_reference 同时成立时，no-subject guard
+    必须放行，之后仍由既有 dialog、scope、Domain 和 retrieval 选择最终路线。
+  fail_closed:
+    - 无 current focus 的相同指代不得绑定任意资料。
+    - 多候选但没有唯一 focus 时不得随机选择。
+    - 不含明确对象指代的弱追问不因本修复自动扩大继承范围。
+    - 真正无主语且没有可用上下文的问句继续本地澄清。
+  domain_continuity: >-
+    resolved-document Domain handled 必须写回本轮内容状态并保留可靠单文件 focus；
+    direct Domain handled 的既有清理行为保持不变。
+  routing_boundary:
+    - 显式引用只恢复上下文连续性，不强制进入 Domain。
+    - 非 recruitment 文档继续走普通 retrieval/RAG。
+    - 文件重命名、删除等动作继续在 guard 前由 file-action 路径处理。
+
+repair_design:
+  steps:
+    - 将已计算的可靠 focused-document reference 事实传入 no-subject short-circuit predicate。
+    - resolved-document handled 后复用既有内容回答状态写回，保留单文件 scope 与 focus。
+    - 仅对已有 focus 且命中现有 focused-file-content 语义的 repo-topic 冲突，优先生成 content_followup。
+    - content_followup 的可靠 current focus 可直接物化单文件 scope，不额外要求文件结果集元数据。
+    - 不修改显式引用词表，不放宽 weak followup 长度阈值，不删除 no-subject guard。
+    - 不改变 direct Domain handled、Domain abstain 或远程 RAG fallback 的既有控制流。
+  rollback: >-
+    各项 Core 改动均可独立回滚：guard 的显式 focus 放行参数、resolved-document
+    handled 的状态写回、focused-file-content 的事件优先级，以及 current focus 的单文件范围物化。
+
+non_goals:
+  - 不解决 normal-user structured job-search rules 来源。
+  - 不实现插件 enable/disable、调用可视化或运行时配置 UX。
+  - 不修改 recruitment OCR、recognition、extraction、comparison 或 rendering。
+  - 不修改 Domain SDK、protocol 或 plugin options。
+  - 不扩大到所有弱上下文追问。
+  - 不自动从自然语言生成长期用户配置。
+  - 不修无关 result-set 枚举问题。
+  - 不修“研究” substring action_request 误触发。
+  - 不处理 generated list provenance materialization。
+
+editable_scope:
+  allow:
+    - app/chat_loop_handlers/__init__.py
+    - app/chat_loop_parts/runner.py
+    - app/chat_text/file_lookup.py
+    - app/dialog/question_scope.py
+    - app/dialog/state_machine.py
+    - public_tests/domain/test_domain_dispatch_port_empty_host.py
+    - public_tests/state/**
+    - public_tests/file_actions/**
+    - docs/task_card_focused_document_reference_no_subject_guard.yaml
+  deny:
+    - packages/docmind-recruitment-plugin/src/**
+    - packages/docmind-domain-sdk/**
+    - retrieval/**
+    - tests/**
+    - test_notes/**
+
+test_matrix:
+  - unique focus + “这个 JD 符合我的求职条件吗”
+  - unique focus + “这个岗位怎么样”
+  - unique focus + “这个文件主要讲什么”
+  - no focus + 同一“这个 JD”问句
+  - ambiguous multi-target context without unique focus
+  - genuine subjectless rejection
+  - ordinary non-domain document focus
+  - file action with “这个文件”
+  - result-set ordinal -> focus -> demonstrative continuation
+  - resolved-document Domain handled with full RepoState.docs
+  - resolved-document Domain abstain -> normal fallback
+  - direct Domain existing behavior
+
+acceptance_min:
+  - no-subject rejection=false when reliable focus and explicit reference both hold.
+  - resolved path equals the focused synthetic document.
+  - DomainRequest.query equals the complete RepoState.docs text.
+  - RecruitmentJDPlugin with options={} returns “## JD 明确约束”.
+  - handled path performs zero remote generations.
+  - no-focus, ambiguous and genuine-subjectless cases remain fail closed.
+  - normal document retrieval and file-action precedence do not regress.
+
+privacy_guard:
+  - 仅使用示例JD.md、A.md、某岗位A等合成标识。
+  - 不提交真实 notes path、截图文件名、时间戳、JD 正文、公司、人名、地址或规则。
+  - 不提交日志、secret、egg-info 或本地隐私目录内容。
+
+verification:
+  order:
+    - tracked red test before production change
+    - UTF-8 and YAML validation
+    - py_compile changed Python files
+    - focused guard/dialog/scope assertions
+    - runner and resolved-document Domain orchestration
+    - file-action and result-set regressions
+    - public_tests/domain and recruitment plugin tests
+    - repository full pytest
+    - synthetic runner-level trace
+    - diff, encoding and privacy checks
+
+deferred_defects:
+  - normal-user structured job-search rules source
+  - plugin runtime enable/disable, invocation visibility and runtime configuration
+  - “研究” substring action_request false positive
+  - generated list provenance materialization
+
+git_delivery:
+  local_commit_required: true
+  push_authorized: false
+  message_title: "fix(dialog): 保留唯一文档焦点的显式指代"
+  message_body_minimum:
+    - 目标说明唯一文档焦点下显式指代不再被无主语守门拒绝。
+    - 手段说明 resolved-document handled 状态连续性与 fail-closed 回归。

@@ -39,6 +39,9 @@ _FOCUS_REFERENCE_PREFIXES = (
     "前面提到的",
     "刚才这个",
 )
+_FOCUS_REFERENCE_LEAD_IN_PATTERN = re.compile(
+    r"^(?:请问|请|那么|再问一下|再看看|再看下|再看一下)"
+)
 _STRONG_FOCUS_REFERENCE_PREFIXES = (
     "它",
     "其",
@@ -103,7 +106,7 @@ def has_explicit_focus_reference(question: str) -> bool:
         return False
     if re.search(r"(?:哪些|哪个|哪几|哪张|哪份).*(?:文件|文档|截图|资料|记录)", q):
         return False
-    q = re.sub(r"^(?:请问|请|那么|再问一下)", "", q)
+    q = _FOCUS_REFERENCE_LEAD_IN_PATTERN.sub("", q)
     if any(q.startswith(prefix) for prefix in _FOCUS_REFERENCE_PREFIXES):
         return True
     return q.startswith("该") and not q.startswith(("该如何", "该怎么", "该怎样"))
@@ -114,7 +117,7 @@ def looks_like_standalone_question(question: str) -> bool:
     q = re.sub(r"[，。！？?.!?\s]+", "", (question or ""))
     if not q:
         return False
-    reference_text = re.sub(r"^(?:请问|请|那么|再问一下)", "", q)
+    reference_text = _FOCUS_REFERENCE_LEAD_IN_PATTERN.sub("", q)
     if any(
         reference_text.startswith(prefix)
         for prefix in _STRONG_FOCUS_REFERENCE_PREFIXES
