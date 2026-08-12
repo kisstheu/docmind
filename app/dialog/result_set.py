@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 
@@ -143,6 +144,150 @@ _ALL_FILE_REFERENCE_PATTERNS = (
 class FileResultSetSelection:
     paths: tuple[str, ...] = ()
     rejection: str | None = None
+
+
+@dataclass(frozen=True)
+class GeneratedResultSetProvenance:
+    display_items: tuple[str, ...] = ()
+    source_candidates: tuple[str, ...] = ()
+    source_hits: tuple[tuple[str, ...], ...] = ()
+
+
+def _extract_generated_display_items(answer_text: str) -> tuple[str, ...]:
+    items: list[str] = []
+    for raw_line in str(answer_text or "").splitlines():
+        line = raw_line.strip()
+        match = re.match(r"^(?:\d+[.、]|[-*•])\s*(.+?)\s*$", line)
+        if match and match.group(1).strip():
+            items.append(match.group(1).strip())
+    return tuple(items)
+
+
+def _normalize_generated_evidence(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", str(text or "")).strip()
+    normalized = re.sub(r"^\s*(?:#{1,6}|[-*•]|\d+[.、)])\s*", "", normalized)
+    normalized = normalized.strip("`*_~'\"“”‘’《》【】[]()（） ")
+    return re.sub(r"\s+", " ", normalized).casefold().strip()
+
+
+def _document_exact_evidence_values(document_text: str) -> set[str]:
+    values: set[str] = set()
+    for raw_line in str(document_text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        candidates = [line]
+        if re.search(r"[:：]", line):
+            _label, value = re.split(r"[:：]", line, maxsplit=1)
+            if value.strip():
+                candidates.append(value)
+        if "|" in line:
+            candidates.extend(cell for cell in line.split("|") if cell.strip())
+        for candidate in candidates:
+            normalized = _normalize_generated_evidence(candidate)
+            if normalized:
+                values.add(normalized)
+    return values
+
+
+def materialize_generated_result_set_provenance(
+    answer_text: str,
+    *,
+    candidate_paths: list[str] | tuple[str, ...] | None,
+    repo_state,
+) -> GeneratedResultSetProvenance:
+    """Prove display-item sources by exact evidence inside a bounded file set."""
+    display_items = _extract_generated_display_items(answer_text)
+    if not display_items:
+        return GeneratedResultSetProvenance()
+
+    repo_paths = list(getattr(repo_state, "paths", []) or [])
+    repo_docs = list(getattr(repo_state, "docs", []) or [])
+    if len(repo_paths) != len(repo_docs):
+        return GeneratedResultSetProvenance(display_items=display_items)
+
+    exact_repo_indices: dict[str, list[int]] = {}
+    for index, raw_path in enumerate(repo_paths):
+        path = str(raw_path or "").strip()
+        if path:
+            exact_repo_indices.setdefault(path, []).append(index)
+
+    bounded_candidates: list[str] = []
+    candidate_evidence: dict[str, set[str]] = {}
+    for raw_candidate in candidate_paths or []:
+        candidate = str(raw_candidate or "").strip()
+        if not candidate or candidate in candidate_evidence:
+            continue
+        matching_indices = exact_repo_indices.get(candidate, [])
+        if len(matching_indices) != 1:
+            continue
+        document = repo_docs[matching_indices[0]]
+        if not isinstance(document, str) or not document.strip():
+            continue
+        bounded_candidates.append(candidate)
+        candidate_evidence[candidate] = _document_exact_evidence_values(document)
+
+    source_hits: list[tuple[str, ...]] = []
+    for display_item in display_items:
+        normalized_item = _normalize_generated_evidence(display_item)
+        if not normalized_item:
+            source_hits.append(())
+            continue
+        source_hits.append(
+            tuple(
+                path
+                for path in bounded_candidates
+                if normalized_item in candidate_evidence[path]
+            )
+        )
+
+    return GeneratedResultSetProvenance(
+        display_items=display_items,
+        source_candidates=tuple(bounded_candidates),
+        source_hits=tuple(source_hits),
+    )
+
+
+def resolve_generated_result_set_selection(
+    question: str,
+    display_items: list[str] | tuple[str, ...] | None,
+    source_hits: list[list[str]] | tuple[tuple[str, ...], ...] | None,
+    source_candidates: list[str] | tuple[str, ...] | None,
+) -> FileResultSetSelection | None:
+    """Resolve an ordinal only when its visible item has one proven backing file."""
+    if not display_items:
+        return None
+    if _has_explicit_non_file_ordinal_target(question):
+        return None
+    ordinal = _extract_file_result_set_index(question)
+    if ordinal is None:
+        return None
+
+    if not source_hits or len(source_hits) != len(display_items):
+        return FileResultSetSelection(rejection=_UNMAPPED_ORDINAL_HELP)
+    if ordinal > len(display_items):
+        return FileResultSetSelection(
+            rejection=(
+                f"当前生成结果中只有 {len(display_items)} 个条目，"
+                f"请选择第 1～{len(display_items)} 个。"
+            )
+        )
+
+    allowed_sources = {
+        str(path or "").strip()
+        for path in source_candidates or []
+        if str(path or "").strip()
+    }
+    hits = tuple(
+        dict.fromkeys(
+            str(path or "").strip()
+            for path in source_hits[ordinal - 1]
+            if str(path or "").strip() in allowed_sources
+        )
+    )
+    if len(hits) != 1:
+        return FileResultSetSelection(rejection=_UNMAPPED_ORDINAL_HELP)
+    return FileResultSetSelection(paths=(hits[0],))
 
 
 def _parse_result_set_ordinal(token: str) -> int | None:

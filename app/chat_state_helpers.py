@@ -167,6 +167,12 @@ def _looks_like_short_file_result_set_retry(question: str) -> bool:
     return any(marker in q for marker in ("什么", "内容", "主题", "讲", "说"))
 
 
+def _clear_generated_result_state(state) -> None:
+    state.last_generated_result_items = None
+    state.last_generated_result_source_candidates = None
+    state.last_generated_result_source_hits = None
+
+
 def update_state_after_local_answer(
     state,
     question: str,
@@ -199,6 +205,7 @@ def update_state_after_local_answer(
         state.last_result_set_summary_level = 0
         state.last_result_set_selectable = bool(file_items)
         state.last_result_set_focus_file = None
+        _clear_generated_result_state(state)
 
     return state
 
@@ -214,6 +221,7 @@ def update_state_after_retrieval_answer(
     *,
     question_signals: QuestionSignals | object = _MISSING_QUESTION_SCOPE_FACT,
     scope_decision: ScopeDecision | object = _MISSING_QUESTION_SCOPE_FACT,
+    generated_result_provenance=None,
 ):
     question_signals, scope_decision = _resolve_question_scope_facts(
         state=state,
@@ -232,7 +240,14 @@ def update_state_after_retrieval_answer(
     prev_result_set_focus_file = state.last_result_set_focus_file
     is_followup_turn = _is_followup_turn(question, event_name=event_name)
     is_synthesis_answer = (event_name or "").strip() == "synthesis_request"
-    is_focus_related_event = (event_name or "").strip() in FOLLOWUP_EVENT_NAMES
+    is_focus_related_event = (
+        (event_name or "").strip() in FOLLOWUP_EVENT_NAMES
+        or scope_decision.selected_result_set_item_turn
+    )
+    clears_result_set_focus = (
+        question_signals.standalone_general_question
+        and not scope_decision.selected_result_set_item_turn
+    )
 
     state.last_user_question = question
     state.last_route = "normal_retrieval"
@@ -292,6 +307,7 @@ def update_state_after_retrieval_answer(
     current_result_set_focus_file = focused_file or prev_result_set_focus_file
 
     if answer_type == "enumeration_company":
+        _clear_generated_result_state(state)
         company_items: list[str] = []
         raw_items = extract_numbered_items(answer_text)
 
@@ -340,6 +356,7 @@ def update_state_after_retrieval_answer(
         logger.debug(f"🧪 [候选集合提取] raw_items={raw_items}")
         logger.debug(f"🧪 [候选集合提取] company_items={company_items}")
     elif answer_type == "enumeration_file":
+        _clear_generated_result_state(state)
         file_items = extract_file_items(answer_text)
 
         if prev_result_set_entity_type == "文件" and prev_result_set_items:
@@ -362,6 +379,7 @@ def update_state_after_retrieval_answer(
         logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
         logger.debug(f"🧪 [候选集合提取] file_items={file_items}")
     elif answer_type == "enumeration_person":
+        _clear_generated_result_state(state)
         person_items = extract_numbered_items(answer_text)
 
         if prev_result_set_entity_type == "人物" and prev_result_set_items:
@@ -439,7 +457,7 @@ def update_state_after_retrieval_answer(
             and bool(prev_result_set_items)
             and bool(current_result_set_focus_file)
             and is_focus_related_event
-            and not question_signals.standalone_general_question
+            and not clears_result_set_focus
             and not question_signals.file_set_content_question
             and (
                 scope_decision.has_single_focus_scope
@@ -547,14 +565,43 @@ def update_state_after_retrieval_answer(
             state.last_result_set_entity_type = None
             state.last_result_set_selectable = False
             state.last_result_set_focus_file = None
+            _clear_generated_result_state(state)
             logger.debug(f"🧪 [answer_type识别] q={question} | answer_type={answer_type}")
 
         if generated_unmaterialized_enumeration and state.last_result_set_items:
             state.last_answer_type = None
             state.last_result_set_selectable = False
+            visible_items = extract_numbered_items(answer_text)
+            provenance_items = list(
+                getattr(generated_result_provenance, "display_items", ()) or ()
+            )
+            provenance_candidates = list(
+                getattr(generated_result_provenance, "source_candidates", ()) or ()
+            )
+            provenance_hits = [
+                list(paths)
+                for paths in (
+                    getattr(generated_result_provenance, "source_hits", ()) or ()
+                )
+            ]
+            state.last_generated_result_items = list(visible_items)
+            state.last_generated_result_source_candidates = (
+                provenance_candidates or list(prev_result_set_items or [])
+            )
+            state.last_generated_result_source_hits = (
+                provenance_hits
+                if provenance_items == visible_items
+                and len(provenance_hits) == len(visible_items)
+                else [[] for _item in visible_items]
+            )
             logger.debug(
                 "🛡️ [结果集序号安全] 当前可见枚举未物化可靠内部集合，"
                 "保留旧结果集上下文但撤销序号选择资格"
+            )
+            logger.debug(
+                "🧭 [生成结果来源] "
+                f"display_items={state.last_generated_result_items} | "
+                f"source_hits={state.last_generated_result_source_hits}"
             )
 
     if state.last_result_set_entity_type != "文件":
@@ -563,7 +610,7 @@ def update_state_after_retrieval_answer(
 
     should_write_result_set_focus = (
         bool(focused_file)
-        and not question_signals.standalone_general_question
+        and not clears_result_set_focus
         and (
             scope_decision.has_single_focus_scope
             or (event_name or "").strip() == "content_followup"

@@ -17,6 +17,7 @@ from app.dialog.question_scope import (
 from app.dialog.result_set import (
     build_corrected_result_set_request,
     file_result_set_display_name,
+    materialize_generated_result_set_provenance,
     materialize_single_file_result_set_question,
 )
 from app.domain_dispatch_port import DomainDispatchPort, dispatch_domain_request
@@ -74,6 +75,22 @@ def _dispatch_with_session_options(
         domain_dispatch_port,
         query,
         options=domain_options,
+    )
+
+
+def _materialize_visible_result_provenance(answer_text, scope_decision, repo_state):
+    candidate_paths = (
+        list(scope_decision.query_result_set_items)
+        if (
+            scope_decision.query_result_set_entity == "文件"
+            and scope_decision.query_result_set_items is not None
+        )
+        else None
+    )
+    return materialize_generated_result_set_provenance(
+        answer_text,
+        candidate_paths=candidate_paths,
+        repo_state=repo_state,
     )
 
 
@@ -338,6 +355,11 @@ def run_chat_loop(
                     logger,
                     event_name=event.name,
                     focused_file=current_focus_file,
+                    generated_result_provenance=_materialize_visible_result_provenance(
+                        result_set_summary_answer,
+                        scope_decision,
+                        repo_state,
+                    ),
                     question_signals=question_signals,
                     scope_decision=scope_decision,
                 )
@@ -476,6 +498,11 @@ def run_chat_loop(
                             logger,
                             event_name=event.name,
                             focused_file=current_focus_file,
+                            generated_result_provenance=_materialize_visible_result_provenance(
+                                resolved_domain_answer,
+                                scope_decision,
+                                repo_state,
+                            ),
                             question_signals=question_signals,
                             scope_decision=scope_decision,
                         )
@@ -510,6 +537,11 @@ def run_chat_loop(
                     logger,
                     event_name=event.name,
                     focused_file=current_focus_file,
+                    generated_result_provenance=_materialize_visible_result_provenance(
+                        related_records_answer,
+                        scope_decision,
+                        repo_state,
+                    ),
                     question_signals=question_signals,
                     scope_decision=scope_decision,
                 )
@@ -547,6 +579,11 @@ def run_chat_loop(
                     logger,
                     event_name=event.name,
                     focused_file=current_focus_file,
+                    generated_result_provenance=_materialize_visible_result_provenance(
+                        local_file_locator_answer,
+                        scope_decision,
+                        repo_state,
+                    ),
                     question_signals=question_signals,
                     scope_decision=scope_decision,
                 )
@@ -601,6 +638,11 @@ def run_chat_loop(
                     logger,
                     event_name=event.name,
                     focused_file=current_focus_file,
+                    generated_result_provenance=_materialize_visible_result_provenance(
+                        local_entity_mapping_answer,
+                        scope_decision,
+                        repo_state,
+                    ),
                     question_signals=question_signals,
                     scope_decision=scope_decision,
                 )
@@ -640,6 +682,11 @@ def run_chat_loop(
                     logger,
                     event_name=event.name,
                     focused_file=current_focus_file,
+                    generated_result_provenance=_materialize_visible_result_provenance(
+                        fallback_local_answer,
+                        scope_decision,
+                        repo_state,
+                    ),
                     question_signals=question_signals,
                     scope_decision=scope_decision,
                 )
@@ -686,6 +733,11 @@ def run_chat_loop(
                 config=chat_config,
             )
             answer_text = response.text or "这次我没有生成有效回答。"
+            generated_result_provenance = _materialize_visible_result_provenance(
+                answer_text,
+                scope_decision,
+                repo_state,
+            )
             decision_result = None
             if event.name == "decision_request":
                 decision_result = parse_decision_result(answer_text, user_question=question)
@@ -708,6 +760,7 @@ def run_chat_loop(
                 event_name=event.name,
                 focused_file=current_focus_file,
                 decision_result=decision_result,
+                generated_result_provenance=generated_result_provenance,
                 question_signals=question_signals,
                 scope_decision=scope_decision,
             )

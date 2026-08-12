@@ -167,6 +167,9 @@ class ConversationState:
     last_result_set_summary_level: int = 0
     last_result_set_selectable: bool | None = None
     last_result_set_focus_file: str | None = None
+    last_generated_result_items: list[str] | None = None
+    last_generated_result_source_candidates: list[str] | None = None
+    last_generated_result_source_hits: list[list[str]] | None = None
     last_selected_candidate: str | None = None
     last_selected_source_files: list[str] | None = None
 
@@ -461,6 +464,9 @@ def apply_event_to_state(state: ConversationState, event: DialogEvent) -> Conver
         last_result_set_summary_level=state.last_result_set_summary_level,
         last_result_set_selectable=state.last_result_set_selectable,
         last_result_set_focus_file=state.last_result_set_focus_file,
+        last_generated_result_items=state.last_generated_result_items,
+        last_generated_result_source_candidates=state.last_generated_result_source_candidates,
+        last_generated_result_source_hits=state.last_generated_result_source_hits,
         last_selected_candidate=state.last_selected_candidate,
         last_selected_source_files=state.last_selected_source_files,
 

@@ -10,6 +10,7 @@ from app.dialog.result_set import (
     has_selectable_result_set,
     looks_like_result_set_comparison_followup,
     reject_unmapped_file_result_set_ordinal,
+    resolve_generated_result_set_selection,
     resolve_file_result_set_selection,
 )
 from app.dialog.task_semantics import (
@@ -31,6 +32,9 @@ class _QuestionScopeState(Protocol):
     last_answer_preview: str | None
     last_result_set_selectable: bool | None
     last_result_set_focus_file: str | None
+    last_generated_result_items: list[str] | None
+    last_generated_result_source_candidates: list[str] | None
+    last_generated_result_source_hits: list[list[str]] | None
 
 
 @dataclass(frozen=True)
@@ -116,8 +120,13 @@ def decide_file_result_set_scope(
             if str(path or "").strip()
         )
 
-    file_result_set_selection = None
-    if (
+    file_result_set_selection = resolve_generated_result_set_selection(
+        question,
+        state.last_generated_result_items,
+        state.last_generated_result_source_hits,
+        state.last_generated_result_source_candidates,
+    )
+    if file_result_set_selection is None and (
         state.last_result_set_entity_type == "文件"
         and state.last_result_set_items
         and not visible_file_paths

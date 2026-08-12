@@ -1977,6 +1977,77 @@ def test_resolved_jd_handled_preserves_focus_for_demonstrative_continuation(
     assert fake_models.calls == []
 
 
+def test_generated_ordinal_dispatches_proven_backing_and_preserves_domain_focus(
+    monkeypatch,
+    tmp_path,
+):
+    observed = _capture_recruitment_execute(monkeypatch)
+    host = create_domain_host(
+        plugin=RecruitmentJDPlugin(),
+        expected_plugin_id=PLUGIN_ID,
+    )
+    paths = ["招聘/资料甲.md", _RESOLVED_JD_PATH, "招聘/资料丙.md"]
+    repo_state = _repo_with_documents(
+        paths,
+        ["合成资料甲。", _LONG_SYNTHETIC_JD, "合成资料丙。"],
+    )
+    generated_answer = "1. 岗位甲\n2. 岗位乙"
+    state = ConversationState(
+        mode="content",
+        last_user_question="有哪些岗位？",
+        last_route="normal_retrieval",
+        last_content_user_question="有哪些岗位？",
+        last_content_route="normal_retrieval",
+        last_effective_search_query="合成岗位",
+        last_answer_text=generated_answer,
+        last_answer_preview=generated_answer,
+        last_answer_type=None,
+        last_result_set_items=list(paths),
+        last_result_set_entity_type="文件",
+        last_result_set_selectable=False,
+        last_generated_result_items=["岗位甲", "岗位乙"],
+        last_generated_result_source_candidates=list(paths),
+        last_generated_result_source_hits=[[_RESOLVED_JD_PATH], [paths[2]]],
+    )
+    questions = [
+        "第 1 个怎么样",
+        "这个 JD 符合我的求职条件吗",
+    ]
+
+    state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=questions,
+        initial_state=state,
+        initial_focus=None,
+        use_real_dialog_events=True,
+        use_real_contextless_guard=True,
+        use_real_state_updates=True,
+        material_indices=[[0], [0]],
+        domain_options={},
+        repo_state=repo_state,
+        generate=True,
+    )
+
+    assert [request.query for request in observed] == [
+        questions[0],
+        repo_state.docs[1],
+        questions[1],
+        repo_state.docs[1],
+    ]
+    assert captured["materials"][0]["allowed_paths"] == {_RESOLVED_JD_PATH}
+    assert captured["materials"][1]["allowed_paths"] == {_RESOLVED_JD_PATH}
+    assert captured["dialog_inputs"][1]["focused_file"] == _RESOLVED_JD_PATH
+    assert state.last_result_set_focus_file == _RESOLVED_JD_PATH
+    assert state.last_generated_result_source_hits == [
+        [_RESOLVED_JD_PATH],
+        [paths[2]],
+    ]
+    assert captured["prompts"] == []
+    assert fake_models.calls == []
+
+
 def test_unique_non_jd_abstains_and_preserves_normal_retrieval_fallback(
     monkeypatch,
     tmp_path,

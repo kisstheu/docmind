@@ -1,0 +1,265 @@
+version: 1
+
+task_name: generated_result_item_provenance_ordinal_followup
+
+title: 生成结果条目来源证明与序号续问
+
+task_goal: >-
+  对 generated visible enumeration 建立可证明的逐项 provenance；仅当某个显示条目在
+  上一轮受约束 source candidate set 内能够 deterministic、source-bounded、unique 地
+  对应真实 backing document 时，才允许后续 ordinal selection，并把成功选择转换为
+  真实 backing object 与 document focus。无法证明或存在歧义时继续本地 fail closed。
+
+task_kind: independent_result_set_referential_integrity_followup
+implementation_status: authorized_for_implementation
+
+baseline:
+  branch: main
+  head: 2b7c07cbb3a5ea374ad5b8047612dab2ee9e3c38
+  upstream: origin/main
+  ahead_behind: [0, 0]
+  worktree: clean_before_task_card
+  preflight_commands:
+    - git status --short --branch
+    - git rev-parse HEAD
+    - git rev-list --left-right --count HEAD...origin/main
+    - git log --oneline --decorate -15
+
+prerequisite_and_related_completed_work:
+  - card: docs/task_card_result_set_generated_enumeration_ordinal_safety.yaml
+    relation: >-
+      本任务扩展其 deferred provenance boundary；未形成可靠 mapping 时仍必须撤销 ordinal
+      selectability，不能回退旧文件序号。
+  - card: docs/task_card_result_set_item_focus_continuation_and_ordinal_correction.yaml
+    relation: >-
+      复用原始结果集、当前单项 focus、ordinal correction 与 focus continuation 合同，
+      成功解析 generated item 后必须落到同一真实文件 focus 路径。
+  - card: docs/task_card_focused_document_reference_no_subject_guard.yaml
+    relation: >-
+      成功建立唯一 document focus 后，继续复用“这个文件/这个 JD/这个岗位”的现有
+      explicit-reference、resolved-document 与 Domain opportunity；不改其守门语义。
+
+user_problem:
+  natural_chain:
+    - 当前有哪些文档？
+    - 是关于什么的？
+    - 有哪些岗位？
+    - 第1个怎么样？
+  observed_gap: >-
+    用户已看到新的业务条目枚举，但内部只保留更早的文件 result set；安全门因此只能拒绝
+    ordinal。拒绝是正确的，缺口是没有把可证明来源的新显示项物化成可安全选择的 backing object。
+  privacy_note: 所有仓库内示例均使用 A.md、B.md、C.md、岗位甲、项目甲、合同甲等合成数据。
+
+root_cause:
+  generation_context: >-
+    runner 在远程生成以及本地检索回答结束时仍持有 RepoState 的 paths/docs、
+    chunk_paths/chunk_texts 与 relevant_indices，Prompt 或本地回答也可包含来源标记；但状态写回
+    只接收 answer text、focused_file 和旧 result-set scope，没有接收或计算 generated display
+    item provenance。来源标记本身不能替代候选全文中的确定性证据。
+  answer_type_gap: >-
+    infer_answer_type 根据问句意图、编号或 bullet 外观、文件词和可抽取文件名推断
+    enumeration_file。生成的岗位、项目或条款列表可形成用户可见枚举，却不会成为新的文件名集合；
+    即使偶然推断为 enumeration_file，extract_file_items 也只能抽出回答中显式出现的文件名，
+    不能证明显示条目与 backing document 一致。
+  state_gap: >-
+    ConversationState 当前只能表达 last_result_set_items、entity_type、selectable 与单文件 focus，
+    不能并行表达 generated display labels、受约束 source candidates 及每项 0/1/N 个 provenance hits。
+  safety_behavior: >-
+    generated enumeration ordinal safety 会在新可见枚举未物化时保留旧文件上下文并将
+    last_result_set_selectable 设为 false；question scope 随后本地拒绝 ordinal。这阻止了
+    visible ordinal 错绑旧 backing ordinal，必须保留。
+
+semantic_boundary:
+  source_result_set: >-
+    生成上一轮答案时已有的真实文件候选集合；它继续承担非 ordinal 的集合上下文，不因生成列表
+    被替换或按位置重排。
+  generated_visible_enumeration: >-
+    远程生成回答中用户实际看到的有序 numbered/bulleted display item 集合。
+  display_item: >-
+    从用户可见枚举行中确定性解析出的标签文本；解析成功本身不构成来源证明。
+  item_provenance: >-
+    在 source candidate set 内，对 display item 执行明确定义的保守文本规范化后 exact evidence
+    查找所得的全部真实 source paths；不读取候选集合外文件。
+  backing_object: >-
+    某个 display item 的 provenance hits 恰好只有一个时对应的真实 RepoState document path。
+  ordinal_selectability: >-
+    按 item 粒度判定：被引用序号对应项只有一个 backing source 时可选；0 个或多个来源时不可选。
+    旧 last_result_set_selectable 继续为 false，不能代表 generated item 的可选性。
+  resolved_focus: >-
+    成功 ordinal selection 后沿用现有单文件 result scope、retrieval、current focus、
+    focused-document continuation 和 resolved-document Domain opportunity。
+
+state_invariant:
+  visible_to_backing: >-
+    用户引用的 display ordinal 只能先定位 generated display item，再读取该项唯一 provenance；
+    display ordinal 不得映射到旧 result-set ordinal。
+  fail_closed:
+    - provenance missing 时本地拒绝，不检索、不进 Domain、不调用远程模型猜来源。
+    - provenance ambiguous 时本地拒绝，不 arbitrary choose。
+    - generated 或 hallucinated item 在 candidate set 内无 exact evidence 时不可选。
+    - generated display state 缺失、长度错位或结构无效时不可选。
+  selectable: unique deterministic backing source 才允许该 ordinal 进入真实文件 scope。
+  partial_list_contract: >-
+    允许保存部分可解析列表，但不设置整组 selectable。每个 ordinal 独立检查其 provenance hits；
+    unique 项可选，ambiguous/missing 项拒绝，避免无意形成整组半可靠状态。
+  old_context: >-
+    source result set 继续保留为非 ordinal context；generated display state 仅抢占显式 ordinal，
+    不粗暴清空旧集合。
+
+repair_design:
+  choice: generation_time_materialization
+  evidence_rule: >-
+    retrieval answer 写回前统一从用户可见枚举解析 display items；只解析并唯一对齐上一轮 source
+    result set 中能够精确解析为 RepoState path 的候选文档。对 display item 与每个候选全文执行 Unicode NFKC、
+    casefold、空白折叠和首尾 Markdown 包装清理；仅当规范化 display item 与文档中的完整非空行、
+    明确键值行的 value 或 Markdown table cell 全等时才算 exact evidence，记录全部命中 source。
+  uniqueness_rule: >-
+    同一 source 内命中多次仍算一个 source；恰好一个 source 命中才形成 backing object；0 个或
+    多个 source 均不形成 backing。
+  selection_rule: >-
+    question scope 优先检查当前 generated display state 的显式 ordinal；唯一 backing 转成现有
+    FileResultSetSelection path，之后复用既有 materialized question、单文件 retrieval scope 与 focus。
+  lifecycle: >-
+    新的真实文件枚举或新的 generated visible enumeration 替换旧 generated display state；
+    对已选项的内容续问保留该 state，普通非相关上下文清理继续遵循现有 result-set 生命周期。
+  rollback: 新增状态字段、纯函数 provenance materializer 和 scope 优先选择均可独立回滚。
+
+implementation_constraints:
+  - 不通过 embedding 相似度决定唯一来源。
+  - 不通过 LLM 分类、tool call 或自由文本猜来源。
+  - 不通过 retrieval ranking、top-1 或 chunk ranking 猜来源。
+  - 不通过“生成第 N 项等于 chunk 第 N 项”建立 mapping。
+  - 不因为生成列表数量与旧文件数量相同就建立 mapping。
+  - 不因为字符串大致相似、fuzzy best score 或语义接近就认定来源。
+  - 不降低已有 generated enumeration ordinal safety。
+  - 不把 Core 改成招聘专用逻辑，不按“有哪些岗位”或具体业务词分支。
+  - provenance 必须限定在上一轮真实 source candidate set 内，候选 path 自身也必须唯一解析。
+  - 新增规则覆盖命中、相邻误触发与至少三类异质样本。
+
+editable_scope:
+  allow:
+    - docs/task_card_generated_result_item_provenance_ordinal_followup.yaml
+    - app/chat_state_helpers.py
+    - app/dialog/result_set.py
+    - app/dialog/question_scope.py
+    - app/dialog/state_machine.py
+    - app/chat_loop_parts/runner.py
+    - public_tests/state/**
+    - public_tests/domain/**
+  reviewed_but_not_expected_to_change:
+    - app/chat_loop_handlers/**
+    - app/chat_text/file_lookup.py
+    - app/retrieval_flow/**
+    - retrieval/**
+  deny:
+    - packages/docmind-recruitment-plugin/**
+    - packages/docmind-domain-sdk/**
+    - tests/**
+    - test_notes/**
+
+non_goals:
+  - plugin manager
+  - runtime enable/disable
+  - runtime plugin UI
+  - job-search rules 长期来源
+  - 用户 profile
+  - 通用知识图谱
+  - MCP
+  - 多插件仲裁
+  - action detector 大重构
+  - retrieval ranking 重构
+  - OCR 大重构
+  - Recruitment Plugin 的 JD recognition、extraction、comparison 或 Markdown rendering
+  - Prompt 系统重构
+  - fuzzy entity linking 或跨轮通用实体消歧
+
+test_matrix:
+  case_a_no_provenance:
+    setup: 旧 A.md、B.md、C.md；新显示 X、Y，candidate docs 中没有 exact evidence。
+    expect: 第1个本地 fail closed，不选择 A.md，不形成 focus，不进 Domain/retrieval/remote。
+  case_b_equal_count:
+    setup: 旧三文件与新 X、Y、Z 数量相同，但无 provenance。
+    expect: 仍 fail closed，数量一致不构成 proof。
+  case_c_unique_provenance:
+    setup: X 只 exact 命中 B.md，Y 只 exact 命中 C.md。
+    expect: 第1个选择 display X、backing B.md、focus B.md，绝不选择 A.md。
+  case_d_ambiguous:
+    setup: X 在 B.md、C.md 均 exact 命中。
+    expect: 第1个 fail closed。
+  case_e_hallucinated:
+    setup: X 在受限 candidate set 内无命中。
+    expect: X 无 backing、不可选。
+  case_f_partial:
+    setup: X unique、Y ambiguous、Z missing。
+    expect: 第1个可选；第2、3个分别 fail closed；整组不宣称 selectable。
+  case_g_focus_continuation:
+    setup: 第1个可靠解析为 B.md 后继续“这个文件主要讲什么”或“这个 JD 呢”。
+    expect: 继续 B.md，并给现有 resolved-document Domain 正常机会。
+  case_h_real_file_ordinal:
+    setup: 当前有哪些文档形成真实 A.md、B.md、C.md 枚举。
+    expect: 第1个继续选择 A.md。
+  case_i_original_result_set:
+    setup: generated list 不可安全选号。
+    expect: 旧文件集合的非 ordinal context 继续可用。
+  case_j_cross_domain:
+    setup: 合同付款安排、采购交付方案、项目里程碑三类 synthetic generated enumeration。
+    expect: unique provenance 可选；missing/ambiguous 均 fail closed，不依赖招聘词。
+  adjacent_false_positive:
+    setup: display item 仅与某文档文本近似或只命中候选集合外文档。
+    expect: 不建立 provenance。
+
+privacy_guard:
+  - task card、源码、公开测试、注释和 commit message 只使用合成标识与公开安全文本。
+  - 不写入真实公司名、人名、联系方式、JD 正文、截图名、时间戳、notes 路径或用户规则。
+  - 真实资料只用于本机只读 CLI smoke，日志与模型输出不进入仓库或暂存区。
+  - 提交前扫描 tracked/staged 文件，并确认 test_notes 不进入暂存区。
+
+acceptance:
+  automated:
+    - 先补 tracked red tests，再修改 production code。
+    - provenance 纯函数覆盖 0/1/N source、候选集边界、数量一致和三类跨域样本。
+    - question scope 与 runner 覆盖 unique ordinal 到正确 backing、拒绝路径零 Domain/retrieval/remote。
+    - 成功选择后的 current focus、显式文档续问和 resolved-document Domain 不回归。
+    - 旧真实文件 ordinal、ordinal correction、原始 result-set 非 ordinal context 全部通过。
+    - state、domain、精确 py_compile、git diff check 与仓库 full pytest 通过。
+  cli:
+    chain:
+      - 当前有哪些文档？
+      - 是关于什么的？
+      - 有哪些岗位？
+      - 第1个怎么样？
+    proof: >-
+      日志必须证明 generated display item、该项 provenance hits、最终 backing source 与 current focus
+      一致；真实资料无法唯一证明时必须报告 BLOCKED_BY_PROVENANCE，不能降低标准。
+
+verification:
+  task_card:
+    - UTF-8 可解码且无 BOM。
+    - yaml.safe_load 可解析且内容非空。
+    - 人工复核 root cause、scope、non-goals、invariant 与 privacy。
+  static:
+    - 对实际改动 Python 文件运行 .venv/bin/python -m py_compile。
+    - git diff --check
+    - git diff --cached --check
+    - 执行项目规定的中文乱码扫描。
+  targeted:
+    - public_tests/state/test_generated_result_item_provenance_contract.py
+    - public_tests/state/test_generated_enumeration_ordinal_safety_contract.py
+    - public_tests/state/test_question_scope_contract.py
+  state:
+    - PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider public_tests/state
+  domain:
+    - PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider public_tests/domain
+  full:
+    - >-
+      PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider
+      tests packages/docmind-domain-sdk/tests packages/docmind-recruitment-plugin/tests
+      public_tests test_query_router_repo_meta.py
+
+git_delivery:
+  local_commit_required: true
+  push_authorized: false
+  commit_title_format: "<type>(<scope>): <中文句子>"
+  commit_body_minimum:
+    - 目标说明 generated display ordinal 只解析到唯一可证 backing source。
+    - 手段说明逐项 provenance 与 fail-closed/跨域回归。

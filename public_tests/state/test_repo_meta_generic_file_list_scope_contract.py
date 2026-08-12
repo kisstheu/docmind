@@ -357,13 +357,14 @@ def _run_turns(
     state: ConversationState,
     repo_chunks: list[str] | None = None,
     domain_dispatch_port=None,
+    client=None,
 ):
     inputs = iter([*questions, "q"])
     allowed_paths: list[object] = []
     query_result_sets: list[object] = []
     real_materials = chat_runner.build_retrieval_materials
     real_query = chat_runner.build_search_query
-    client = _ClientStub()
+    client = client or _ClientStub()
     logger = _LoggerStub()
 
     monkeypatch.setattr(chat_runtime, "_read_user_question", lambda **_kwargs: next(inputs))
@@ -415,6 +416,113 @@ class _RecordingEmptyDomainHost(EmptyDomainHost):
     def dispatch(self, request):
         self.calls.append(request)
         return None
+
+
+class _GeneratedProvenanceModelsStub(_ModelsStub):
+    def generate_content(self, *, model, contents, config=None):
+        self.calls.append(contents)
+        if len(self.calls) == 1:
+            return SimpleNamespace(text="1. 岗位甲\n2. 岗位乙")
+        return SimpleNamespace(text="根据当前唯一文件完成合成说明。")
+
+
+class _GeneratedProvenanceClientStub:
+    def __init__(self):
+        self.models = _GeneratedProvenanceModelsStub()
+
+
+def test_runner_generated_ordinal_uses_provenance_backing_and_keeps_focus(
+    monkeypatch,
+    tmp_path,
+):
+    paths = ["A.md", "B.md", "C.md"]
+    chunks = [
+        "这里只记录合成背景。",
+        "标题：岗位甲\n要求：合成能力甲。",
+        "标题：岗位乙\n要求：合成能力乙。",
+    ]
+    client = _GeneratedProvenanceClientStub()
+    monkeypatch.setattr(chat_runner, "maybe_build_direct_lookup_answer", lambda **_kwargs: None)
+    monkeypatch.setattr(chat_runner, "maybe_build_related_records_answer", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        "app.chat_loop_handlers.maybe_build_direct_lookup_answer",
+        lambda **_kwargs: None,
+    )
+    state = _selectable_file_state(paths)
+    state.last_route = "normal_retrieval"
+    state.last_content_route = "normal_retrieval"
+    state.last_content_user_question = "是关于什么的？"
+    state.last_answer_text = "这些合成材料主要介绍软件工程与自动化。"
+    state.last_answer_preview = state.last_answer_text
+    state.last_answer_type = None
+    allowed, query_sets, returned_client = _run_turns(
+        monkeypatch,
+        tmp_path,
+        questions=[
+            "有哪些岗位？",
+            "第1个怎么样？",
+            "这个文件主要讲什么？",
+        ],
+        repo_paths=paths,
+        repo_chunks=chunks,
+        state=state,
+        client=client,
+    )
+
+    assert returned_client is client
+    assert allowed == [None, {"B.md"}, {"B.md"}]
+    assert query_sets == [paths, ["B.md"], ["B.md"]]
+    assert chat_runtime.conversation_state.last_generated_result_items == [
+        "岗位甲",
+        "岗位乙",
+    ]
+    assert chat_runtime.conversation_state.last_generated_result_source_hits == [
+        ["B.md"],
+        ["C.md"],
+    ]
+    assert chat_runtime.conversation_state.last_result_set_items == paths
+    assert chat_runtime.conversation_state.last_result_set_focus_file == "B.md"
+    assert len(client.models.calls) == 3
+
+
+def test_runner_local_visible_enumeration_materializes_the_same_provenance_contract(
+    monkeypatch,
+    tmp_path,
+):
+    paths = ["A.md", "B.md", "C.md"]
+    chunks = ["合成背景甲。", "分期付款", "验收后付款"]
+    local_answer = "1. 分期付款\n   来源：B.md"
+    monkeypatch.setattr(
+        chat_runner,
+        "maybe_build_direct_lookup_answer",
+        lambda **_kwargs: local_answer,
+    )
+    monkeypatch.setattr(
+        "app.chat_loop_handlers.maybe_build_direct_lookup_answer",
+        lambda **_kwargs: local_answer,
+    )
+    state = _selectable_file_state(paths)
+    state.last_route = "normal_retrieval"
+    state.last_content_route = "normal_retrieval"
+    state.last_content_user_question = "是关于什么的？"
+    state.last_answer_text = "这些合成材料主要介绍合同履约。"
+    state.last_answer_preview = state.last_answer_text
+    state.last_answer_type = None
+
+    allowed, _query_sets, client = _run_turns(
+        monkeypatch,
+        tmp_path,
+        questions=["有哪些付款安排？", "第1个怎么样？"],
+        repo_paths=paths,
+        repo_chunks=chunks,
+        state=state,
+    )
+
+    assert allowed == [None, {"B.md"}]
+    assert chat_runtime.conversation_state.last_generated_result_items == ["分期付款"]
+    assert chat_runtime.conversation_state.last_generated_result_source_hits == [["B.md"]]
+    assert chat_runtime.conversation_state.last_result_set_focus_file == "B.md"
+    assert len(client.models.calls) == 1
 
 
 def test_runner_rejects_unmapped_generated_ordinal_before_domain_retrieval_or_model(
