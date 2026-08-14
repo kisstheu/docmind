@@ -186,6 +186,7 @@ class DialogEvent:
     name: str
     route_hint: Optional[str] = None
     merged_query: Optional[str] = None
+    content_target: Optional[str] = None
 
 
 def detect_dialog_event(
@@ -216,6 +217,7 @@ def detect_dialog_event(
     prev_q = state.last_content_user_question
     prev_route = state.last_content_route
     last_topic = state.last_local_topic
+    content_lookup_target = extract_content_lookup_target(question)
 
     selected_candidate_is_active = bool(state.last_selected_candidate)
     file_focus_overrides_selection = False
@@ -240,7 +242,11 @@ def detect_dialog_event(
         question,
         has_selected_candidate=True,
     ):
-        return DialogEvent(name="content_followup", route_hint="normal_retrieval")
+        return DialogEvent(
+            name="content_followup",
+            route_hint="normal_retrieval",
+            content_target=content_lookup_target or None,
+        )
 
     current_result_set_focus_file = focused_file or state.last_result_set_focus_file
     is_standalone_general_question = looks_like_standalone_general_question(question)
@@ -264,8 +270,13 @@ def detect_dialog_event(
                 name="content_followup",
                 route_hint="normal_retrieval",
                 merged_query=f"{prev_q} {question}",
+                content_target=content_lookup_target or None,
             )
-        return DialogEvent(name="content_followup", route_hint="normal_retrieval")
+        return DialogEvent(
+            name="content_followup",
+            route_hint="normal_retrieval",
+            content_target=content_lookup_target or None,
+        )
 
     if state.last_route == "repo_meta" and last_topic == "list_files" and is_list_format_modifier(question):
         return DialogEvent(name="repo_meta_request", route_hint="repo_meta")
@@ -350,8 +361,13 @@ def detect_dialog_event(
                 name="content_followup",
                 route_hint="normal_retrieval",
                 merged_query=f"{prev_q} {question}",
+                content_target=content_lookup_target or None,
             )
-        return DialogEvent(name="content_followup", route_hint="normal_retrieval")
+        return DialogEvent(
+            name="content_followup",
+            route_hint="normal_retrieval",
+            content_target=content_lookup_target or None,
+        )
 
     # === 4. 动作请求
     if is_action_request(question):
@@ -375,7 +391,6 @@ def detect_dialog_event(
 
     # === 6. repo_meta 继承
     if prev_route == "repo_meta":
-        content_lookup_target = extract_content_lookup_target(question)
         if content_lookup_target:
             logger.debug(
                 f"🧪 [repo_meta继承守门] q={question} | "
@@ -385,6 +400,7 @@ def detect_dialog_event(
                 name="entity_lookup_followup",
                 route_hint="normal_retrieval",
                 merged_query=content_lookup_target,
+                content_target=content_lookup_target,
             )
 
         if is_followup_question(question):
@@ -419,8 +435,16 @@ def detect_dialog_event(
 
     if prev_route in {"normal_retrieval", "repo_meta"} and rs_match and is_result_set_answer:
         if looks_like_result_set_continuation_followup(question):
-            return DialogEvent(name="result_set_expansion_followup", route_hint="normal_retrieval")
-        return DialogEvent(name="result_set_followup", route_hint="normal_retrieval")
+            return DialogEvent(
+                name="result_set_expansion_followup",
+                route_hint="normal_retrieval",
+                content_target=content_lookup_target or None,
+            )
+        return DialogEvent(
+            name="result_set_followup",
+            route_hint="normal_retrieval",
+            content_target=content_lookup_target or None,
+        )
 
     # === 8. 内容追问继承
     if (
@@ -433,8 +457,14 @@ def detect_dialog_event(
                 name="content_followup",
                 route_hint="normal_retrieval",
                 merged_query=f"{prev_q} {question}",
+                content_target=content_lookup_target or None,
             )
-        return DialogEvent(name="content_followup", route_hint="normal_retrieval")
+        return DialogEvent(
+            name="content_followup",
+            route_hint="normal_retrieval",
+            merged_query=content_lookup_target or None,
+            content_target=content_lookup_target or None,
+        )
 
     # === 9. 默认
     return DialogEvent(name="unknown", route_hint=None)

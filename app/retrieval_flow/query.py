@@ -56,7 +56,17 @@ def build_search_query(
     ollama_api_url: str,
     ollama_model: str,
 ) -> tuple[str, str]:
-    if flags["skip_retrieval"] or flags["is_inventory_query"]:
+    event_name = getattr(event, "name", "")
+    content_target = str(getattr(event, "content_target", None) or "").strip()
+    scoped_content_target = bool(
+        content_target
+        and last_result_set_items
+        and last_result_set_entity_type == "文件"
+    )
+
+    if flags["skip_retrieval"]:
+        return question, ""
+    if flags["is_inventory_query"] and not scoped_content_target:
         return question, ""
 
     if should_reuse_previous_results(question, event, last_relevant_indices):
@@ -68,11 +78,14 @@ def build_search_query(
     context_anchor = ""
     structured_uses_result_set = False
 
-    event_name = getattr(event, "name", "")
     if event_name == "selected_candidate_followup" and last_selected_candidate:
         source_text = "；".join(last_selected_source_files or [])
         base_query = _merge_query_terms(last_selected_candidate, source_text, normalized_question or question)
         logger.info(f"🎯 [选择焦点追问] {base_query}")
+    elif scoped_content_target:
+        search_query = normalize_question_for_retrieval(content_target) or content_target
+        logger.info(f"🔎 [结构化内容目标检索] {search_query}")
+        return search_query, context_anchor
     elif event_name == "entity_lookup_followup" and getattr(event, "merged_query", None):
         base_query = normalize_question_for_retrieval(event.merged_query) or normalized_question or question
         logger.info(f"🔎 [内容目标检索] {base_query}")

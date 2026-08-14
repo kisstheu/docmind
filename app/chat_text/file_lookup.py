@@ -291,11 +291,14 @@ def maybe_build_file_location_answer(
     max_items: int = 5,
     logger=None,
     allow_followup_inference: bool = False,
+    content_target: str | None = None,
 ) -> str | None:
     # Local import to avoid any potential cross-module initialization coupling.
     from retrieval.search_intent import is_file_location_lookup_query
 
     if not relevant_indices:
+        return None
+    if (content_target or "").strip():
         return None
     if _looks_like_topic_summary_followup(question) or looks_like_file_set_content_question(question):
         return None

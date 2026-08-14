@@ -85,6 +85,7 @@ def try_handle_repo_meta(
     conversation_state: ConversationState,
     client=None,
     model_id: str | None = None,
+    semantic_action: str | None = None,
 ):
     if route != "repo_meta":
         return None, None
@@ -116,6 +117,7 @@ def try_handle_repo_meta(
         category_context_answer=getattr(conversation_state, "last_category_context_answer", None),
         topic_summarizer=topic_summarizer,
         fallback_topic_summarizer=remote_topic_summarizer,
+        semantic_action=semantic_action,
     )
     logger.info(f"📷 repo_meta 返回值: {repr(local_answer)[:200]} | topic={local_topic}")
 

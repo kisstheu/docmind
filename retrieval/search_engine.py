@@ -47,6 +47,7 @@ def perform_retrieval(
     allowed_paths=None,
     scope_label: str | None = None,
     task_mode: str | None = None,
+    content_target: str | None = None,
 ):
     chunk_texts = list(getattr(repo_state, "chunk_texts", []) or [])
     chunk_paths = list(getattr(repo_state, "chunk_paths", []) or [])
@@ -111,6 +112,12 @@ def perform_retrieval(
         logger.info(f"   🪝 [锚点辅助检索] {context_anchor}")
 
     raw_search_terms = extract_query_terms(search_query, question)
+    structured_target_terms = {
+        str(term or "").strip().lower()
+        for term in extract_query_terms(content_target or "", content_target or "")
+        if str(term or "").strip()
+    }
+    is_scoped_content_lookup = bool(allowed_path_set is not None and structured_target_terms)
 
     search_terms = []
     for term in raw_search_terms:
@@ -229,7 +236,10 @@ def perform_retrieval(
                 continue
 
             # ---------- 正文命中 ----------
-            if not should_score_body_term(term_lower):
+            if (
+                not should_score_body_term(term_lower)
+                and not (is_scoped_content_lookup and term_lower in structured_target_terms)
+            ):
                 continue
 
             if term_lower in chunk_text_lower:
@@ -325,7 +335,12 @@ def perform_retrieval(
 
     ranked_candidate_indices = sorted(candidate_indices, key=lambda idx: float(scores[idx]), reverse=True)
     relevant_indices = [i for i in ranked_candidate_indices if scores[i] > threshold]
-    weak_query = is_weak_query(question, search_terms)
+    weak_query = is_weak_query(
+        question,
+        search_terms,
+        has_bounded_scope=allowed_path_set is not None,
+        has_content_enumeration_intent=bool(structured_target_terms),
+    )
     fallback_threshold = 0.24 if is_entity_lookup else 0.30
 
     if not relevant_indices and should_enable_fallback(search_terms, weak_query):

@@ -52,9 +52,9 @@ def _is_repo_meta_inventory_by_local_model(
     ollama_api_url: str,
     ollama_model: str,
     logger,
-) -> bool:
+) -> str | None:
     if not _should_try_local_inventory_route(question, q):
-        return False
+        return None
 
     prompt = f"""
 你是一个中文问句分类器，只判断用户是不是在索要“知识库里的文档/文件清单”。
@@ -89,14 +89,14 @@ def _is_repo_meta_inventory_by_local_model(
         resp.raise_for_status()
         text = resp.json().get("response", "").strip()
         result = json.loads(text)
-        is_inventory_listing = bool(result.get("inventory_listing"))
+        is_inventory_listing = result.get("inventory_listing") is True
         if is_inventory_listing and _passes_inventory_route_guard(q):
             logger.info(f"🧭 [本地模型补判] inventory_listing -> {question}")
-            return True
+            return "list_files"
     except Exception as e:
         logger.warning(f"[inventory补判失败] {e}")
 
-    return False
+    return None
 
 
 def _is_smalltalk_by_local_rewrite(question: str, ollama_api_url: str, ollama_model: str, logger) -> bool:
@@ -148,8 +148,19 @@ def route_question(
         logger.info(f"🧭 [规则命中] smalltalk -> {question}")
         return {"route": "smalltalk"}
 
-    if _is_repo_meta_inventory_by_local_model(question, q, ollama_api_url, ollama_model, logger):
-        return {"route": "repo_meta"}
+    inventory_action = _is_repo_meta_inventory_by_local_model(
+        question,
+        q,
+        ollama_api_url,
+        ollama_model,
+        logger,
+    )
+    if inventory_action:
+        return {
+            "route": "repo_meta",
+            "action": inventory_action,
+            "semantic_source": "local_model_inventory",
+        }
 
     if _is_file_locator_query(q):
         logger.info(f"🧭 [规则命中] file_locator -> {question}")

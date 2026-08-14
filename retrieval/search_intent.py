@@ -88,7 +88,13 @@ def is_company_name_lookup_context(question: str, search_terms: list[str]) -> bo
     return False
 
 
-def is_weak_query(question: str, search_terms: list[str]) -> bool:
+def is_weak_query(
+    question: str,
+    search_terms: list[str],
+    *,
+    has_bounded_scope: bool = False,
+    has_content_enumeration_intent: bool = False,
+) -> bool:
     q = question.strip().lower()
 
     if is_capability_like_query(q):
@@ -100,6 +106,9 @@ def is_weak_query(question: str, search_terms: list[str]) -> bool:
 
     if not search_terms:
         return True
+
+    if has_bounded_scope and has_content_enumeration_intent:
+        return False
 
     joined = "".join(search_terms).strip()
     if len(search_terms) == 1 and len(joined) <= 2:

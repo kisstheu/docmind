@@ -73,6 +73,7 @@ def answer_repo_meta_question(
     category_context_answer: str | None = None,
     topic_summarizer=None,
     fallback_topic_summarizer=None,
+    semantic_action: str | None = None,
 ):
     paths = list(repo_state.paths)
     all_files = list(repo_state.all_files)
@@ -81,10 +82,14 @@ def answer_repo_meta_question(
     if not paths:
         return "当前知识库里还没有可用文档。", "empty"
 
-    topic = classify_repo_meta_question(
-        question,
-        last_user_question=last_user_question,
-        last_local_topic=last_local_topic,
+    topic = (
+        semantic_action
+        if semantic_action in {"list_files"}
+        else classify_repo_meta_question(
+            question,
+            last_user_question=last_user_question,
+            last_local_topic=last_local_topic,
+        )
     )
 
     if topic == "count":

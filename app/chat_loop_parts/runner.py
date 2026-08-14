@@ -251,6 +251,7 @@ def run_chat_loop(
                 conversation_state=runtime.conversation_state,
                 client=client,
                 model_id=model_id,
+                semantic_action=route_info.get("action"),
             )
             if local_answer is not None:
                 print_answer(local_answer, start_qa)
@@ -365,8 +366,13 @@ def run_chat_loop(
                 )
                 continue
             flags = determine_query_flags(question)
+            scoped_content_lookup = bool(
+                event.content_target
+                and scope_decision.result_scope_paths is not None
+            )
             analytic_retrieval = (
-                scope_decision.requires_result_set_generation
+                scoped_content_lookup
+                or scope_decision.requires_result_set_generation
                 or _loop_handlers.looks_like_analytic_retrieval_question(
                     question,
                     has_collection_context=(
@@ -441,6 +447,7 @@ def run_chat_loop(
                 allowed_paths=retrieval_allowed_paths,
                 scope_label=category_scope_label,
                 selected_source_files=runtime.conversation_state.last_selected_source_files,
+                content_target=event.content_target,
             )
             current_focus_file = materials["current_focus_file"]
             if (
@@ -566,6 +573,7 @@ def run_chat_loop(
                             "result_set_expansion_followup",
                         }
                     ),
+                    content_target=event.content_target,
                 )
             )
             if local_file_locator_answer:
@@ -662,7 +670,10 @@ def run_chat_loop(
                     logger=logger,
                     ollama_api_url=ollama_api_url,
                     ollama_model=ollama_model,
-                    prefer_content_answer=focused_file_content_followup,
+                    prefer_content_answer=(
+                        focused_file_content_followup
+                        or scoped_content_lookup
+                    ),
                 )
             if fallback_local_answer:
                 if event.name == "structured_skill_summary":

@@ -33,6 +33,7 @@ def build_retrieval_materials(
     allowed_paths=None,
     scope_label: str | None = None,
     selected_source_files: list[str] | None = None,
+    content_target: str | None = None,
 ):
     inventory_candidates_text = (
         build_inventory_candidates_text(question, repo_state, flags["inventory_target_type"])
@@ -91,6 +92,7 @@ def build_retrieval_materials(
                 allowed_paths=effective_allowed_paths,
                 scope_label=scope_label,
                 task_mode=getattr(event, "name", None),
+                content_target=content_target,
             )
             current_focus_file = retrieval["current_focus_file"]
             relevant_indices = retrieval["relevant_indices"]

@@ -28,6 +28,7 @@ from app.dialog.question_scope import (
 from app.dialog.result_set import has_selectable_result_set
 
 FOLLOWUP_EVENT_NAMES = {
+    "entity_lookup_followup",
     "content_followup",
     "result_set_followup",
     "result_set_expansion_followup",
@@ -432,6 +433,12 @@ def update_state_after_retrieval_answer(
             and prev_result_set_entity_type in entity_to_answer_type
             and bool(prev_result_set_items)
         )
+        preserve_parent_result_set_scope = (
+            prev_result_set_entity_type in entity_to_answer_type
+            and bool(prev_result_set_items)
+            and scope_decision.result_scope_paths is not None
+            and is_followup_turn
+        )
         generated_unmaterialized_enumeration = (
             preserve_result_set_on_result_set_followup
             and not scope_decision.requires_result_set_generation
@@ -523,6 +530,7 @@ def update_state_after_retrieval_answer(
             or preserve_file_scope_on_detail_followup
             or preserve_file_result_set_on_summary_followup
             or preserve_file_result_set_on_no_evidence_followup
+            or preserve_parent_result_set_scope
         ):
             state.last_result_set_items = prev_result_set_items
             state.last_result_set_entity_type = prev_result_set_entity_type
@@ -546,6 +554,10 @@ def update_state_after_retrieval_answer(
                     else 1
                 )
                 logger.debug("🧪 [状态保留] 文件结果集概括未产出新集合，保留候选文件但清除枚举回答类型")
+            elif preserve_parent_result_set_scope:
+                state.last_answer_type = None
+                state.last_result_set_selectable = prev_result_set_selectable
+                logger.debug("🧪 [状态保留] 受限内容追问未产出新集合，保留父结果集范围")
             else:
                 state.last_answer_type = prev_answer_type or entity_to_answer_type.get(prev_result_set_entity_type)
             if not preserve_file_result_set_on_summary_followup and not preserve_file_scope_on_content_question and not preserve_file_scope_on_synthesis:
