@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 
 from docmind_domain_sdk import (
     DomainPlugin,
@@ -41,3 +42,19 @@ class StaticDomainHost(DomainDispatchPort):
             expected_plugin_id=self._expected_plugin_id,
         )
         return result if result.status == "handled" else None
+
+    def adapt_content_query(
+        self,
+        *,
+        question: str,
+        content_target: str,
+        source_term_groups: Sequence[Sequence[str]],
+    ) -> str | None:
+        adapter = getattr(self._plugin, "adapt_content_query", None)
+        if not callable(adapter):
+            return None
+        return adapter(
+            question=question,
+            content_target=content_target,
+            source_term_groups=source_term_groups,
+        )

@@ -467,7 +467,11 @@ def detect_dialog_event(
         )
 
     # === 9. 默认
-    return DialogEvent(name="unknown", route_hint=None)
+    return DialogEvent(
+        name="unknown",
+        route_hint=None,
+        content_target=content_lookup_target or None,
+    )
 
 
 def apply_event_to_state(state: ConversationState, event: DialogEvent) -> ConversationState:

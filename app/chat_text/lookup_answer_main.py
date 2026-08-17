@@ -31,8 +31,12 @@ def _extract_content_lookup_target(question: str) -> str:
     return extract_content_lookup_target(question)
 
 
-def _has_distinct_content_lookup_value(question: str, items: list[dict]) -> bool:
-    target = _normalize_lookup_token(_extract_content_lookup_target(question))
+def _has_distinct_content_lookup_value(
+    question: str,
+    items: list[dict],
+    content_target: str | None = None,
+) -> bool:
+    target = _normalize_lookup_token(content_target or _extract_content_lookup_target(question))
     if not target:
         return True
 
@@ -44,6 +48,19 @@ def _has_distinct_content_lookup_value(question: str, items: list[dict]) -> bool
             return True
     return False
 
+
+def _resolve_listing_content_target(
+    question: str,
+    canonical_content_target: str | None = None,
+) -> str:
+    canonical = (canonical_content_target or "").strip()
+    canonical_norm = _normalize_lookup_token(canonical)
+    source_target = _normalize_lookup_token(_extract_content_lookup_target(question))
+    if canonical_norm and canonical_norm != source_target:
+        return canonical_norm
+    return source_target
+
+
 def maybe_build_direct_lookup_answer(
     *,
     question: str,
@@ -54,7 +71,12 @@ def maybe_build_direct_lookup_answer(
     logger=None,
     allow_followup_inference: bool = False,
     force_local_evidence: bool = False,
+    canonical_content_target: str | None = None,
 ) -> str | None:
+    semantic_content_target = _resolve_listing_content_target(
+        question,
+        canonical_content_target,
+    )
     focus_terms = _extract_direct_lookup_focus_terms(question)
     is_role_name_query, _ = _looks_like_role_name_query(question, focus_terms)
     if (not force_local_evidence) and (not _looks_like_direct_lookup_question(question)):
@@ -190,7 +212,12 @@ def maybe_build_direct_lookup_answer(
         repo_state=repo_state,
         max_items=max_items,
     )
-    if items and not _has_distinct_content_lookup_value(question, items):
+
+    if items and not _has_distinct_content_lookup_value(
+        question,
+        items,
+        content_target=semantic_content_target,
+    ):
         if logger:
             logger.info("🛝 [内容目标本地降级] 命中项仅含目标标题，继续使用检索上下文生成")
         items = []

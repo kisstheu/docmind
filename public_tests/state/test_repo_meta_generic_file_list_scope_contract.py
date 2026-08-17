@@ -25,6 +25,8 @@ from app.dialog.result_set import (
 from app.dialog.state_machine import ConversationState, detect_dialog_event
 from app.domain_host.host import EmptyDomainHost
 from app.file_actions.request_mutations import handle_rename_request_action
+from bootstrap.domain_composition import create_domain_host
+from docmind_recruitment_plugin import PLUGIN_ID, RecruitmentJDPlugin
 from retrieval.repo_index_types import RepoState
 
 
@@ -523,6 +525,55 @@ def test_runner_local_visible_enumeration_materializes_the_same_provenance_contr
     assert chat_runtime.conversation_state.last_generated_result_source_hits == [["B.md"]]
     assert chat_runtime.conversation_state.last_result_set_focus_file == "B.md"
     assert len(client.models.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("question", "domain_host"),
+    (
+        ("有哪些岗位？", EmptyDomainHost()),
+        (
+            "有哪些 JD？",
+            create_domain_host(
+                plugin=RecruitmentJDPlugin(),
+                expected_plugin_id=PLUGIN_ID,
+            ),
+        ),
+    ),
+)
+def test_runner_recruitment_term_adapter_reuses_core_local_listing(
+    monkeypatch,
+    tmp_path,
+    capsys,
+    question,
+    domain_host,
+):
+    paths = ["合成资料甲.md", "合成资料乙.md"]
+    chunks = [
+        "岗位：合成服务开发工程师\n岗位职责：维护合成服务。\n任职要求：熟悉 Python。",
+        "岗位：合成测试工程师\n岗位职责：维护合成测试。\n任职要求：熟悉 SQL。",
+    ]
+    state = _selectable_file_state(paths)
+    state.last_route = "normal_retrieval"
+    state.last_content_route = "normal_retrieval"
+    state.last_content_user_question = "这些资料主要讲什么？"
+    state.last_answer_text = "这些合成资料包含若干结构化对象。"
+    state.last_answer_preview = state.last_answer_text
+    state.last_answer_type = None
+
+    _allowed, _query_sets, client = _run_turns(
+        monkeypatch,
+        tmp_path,
+        questions=[question],
+        repo_paths=paths,
+        repo_chunks=chunks,
+        state=state,
+        domain_dispatch_port=domain_host,
+    )
+
+    output = capsys.readouterr().out
+    assert "合成服务开发工程师" in output
+    assert "合成测试工程师" in output
+    assert client.models.calls == []
 
 
 def test_runner_rejects_unmapped_generated_ordinal_before_domain_retrieval_or_model(
@@ -1298,6 +1349,39 @@ def test_failed_simple_local_fallback_does_not_consume_generation_turn():
     )
 
     assert answer is None
+
+
+def test_simple_fallback_forwards_canonical_content_target_to_direct_lookup(
+    monkeypatch,
+):
+    calls: dict[str, str | None] = {}
+
+    def fake_direct_lookup_answer(**kwargs):
+        calls["canonical_content_target"] = kwargs.get("canonical_content_target")
+        if kwargs.get("canonical_content_target"):
+            return None
+        return "岗位职责：\n岗位一：合成工程师"
+
+    monkeypatch.setattr(
+        "app.chat_loop_handlers.maybe_build_direct_lookup_answer",
+        fake_direct_lookup_answer,
+    )
+
+    answer = try_handle_retrieval_force_local_or_empty_context(
+        route="normal_retrieval",
+        question="有哪些 JD",
+        event_name="unknown",
+        search_query="岗位",
+        relevant_indices=[0],
+        repo_state=SimpleNamespace(paths=["材料甲.md"], chunk_paths=["材料甲.md"], chunk_texts=["岗位一：工程师\n岗位二：测试"],),
+        materials={"context_text": "参考片段", "inventory_candidates_text": ""},
+        conversation_state=None,
+        canonical_content_target="岗位",
+        logger=_LoggerStub(),
+    )
+
+    assert answer is None
+    assert calls.get("canonical_content_target") == "岗位"
 
 
 def test_successful_simple_lookup_stays_local_without_generation(

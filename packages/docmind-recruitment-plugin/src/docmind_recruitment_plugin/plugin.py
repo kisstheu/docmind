@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from docmind_domain_sdk import (
     PROTOCOL_VERSION,
     DomainRequest,
@@ -18,7 +20,7 @@ from .extraction import extract_constraints
 from .comparison import compare_job_search_rules
 from .comparison_contracts import JobSearchRules
 from .comparison_rendering import render_job_rule_comparison
-from .recognition import recognize_query
+from .recognition import DUTY_LABELS, REQUIREMENT_LABELS, recognize_query
 from .request_options import (
     RecruitmentOptionsError,
     parse_recruitment_request_options,
@@ -35,6 +37,33 @@ _INVALID_OPTIONS_MARKDOWN = """## 求职规则输入无效
 
 
 class RecruitmentJDPlugin:
+    def adapt_content_query(
+        self,
+        *,
+        question: str,
+        content_target: str,
+        source_term_groups: Sequence[Sequence[str]],
+    ) -> str | None:
+        """Adapt a listing term only when one source proves recruitment structure."""
+        target = "".join((content_target or "").casefold().split())
+        if target != "jd":
+            return None
+
+        normalized_question = "".join((question or "").casefold().split())
+        listing_markers = ("有哪些", "有哪", "有什么", "有啥", "列出", "列下", "盘点")
+        if not any(marker in normalized_question for marker in listing_markers):
+            return None
+
+        for source_terms in source_term_groups:
+            normalized_terms = {str(term or "").strip() for term in source_terms}
+            has_duty_structure = any(label in normalized_terms for label in DUTY_LABELS)
+            has_requirement_structure = any(
+                label in normalized_terms for label in REQUIREMENT_LABELS
+            )
+            if has_duty_structure and has_requirement_structure:
+                return "岗位"
+        return None
+
     async def describe(self, request: PluginDescribeRequest) -> PluginManifest:
         return PluginManifest(
             request_id=request.request_id,

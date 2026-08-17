@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -20,7 +21,11 @@ from app.dialog.result_set import (
     materialize_generated_result_set_provenance,
     materialize_single_file_result_set_question,
 )
-from app.domain_dispatch_port import DomainDispatchPort, dispatch_domain_request
+from app.domain_dispatch_port import (
+    DomainDispatchPort,
+    adapt_domain_content_query,
+    dispatch_domain_request,
+)
 from app.resolved_document_domain import (
     has_unique_repo_display_name,
     resolve_repo_document,
@@ -92,6 +97,34 @@ def _materialize_visible_result_provenance(answer_text, scope_decision, repo_sta
         candidate_paths=candidate_paths,
         repo_state=repo_state,
     )
+
+
+def _source_term_groups_for_domain_adapter(
+    repo_state,
+    allowed_paths,
+) -> tuple[tuple[str, ...], ...]:
+    paths = list(getattr(repo_state, "paths", []) or [])
+    docs = list(getattr(repo_state, "docs", []) or [])
+    allowed = None if allowed_paths is None else {str(path) for path in allowed_paths}
+    groups: list[tuple[str, ...]] = []
+    for path, doc in zip(paths, docs):
+        if allowed is not None and str(path) not in allowed:
+            continue
+        terms: list[str] = []
+        seen: set[str] = set()
+        for raw_line in str(doc or "").splitlines():
+            line = re.sub(r"\s+", " ", raw_line).strip()
+            if not line:
+                continue
+            label = re.split(r"[:：]", line, maxsplit=1)[0].strip()
+            if ":" not in line and "：" not in line and len(line) > 16:
+                continue
+            if 2 <= len(label) <= 16 and label not in seen:
+                seen.add(label)
+                terms.append(label)
+        if terms:
+            groups.append(tuple(terms))
+    return tuple(groups)
 
 
 def run_chat_loop(
@@ -432,6 +465,25 @@ def run_chat_loop(
                 )
                 if len(scope_decision.result_scope_paths) == 1:
                     current_focus_file = scope_decision.result_scope_paths[0]
+            content_target = str(getattr(event, "content_target", None) or "").strip()
+            retrieval_content_target = content_target
+            if content_target:
+                adapted_search_query = adapt_domain_content_query(
+                    domain_dispatch_port,
+                    question=question,
+                    content_target=content_target,
+                    source_term_groups=_source_term_groups_for_domain_adapter(
+                        repo_state,
+                        retrieval_allowed_paths,
+                    ),
+                )
+                if adapted_search_query and adapted_search_query != search_query:
+                    logger.info(
+                        "🧩 [领域语义适配] "
+                        f"{content_target} -> {adapted_search_query}；继续复用 Core 检索"
+                    )
+                    search_query = adapted_search_query
+                    retrieval_content_target = adapted_search_query
             focus_before_retrieval = current_focus_file
             materials = build_retrieval_materials(
                 question=question,
@@ -447,7 +499,7 @@ def run_chat_loop(
                 allowed_paths=retrieval_allowed_paths,
                 scope_label=category_scope_label,
                 selected_source_files=runtime.conversation_state.last_selected_source_files,
-                content_target=event.content_target,
+                content_target=retrieval_content_target,
             )
             current_focus_file = materials["current_focus_file"]
             if (
@@ -607,6 +659,7 @@ def run_chat_loop(
                     relevant_indices=last_relevant_indices,
                     repo_state=repo_state,
                     logger=logger,
+                    canonical_content_target=retrieval_content_target,
                     allow_followup_inference=(
                         (
                             (
@@ -664,6 +717,7 @@ def run_chat_loop(
                     search_query=search_query,
                     relevant_indices=last_relevant_indices,
                     repo_state=repo_state,
+                    canonical_content_target=retrieval_content_target,
                     materials=materials,
                     conversation_state=runtime.conversation_state,
                     model_emb=model_emb,

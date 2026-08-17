@@ -190,6 +190,74 @@ def test_public_package_import_and_protocol_shape() -> None:
         assert inspect.iscoroutinefunction(getattr(plugin, method_name))
 
 
+@pytest.mark.parametrize(
+    "question",
+    (
+        "有哪些 JD",
+        "有哪些jd",
+        "有什么 JD",
+        "列出 JD",
+    ),
+)
+def test_listing_adapter_maps_jd_only_with_recruitment_source_evidence(
+    question: str,
+) -> None:
+    plugin = RecruitmentJDPlugin()
+    source_term_groups = (("岗位职责", "任职要求"),)
+
+    assert plugin.adapt_content_query(
+        question=question,
+        content_target="JD",
+        source_term_groups=source_term_groups,
+    ) == "岗位"
+
+
+@pytest.mark.parametrize(
+    ("question", "content_target"),
+    (
+        ("这个 JD 要求什么？", "JD"),
+        ("JD 是什么意思？", "JD"),
+        ("有哪些 SLA？", "SLA"),
+        ("有哪些职位？", "职位"),
+    ),
+)
+def test_listing_adapter_does_not_expand_adjacent_intents_or_terms(
+    question: str,
+    content_target: str,
+) -> None:
+    assert RecruitmentJDPlugin().adapt_content_query(
+        question=question,
+        content_target=content_target,
+        source_term_groups=(("工作职责", "任职资格"),),
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "source_term_group",
+    (
+        ("合同条款", "履约要求"),
+        ("采购需求", "供应商资格"),
+        ("会议议题", "会议结论"),
+    ),
+)
+def test_listing_adapter_does_not_map_jd_without_recruitment_structure(
+    source_term_group: tuple[str, ...],
+) -> None:
+    assert RecruitmentJDPlugin().adapt_content_query(
+        question="有哪些 JD",
+        content_target="JD",
+        source_term_groups=(source_term_group,),
+    ) is None
+
+
+def test_listing_adapter_requires_duty_and_requirement_in_the_same_source() -> None:
+    assert RecruitmentJDPlugin().adapt_content_query(
+        question="有哪些 JD",
+        content_target="JD",
+        source_term_groups=(("工作职责",), ("任职要求",)),
+    ) is None
+
+
 def test_manifest_is_stable_and_uses_no_permissions() -> None:
     plugin = RecruitmentJDPlugin()
     request = PluginDescribeRequest(request_id="describe-1")
