@@ -172,6 +172,7 @@ def _clear_generated_result_state(state) -> None:
     state.last_generated_result_items = None
     state.last_generated_result_source_candidates = None
     state.last_generated_result_source_hits = None
+    state.last_generated_result_focuses = None
 
 
 def update_state_after_local_answer(
@@ -306,8 +307,85 @@ def update_state_after_retrieval_answer(
         )
 
     current_result_set_focus_file = focused_file or prev_result_set_focus_file
+    structured_enumeration_attempted = bool(
+        getattr(generated_result_provenance, "enumeration_attempted", False)
+    )
+    structured_provenance_items = list(
+        getattr(generated_result_provenance, "display_items", ()) or ()
+    )
+    reliable_structured_enumeration = bool(
+        structured_enumeration_attempted
+        and getattr(generated_result_provenance, "reliable", False)
+        and extract_numbered_items(answer_text) == structured_provenance_items
+    )
+    prev_generated_focuses = list(state.last_generated_result_focuses or [])
+    has_prev_materialized_generated_result_set = bool(
+        prev_result_set_items
+        and state.last_generated_result_items == prev_result_set_items
+        and len(prev_generated_focuses) == len(prev_result_set_items)
+        and all(prev_generated_focuses)
+    )
 
-    if answer_type == "enumeration_company":
+    if structured_enumeration_attempted:
+        display_items = structured_provenance_items
+        source_candidates = list(
+            getattr(generated_result_provenance, "source_candidates", ()) or ()
+        )
+        source_hits = [
+            list(paths)
+            for paths in (
+                getattr(generated_result_provenance, "source_hits", ()) or ()
+            )
+        ]
+        opaque_focuses = list(
+            getattr(generated_result_provenance, "opaque_focuses", ()) or ()
+        )
+        entity_type = str(
+            getattr(generated_result_provenance, "entity_type", None) or ""
+        ).strip()
+        if reliable_structured_enumeration:
+            state.last_answer_type = "enumeration_generated"
+            state.last_result_set_query = question
+            state.last_result_set_items = display_items
+            state.last_result_set_entity_type = entity_type
+            state.last_result_set_selectable = True
+            state.last_result_set_focus_file = None
+            state.last_result_set_summary_text = None
+            state.last_result_set_summary_level = 0
+            state.last_generated_result_items = display_items
+            state.last_generated_result_source_candidates = source_candidates
+            state.last_generated_result_source_hits = source_hits
+            state.last_generated_result_focuses = opaque_focuses
+            state.last_selected_candidate = None
+            state.last_selected_source_files = None
+            logger.debug(
+                "🧭 [生成结果集物化] "
+                f"entity={entity_type} | items={display_items} | selectable=True"
+            )
+        else:
+            state.last_answer_type = None
+            state.last_result_set_items = prev_result_set_items
+            state.last_result_set_entity_type = prev_result_set_entity_type
+            state.last_result_set_selectable = False
+            state.last_result_set_focus_file = prev_result_set_focus_file
+            state.last_generated_result_items = display_items or None
+            state.last_generated_result_source_candidates = source_candidates or (
+                list(prev_result_set_items or []) or None
+            )
+            state.last_generated_result_source_hits = (
+                [[] for _item in display_items]
+            ) or None
+            state.last_generated_result_focuses = None
+            logger.debug(
+                "🛡️ [结果集序号安全] 结构化枚举未通过全量绑定校验，"
+                "保留旧结果集上下文但撤销序号选择资格"
+            )
+            logger.debug(
+                "🧭 [生成结果来源] "
+                f"display_items={state.last_generated_result_items} | "
+                f"source_hits={state.last_generated_result_source_hits}"
+            )
+    elif answer_type == "enumeration_company":
         _clear_generated_result_state(state)
         company_items: list[str] = []
         raw_items = extract_numbered_items(answer_text)
@@ -430,14 +508,28 @@ def update_state_after_retrieval_answer(
         )
         preserve_result_set_on_result_set_followup = (
             (event_name or "").strip() in {"result_set_followup", "result_set_expansion_followup"}
-            and prev_result_set_entity_type in entity_to_answer_type
+            and (
+                prev_result_set_entity_type in entity_to_answer_type
+                or has_prev_materialized_generated_result_set
+            )
             and bool(prev_result_set_items)
         )
         preserve_parent_result_set_scope = (
-            prev_result_set_entity_type in entity_to_answer_type
+            (
+                prev_result_set_entity_type in entity_to_answer_type
+                or has_prev_materialized_generated_result_set
+            )
             and bool(prev_result_set_items)
             and scope_decision.result_scope_paths is not None
             and is_followup_turn
+        )
+        preserve_materialized_generated_selection = bool(
+            has_prev_materialized_generated_result_set
+            and state.last_selected_candidate
+            and (
+                (event_name or "").strip() in FOLLOWUP_EVENT_NAMES
+                or scope_decision.selected_result_set_item_turn
+            )
         )
         generated_unmaterialized_enumeration = (
             preserve_result_set_on_result_set_followup
@@ -531,10 +623,15 @@ def update_state_after_retrieval_answer(
             or preserve_file_result_set_on_summary_followup
             or preserve_file_result_set_on_no_evidence_followup
             or preserve_parent_result_set_scope
+            or preserve_materialized_generated_selection
         ):
             state.last_result_set_items = prev_result_set_items
             state.last_result_set_entity_type = prev_result_set_entity_type
-            state.last_result_set_focus_file = current_result_set_focus_file or prev_result_set_focus_file
+            state.last_result_set_focus_file = (
+                prev_result_set_focus_file
+                if has_prev_materialized_generated_result_set
+                else current_result_set_focus_file or prev_result_set_focus_file
+            )
             if preserve_file_scope_on_detail_followup:
                 state.last_answer_type = None
                 logger.debug("🧪 [状态保留] 文件结果集展开回答保留原范围，不写成文件枚举")
@@ -554,6 +651,12 @@ def update_state_after_retrieval_answer(
                     else 1
                 )
                 logger.debug("🧪 [状态保留] 文件结果集概括未产出新集合，保留候选文件但清除枚举回答类型")
+            elif preserve_materialized_generated_selection:
+                state.last_answer_type = None
+                state.last_result_set_selectable = True
+                logger.debug(
+                    "🧪 [状态保留] 生成结果集单项回答保留对象集合与选择焦点"
+                )
             elif preserve_parent_result_set_scope:
                 state.last_answer_type = None
                 state.last_result_set_selectable = prev_result_set_selectable
@@ -623,6 +726,7 @@ def update_state_after_retrieval_answer(
     should_write_result_set_focus = (
         bool(focused_file)
         and not clears_result_set_focus
+        and not has_prev_materialized_generated_result_set
         and (
             scope_decision.has_single_focus_scope
             or (event_name or "").strip() == "content_followup"

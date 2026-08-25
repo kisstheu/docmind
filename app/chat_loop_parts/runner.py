@@ -16,10 +16,15 @@ from app.dialog.question_scope import (
     decide_file_result_set_scope,
 )
 from app.dialog.result_set import (
+    build_structured_generated_enumeration_prompt,
     build_corrected_result_set_request,
     file_result_set_display_name,
     materialize_generated_result_set_provenance,
+    materialize_generated_result_set_item_question,
     materialize_single_file_result_set_question,
+    materialize_structured_generated_result_set,
+    render_structured_generated_result_set,
+    structured_generated_enumeration_schema,
 )
 from app.domain_dispatch_port import (
     DomainDispatchPort,
@@ -97,6 +102,26 @@ def _materialize_visible_result_provenance(answer_text, scope_decision, repo_sta
         candidate_paths=candidate_paths,
         repo_state=repo_state,
     )
+
+
+def _structured_generated_enumeration_config(chat_config):
+    return chat_config.model_copy(
+        update={
+            "response_mime_type": "application/json",
+            "response_json_schema": structured_generated_enumeration_schema(),
+        }
+    )
+
+
+def _structured_response_payload(response):
+    candidates = list(getattr(response, "candidates", None) or [])
+    if candidates:
+        finish_reason = getattr(candidates[0], "finish_reason", None)
+        finish_name = str(getattr(finish_reason, "name", finish_reason) or "").upper()
+        if finish_name and finish_name != "STOP":
+            return None
+    parsed = getattr(response, "parsed", None)
+    return parsed if parsed is not None else getattr(response, "text", None)
 
 
 def _source_term_groups_for_domain_adapter(
@@ -230,6 +255,24 @@ def run_chat_loop(
                     is_content_answer=False,
                 )
                 continue
+            selected_generated_item = scope_decision.file_result_set_selection
+            if (
+                selected_generated_item is not None
+                and selected_generated_item.display_item
+                and selected_generated_item.opaque_focus
+            ):
+                runtime.conversation_state.last_selected_candidate = (
+                    selected_generated_item.display_item
+                )
+                runtime.conversation_state.last_selected_source_files = list(
+                    selected_generated_item.paths
+                )
+                logger.info(
+                    "🧭 [生成结果集序号选择] "
+                    f"item={selected_generated_item.display_item} | "
+                    f"focus={selected_generated_item.opaque_focus} | "
+                    f"sources={list(selected_generated_item.paths)}"
+                )
             local_answer = runtime.try_handle_contextless_followup(
                 question=question,
                 state=runtime.conversation_state,
@@ -769,15 +812,30 @@ def run_chat_loop(
             ):
                 selected_file_path = scope_decision.selected_file_paths[0]
                 selected_file_name = file_result_set_display_name(selected_file_path)
-                generation_question = materialize_single_file_result_set_question(
-                    question,
-                    selected_file_path,
-                )
+                if (
+                    scope_decision.file_result_set_selection is not None
+                    and scope_decision.file_result_set_selection.display_item
+                    and scope_decision.file_result_set_selection.opaque_focus
+                ):
+                    selected_display_item = (
+                        scope_decision.file_result_set_selection.display_item
+                    )
+                    generation_question = materialize_generated_result_set_item_question(
+                        question,
+                        selected_display_item,
+                    )
+                    generation_result_set_items = [selected_display_item]
+                else:
+                    generation_question = materialize_single_file_result_set_question(
+                        question,
+                        selected_file_path,
+                    )
+                    generation_result_set_items = [selected_file_name]
                 generation_focus_file = selected_file_name
-                generation_result_set_items = [selected_file_name]
                 logger.info(
                     "🧭 [结果集生成对象物化] "
-                    f"当前选中文件={selected_file_name}"
+                    f"当前选中对象={generation_result_set_items[0]} | "
+                    f"来源文件={selected_file_name}"
                 )
             final_prompt = build_safe_final_prompt(
                 memory_buffer=memory_buffer,
@@ -791,18 +849,61 @@ def run_chat_loop(
                 selected_candidate=runtime.conversation_state.last_selected_candidate,
                 selected_source_files=runtime.conversation_state.last_selected_source_files,
             )
+            structured_enumeration_requested = bool(
+                retrieval_content_target
+                and scope_decision.query_result_set_entity == "文件"
+                and scope_decision.query_result_set_items
+                and len(scope_decision.query_result_set_items) > 1
+                and (
+                    scope_decision.result_scope_paths is None
+                    or len(scope_decision.result_scope_paths) > 1
+                )
+                and not scope_decision.requires_result_set_generation
+            )
+            generation_config = chat_config
+            if structured_enumeration_requested:
+                final_prompt = build_structured_generated_enumeration_prompt(
+                    final_prompt,
+                    entity_type=retrieval_content_target,
+                )
+                generation_config = _structured_generated_enumeration_config(
+                    chat_config
+                )
+                logger.info(
+                    "🧭 [结构化枚举生成] "
+                    f"entity={retrieval_content_target} | "
+                    f"source_candidates={len(scope_decision.query_result_set_items)}"
+                )
             logger.info("🛰️ [远程模型生成] 进入生成阶段，开始调用远程大模型")
             response = client.models.generate_content(
                 model=model_id,
                 contents=final_prompt,
-                config=chat_config,
+                config=generation_config,
             )
-            answer_text = response.text or "这次我没有生成有效回答。"
-            generated_result_provenance = _materialize_visible_result_provenance(
-                answer_text,
-                scope_decision,
-                repo_state,
-            )
+            if structured_enumeration_requested:
+                generated_result_provenance = (
+                    materialize_structured_generated_result_set(
+                        _structured_response_payload(response),
+                        entity_type=retrieval_content_target,
+                        candidate_paths=list(
+                            scope_decision.query_result_set_items or ()
+                        ),
+                        repo_state=repo_state,
+                    )
+                )
+                if generated_result_provenance.failure_reason == "invalid_payload":
+                    answer_text = "本轮未生成可可靠引用的枚举结果，请重试。"
+                else:
+                    answer_text = render_structured_generated_result_set(
+                        generated_result_provenance
+                    )
+            else:
+                answer_text = response.text or "这次我没有生成有效回答。"
+                generated_result_provenance = _materialize_visible_result_provenance(
+                    answer_text,
+                    scope_decision,
+                    repo_state,
+                )
             decision_result = None
             if event.name == "decision_request":
                 decision_result = parse_decision_result(answer_text, user_question=question)

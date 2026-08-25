@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 
@@ -144,6 +147,8 @@ _ALL_FILE_REFERENCE_PATTERNS = (
 class FileResultSetSelection:
     paths: tuple[str, ...] = ()
     rejection: str | None = None
+    display_item: str | None = None
+    opaque_focus: str | None = None
 
 
 @dataclass(frozen=True)
@@ -151,6 +156,257 @@ class GeneratedResultSetProvenance:
     display_items: tuple[str, ...] = ()
     source_candidates: tuple[str, ...] = ()
     source_hits: tuple[tuple[str, ...], ...] = ()
+    opaque_focuses: tuple[str, ...] = ()
+    entity_type: str | None = None
+    enumeration_attempted: bool = False
+    reliable: bool = False
+    failure_reason: str | None = None
+
+
+def structured_generated_enumeration_schema() -> dict[str, object]:
+    """Return the model contract used for a Core-owned generated listing."""
+    return {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "display_name": {"type": "string"},
+                        "source_paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "evidence_text": {"type": "string"},
+                    },
+                    "required": [
+                        "display_name",
+                        "source_paths",
+                        "evidence_text",
+                    ],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["items"],
+        "additionalProperties": False,
+    }
+
+
+def build_structured_generated_enumeration_prompt(
+    prompt: str,
+    *,
+    entity_type: str,
+) -> str:
+    target = str(entity_type or "").strip() or "对象"
+    return (
+        f"{prompt}\n\n"
+        "【结构化枚举输出契约】\n"
+        f"本轮要从参考片段列举“{target}”。只返回符合响应 Schema 的 JSON。\n"
+        "items 的顺序就是最终展示顺序；不要输出解释性正文。\n"
+        "每个 item 的 display_name 必须是材料中可逐字核对的稳定名称。\n"
+        "source_paths 必须使用参考片段中 `文件【...】` 给出的完整路径，"
+        "不得猜测、缩写或改写。\n"
+        "evidence_text 必须逐字摘录能证明 display_name 与来源绑定的最小原文。\n"
+        "无法可靠绑定的对象不要列入；没有可靠对象时返回空 items。"
+    )
+
+
+def _coerce_structured_generated_payload(payload) -> Mapping[str, object] | None:
+    if isinstance(payload, Mapping):
+        return payload
+    model_dump = getattr(payload, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump()
+        return dumped if isinstance(dumped, Mapping) else None
+    if not isinstance(payload, str) or not payload.strip():
+        return None
+    try:
+        decoded = json.loads(payload)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return decoded if isinstance(decoded, Mapping) else None
+
+
+def _stable_generated_focus(
+    entity_type: str,
+    display_name: str,
+    source_paths: tuple[str, ...],
+) -> str:
+    authority = json.dumps(
+        {
+            "entity": _normalize_generated_evidence(entity_type),
+            "display": _normalize_generated_evidence(display_name),
+            "sources": list(source_paths),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(authority.encode("utf-8")).hexdigest()[:24]
+    return f"core-generated:v1:{digest}"
+
+
+def materialize_structured_generated_result_set(
+    payload,
+    *,
+    entity_type: str,
+    candidate_paths: list[str] | tuple[str, ...] | None,
+    repo_state,
+) -> GeneratedResultSetProvenance:
+    """Validate structured model output against bounded repository evidence."""
+    target = str(entity_type or "").strip()
+    decoded = _coerce_structured_generated_payload(payload)
+    if not target or decoded is None:
+        return GeneratedResultSetProvenance(
+            entity_type=target or None,
+            enumeration_attempted=True,
+            failure_reason="invalid_payload",
+        )
+
+    raw_items = decoded.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        return GeneratedResultSetProvenance(
+            entity_type=target,
+            enumeration_attempted=True,
+            failure_reason="empty_items",
+        )
+
+    repo_paths = list(getattr(repo_state, "paths", []) or [])
+    repo_docs = list(getattr(repo_state, "docs", []) or [])
+    if len(repo_paths) != len(repo_docs):
+        return GeneratedResultSetProvenance(
+            entity_type=target,
+            enumeration_attempted=True,
+            failure_reason="repository_alignment",
+        )
+
+    repo_documents: dict[str, str] = {}
+    duplicate_repo_paths: set[str] = set()
+    for raw_path, raw_document in zip(repo_paths, repo_docs):
+        path = str(raw_path or "").strip()
+        if not path or not isinstance(raw_document, str) or not raw_document.strip():
+            continue
+        if path in repo_documents:
+            duplicate_repo_paths.add(path)
+            continue
+        repo_documents[path] = raw_document
+
+    bounded_candidates = tuple(
+        dict.fromkeys(
+            str(path or "").strip()
+            for path in candidate_paths or ()
+            if (
+                str(path or "").strip()
+                and str(path or "").strip() in repo_documents
+                and str(path or "").strip() not in duplicate_repo_paths
+            )
+        )
+    )
+    allowed_sources = set(bounded_candidates)
+    if not allowed_sources:
+        return GeneratedResultSetProvenance(
+            entity_type=target,
+            enumeration_attempted=True,
+            failure_reason="missing_source_candidates",
+        )
+
+    display_items: list[str] = []
+    source_hits: list[tuple[str, ...]] = []
+    opaque_focuses: list[str] = []
+    all_items_reliable = True
+    seen_focuses: set[str] = set()
+
+    for raw_item in raw_items:
+        if not isinstance(raw_item, Mapping):
+            all_items_reliable = False
+            continue
+        display_name = str(raw_item.get("display_name") or "").strip()
+        evidence_text = str(raw_item.get("evidence_text") or "").strip()
+        raw_sources = raw_item.get("source_paths")
+        declared_sources = (
+            tuple(
+                dict.fromkeys(
+                    str(path or "").strip()
+                    for path in raw_sources
+                    if str(path or "").strip()
+                )
+            )
+            if isinstance(raw_sources, list)
+            else ()
+        )
+        valid_sources = tuple(
+            path for path in declared_sources if path in allowed_sources
+        )
+
+        item_reliable = bool(
+            display_name
+            and evidence_text
+            and declared_sources
+            and valid_sources == declared_sources
+        )
+        normalized_display = _normalize_generated_evidence(display_name)
+        normalized_evidence = _normalize_generated_evidence(evidence_text)
+        display_is_proven = False
+        if item_reliable and normalized_display and normalized_evidence:
+            for source_path in valid_sources:
+                document = repo_documents[source_path]
+                normalized_document = _normalize_generated_evidence(document)
+                if normalized_evidence not in normalized_document:
+                    item_reliable = False
+                    break
+                if normalized_display in normalized_evidence:
+                    display_is_proven = True
+        else:
+            item_reliable = False
+        item_reliable = item_reliable and display_is_proven
+
+        display_items.append(display_name)
+        source_hits.append(valid_sources if item_reliable else ())
+        if item_reliable:
+            focus = _stable_generated_focus(target, display_name, valid_sources)
+            if focus in seen_focuses:
+                item_reliable = False
+                source_hits[-1] = ()
+            else:
+                seen_focuses.add(focus)
+                opaque_focuses.append(focus)
+        if not item_reliable:
+            all_items_reliable = False
+
+    reliable = bool(
+        all_items_reliable
+        and len(display_items) == len(raw_items)
+        and len(source_hits) == len(display_items)
+        and len(opaque_focuses) == len(display_items)
+        and all(display_items)
+    )
+    return GeneratedResultSetProvenance(
+        display_items=tuple(display_items),
+        source_candidates=bounded_candidates,
+        source_hits=tuple(source_hits),
+        opaque_focuses=tuple(opaque_focuses) if reliable else (),
+        entity_type=target,
+        enumeration_attempted=True,
+        reliable=reliable,
+        failure_reason=None if reliable else "unreliable_item_binding",
+    )
+
+
+def render_structured_generated_result_set(
+    provenance: GeneratedResultSetProvenance,
+) -> str:
+    if not provenance.display_items:
+        return "没有识别出可可靠列举的对象。"
+    lines: list[str] = []
+    for index, display_name in enumerate(provenance.display_items, start=1):
+        lines.append(f"{index}. {display_name}")
+        sources = provenance.source_hits[index - 1] if index <= len(provenance.source_hits) else ()
+        if sources:
+            source_names = "、".join(file_result_set_display_name(path) for path in sources)
+            lines.append(f"   来源文件：{source_names}")
+    return "\n".join(lines)
 
 
 def _extract_generated_display_items(answer_text: str) -> tuple[str, ...]:
@@ -253,6 +509,7 @@ def resolve_generated_result_set_selection(
     display_items: list[str] | tuple[str, ...] | None,
     source_hits: list[list[str]] | tuple[tuple[str, ...], ...] | None,
     source_candidates: list[str] | tuple[str, ...] | None,
+    opaque_focuses: list[str] | tuple[str, ...] | None = None,
 ) -> FileResultSetSelection | None:
     """Resolve an ordinal only when its visible item has one proven backing file."""
     if not display_items:
@@ -285,9 +542,15 @@ def resolve_generated_result_set_selection(
             if str(path or "").strip() in allowed_sources
         )
     )
-    if len(hits) != 1:
+    focuses = tuple(str(focus or "").strip() for focus in opaque_focuses or ())
+    has_materialized_focuses = len(focuses) == len(display_items) and all(focuses)
+    if not hits or (not has_materialized_focuses and len(hits) != 1):
         return FileResultSetSelection(rejection=_UNMAPPED_ORDINAL_HELP)
-    return FileResultSetSelection(paths=(hits[0],))
+    return FileResultSetSelection(
+        paths=hits,
+        display_item=str(display_items[ordinal - 1] or "").strip() or None,
+        opaque_focus=focuses[ordinal - 1] if has_materialized_focuses else None,
+    )
 
 
 def _parse_result_set_ordinal(token: str) -> int | None:
@@ -363,6 +626,28 @@ def materialize_single_file_result_set_question(
     if count:
         return materialized
 
+    bare_reference = rf"(?:(?:那|那么)\s*)?第\s*{_ORDINAL_TOKEN}\s*(?:个)?"
+    return re.sub(bare_reference, replacement, question, count=1)
+
+
+def materialize_generated_result_set_item_question(
+    question: str,
+    display_item: str,
+) -> str:
+    """Replace an ordinal with a validated opaque collection item's label."""
+    if not has_explicit_single_file_result_reference(question):
+        return question
+    label = str(display_item or "").strip()
+    if not label:
+        return question
+    replacement = f"对象《{label}》"
+    full_reference = (
+        rf"(?:(?:那|那么)\s*)?第\s*{_ORDINAL_TOKEN}\s*"
+        rf"(?:(?:个|份|篇)?\s*(?:文件|文档|资料|记录)|(?:项|条))"
+    )
+    materialized, count = re.subn(full_reference, replacement, question, count=1)
+    if count:
+        return materialized
     bare_reference = rf"(?:(?:那|那么)\s*)?第\s*{_ORDINAL_TOKEN}\s*(?:个)?"
     return re.sub(bare_reference, replacement, question, count=1)
 

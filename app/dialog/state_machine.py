@@ -170,6 +170,7 @@ class ConversationState:
     last_generated_result_items: list[str] | None = None
     last_generated_result_source_candidates: list[str] | None = None
     last_generated_result_source_hits: list[list[str]] | None = None
+    last_generated_result_focuses: list[str] | None = None
     last_selected_candidate: str | None = None
     last_selected_source_files: list[str] | None = None
 
@@ -501,6 +502,7 @@ def apply_event_to_state(state: ConversationState, event: DialogEvent) -> Conver
         last_generated_result_items=state.last_generated_result_items,
         last_generated_result_source_candidates=state.last_generated_result_source_candidates,
         last_generated_result_source_hits=state.last_generated_result_source_hits,
+        last_generated_result_focuses=state.last_generated_result_focuses,
         last_selected_candidate=state.last_selected_candidate,
         last_selected_source_files=state.last_selected_source_files,
 

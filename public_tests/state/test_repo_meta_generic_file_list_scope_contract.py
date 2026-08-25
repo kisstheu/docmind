@@ -421,10 +421,24 @@ class _RecordingEmptyDomainHost(EmptyDomainHost):
 
 
 class _GeneratedProvenanceModelsStub(_ModelsStub):
+    def __init__(self):
+        super().__init__()
+        self.configs = []
+
     def generate_content(self, *, model, contents, config=None):
         self.calls.append(contents)
+        self.configs.append(config)
         if len(self.calls) == 1:
-            return SimpleNamespace(text="1. 岗位甲\n2. 岗位乙")
+            return SimpleNamespace(
+                text=(
+                    '{"items":['
+                    '{"display_name":"岗位甲","source_paths":["B.md"],'
+                    '"evidence_text":"标题：岗位甲"},'
+                    '{"display_name":"岗位乙","source_paths":["C.md"],'
+                    '"evidence_text":"标题：岗位乙"}'
+                    ']}'
+                )
+            )
         return SimpleNamespace(text="根据当前唯一文件完成合成说明。")
 
 
@@ -473,7 +487,7 @@ def test_runner_generated_ordinal_uses_provenance_backing_and_keeps_focus(
 
     assert returned_client is client
     assert allowed == [None, {"B.md"}, {"B.md"}]
-    assert query_sets == [paths, ["B.md"], ["B.md"]]
+    assert query_sets == [paths, ["岗位甲"], ["岗位甲", "岗位乙"]]
     assert chat_runtime.conversation_state.last_generated_result_items == [
         "岗位甲",
         "岗位乙",
@@ -482,8 +496,17 @@ def test_runner_generated_ordinal_uses_provenance_backing_and_keeps_focus(
         ["B.md"],
         ["C.md"],
     ]
-    assert chat_runtime.conversation_state.last_result_set_items == paths
-    assert chat_runtime.conversation_state.last_result_set_focus_file == "B.md"
+    assert chat_runtime.conversation_state.last_result_set_items == ["岗位甲", "岗位乙"]
+    assert chat_runtime.conversation_state.last_result_set_entity_type == "岗位"
+    assert chat_runtime.conversation_state.last_result_set_selectable is True
+    assert chat_runtime.conversation_state.last_answer_type is None
+    assert len(chat_runtime.conversation_state.last_generated_result_focuses or []) == 2
+    assert chat_runtime.conversation_state.last_selected_candidate == "岗位甲"
+    assert chat_runtime.conversation_state.last_selected_source_files == ["B.md"]
+    assert client.models.configs[0].response_mime_type == "application/json"
+    assert client.models.configs[0].response_json_schema["required"] == ["items"]
+    assert "【结构化枚举输出契约】" in client.models.calls[0]
+    assert "对象《岗位甲》怎么样？" in client.models.calls[1]
     assert len(client.models.calls) == 3
 
 

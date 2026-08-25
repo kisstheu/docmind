@@ -35,6 +35,7 @@ class _QuestionScopeState(Protocol):
     last_generated_result_items: list[str] | None
     last_generated_result_source_candidates: list[str] | None
     last_generated_result_source_hits: list[list[str]] | None
+    last_generated_result_focuses: list[str] | None
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,7 @@ def decide_file_result_set_scope(
         state.last_generated_result_items,
         state.last_generated_result_source_hits,
         state.last_generated_result_source_candidates,
+        getattr(state, "last_generated_result_focuses", None),
     )
     if file_result_set_selection is None and (
         state.last_result_set_entity_type == "文件"
@@ -205,6 +207,13 @@ def decide_file_result_set_scope(
         else:
             query_result_set_items = None
             query_result_set_entity = None
+    elif (
+        file_result_set_selection is not None
+        and file_result_set_selection.display_item
+        and file_result_set_selection.opaque_focus
+    ):
+        query_result_set_items = (file_result_set_selection.display_item,)
+        query_result_set_entity = state.last_result_set_entity_type
     else:
         query_result_set_items = (
             tuple(state.last_result_set_items)
