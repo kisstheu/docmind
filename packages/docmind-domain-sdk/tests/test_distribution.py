@@ -122,6 +122,7 @@ def test_built_wheel_contains_runtime_modules_types_and_both_schemas(tmp_path: P
         "docmind_domain_sdk/dto.py",
         "docmind_domain_sdk/errors.py",
         "docmind_domain_sdk/protocol.py",
+        "docmind_domain_sdk/request_context.py",
         "docmind_domain_sdk/validation.py",
         "docmind_domain_sdk/py.typed",
         "docmind_domain_sdk/schemas/protocol-1.0.schema.json",

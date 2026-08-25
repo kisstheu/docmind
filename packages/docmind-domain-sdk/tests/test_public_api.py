@@ -24,6 +24,8 @@ EXPECTED_PUBLIC_API = {
     "PluginStopRequest",
     "LifecycleResult",
     "DomainPlugin",
+    "QUESTION_INTENT_EVALUATION",
+    "REQUEST_CONTEXT_NAMESPACE",
     "PROTOCOL_VERSION",
     "ProtocolViolationError",
     "MAX_OPTIONS_ENCODED_BYTES",
@@ -36,6 +38,8 @@ EXPECTED_PUBLIC_API = {
     "validate_probe_boundary",
     "validate_request_boundary",
     "validate_result_boundary",
+    "get_question_intent",
+    "with_question_intent",
 }
 
 

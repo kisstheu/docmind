@@ -22,6 +22,13 @@ values. Each plugin owns its option keys, business validation, unknown-key
 policy, and conversion to internal types. Runtime objects such as connections,
 loggers, paths, callbacks, and credentials must not enter this DTO.
 
+The reserved `org.docmind.request-context` namespace carries host-authoritative,
+request-local semantics separately from plugin configuration. The current narrow
+contract supports `question_intent=evaluation`; callers should use
+`with_question_intent()` and plugins should read it with `get_question_intent()`.
+These helpers copy the top-level options object and never mutate the caller's
+session snapshot. The namespace is an options extension, not a new wire field.
+
 Every options tree is limited to:
 
 - 16,384 UTF-8 bytes using the protocol's compact, sorted JSON encoding;

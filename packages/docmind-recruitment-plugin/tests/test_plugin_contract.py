@@ -26,6 +26,10 @@ from docmind_domain_sdk import (
     validate_result_boundary,
     validate_sync_boundary,
 )
+from docmind_domain_sdk.request_context import (
+    QUESTION_INTENT_EVALUATION,
+    with_question_intent,
+)
 from docmind_recruitment_plugin import (
     DISPLAY_NAME,
     PLUGIN_ID,
@@ -181,6 +185,37 @@ def _assert_handled_profile(result) -> None:
     assert result.evidence == ()
     assert result.warnings == ()
     assert result.error is None
+
+
+def test_evaluation_intent_without_rules_returns_transparent_jd_analysis() -> None:
+    result = _execute(
+        STANDARD_JD,
+        options=with_question_intent({}, QUESTION_INTENT_EVALUATION),
+    )
+
+    assert result.status == "handled"
+    assert result.answer_markdown.startswith("## JD 本身分析\n\n")
+    assert "当前没有加载明确求职规则" in result.answer_markdown
+    assert "### 主要门槛" in result.answer_markdown
+    assert "- 技术要求：" in result.answer_markdown
+    assert "## JD 明确约束" not in result.answer_markdown
+    assert "建议投" not in result.answer_markdown
+    assert "不建议投" not in result.answer_markdown
+
+
+def test_evaluation_intent_with_explicit_rules_keeps_existing_comparison() -> None:
+    options = with_question_intent(
+        _recruitment_options({"minimum_monthly_salary_k": 18}),
+        QUESTION_INTENT_EVALUATION,
+    )
+
+    result = _execute(STANDARD_JD, options=options)
+
+    assert result.status == "handled"
+    assert result.answer_markdown.startswith("## 单 JD 显式规则比较\n\n")
+    assert "### 明确符合" in result.answer_markdown
+    assert "### 明确冲突" in result.answer_markdown
+    assert "### 信息缺失或需要确认" in result.answer_markdown
 
 
 def test_public_package_import_and_protocol_shape() -> None:

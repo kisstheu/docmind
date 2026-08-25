@@ -128,6 +128,7 @@ def test_reliable_generic_generated_enumeration_replaces_old_file_authority():
     signals, selection = _scope_facts("第1个怎么样？", state, "result_set_followup")
 
     assert signals.explicit_single_file_result_reference is True
+    assert signals.document_evaluation_request is True
     assert selection.selected_file_paths == ("项目资料甲.md",)
     assert selection.selected_file_paths != ("旧资料甲.md",)
     assert selection.query_result_set_items == ("项目甲",)
@@ -135,6 +136,74 @@ def test_reliable_generic_generated_enumeration_replaces_old_file_authority():
     assert selection.file_result_set_selection.opaque_focus.startswith(
         "core-generated:v1:"
     )
+
+
+def test_generic_generated_ordinal_keeps_detail_question_semantics():
+    provenance = materialize_structured_generated_result_set(
+        _payload(),
+        entity_type="项目",
+        candidate_paths=_repo_state().paths,
+        repo_state=_repo_state(),
+    )
+    state = _write_generated_result(_source_file_state(), provenance)
+
+    signals, selection = _scope_facts(
+        "第1个里程碑是什么？",
+        state,
+        "result_set_followup",
+    )
+
+    assert signals.document_evaluation_request is False
+    assert selection.selected_file_paths == ("项目资料甲.md",)
+    assert selection.file_result_set_selection.display_item == "项目甲"
+
+
+def test_generated_ordinal_does_not_claim_an_explicit_other_ordinal_target():
+    provenance = materialize_structured_generated_result_set(
+        _payload(),
+        entity_type="项目",
+        candidate_paths=_repo_state().paths,
+        repo_state=_repo_state(),
+    )
+    state = _write_generated_result(_source_file_state(), provenance)
+
+    _signals, selection = _scope_facts(
+        "第1个问题是什么？",
+        state,
+        "result_set_followup",
+    )
+
+    assert selection.selected_file_paths is None
+
+
+def test_generated_ordinal_detail_question_is_domain_neutral():
+    path = "合同资料.md"
+    document = "标题：合成合同甲\n交付条件：完成合成验收。"
+    provenance = materialize_structured_generated_result_set(
+        {
+            "items": [
+                {
+                    "display_name": "合成合同甲",
+                    "source_paths": [path],
+                    "evidence_text": "标题：合成合同甲",
+                }
+            ]
+        },
+        entity_type="合同",
+        candidate_paths=[path],
+        repo_state=SimpleNamespace(paths=[path], docs=[document]),
+    )
+    state = _write_generated_result(_source_file_state(), provenance)
+
+    signals, selection = _scope_facts(
+        "第1个交付条件是什么？",
+        state,
+        "result_set_followup",
+    )
+
+    assert signals.document_evaluation_request is False
+    assert selection.selected_file_paths == (path,)
+    assert selection.file_result_set_selection.display_item == "合成合同甲"
 
 
 @pytest.mark.parametrize(

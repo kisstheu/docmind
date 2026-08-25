@@ -33,6 +33,10 @@ from docmind_domain_sdk import (
     PluginError,
     ProtocolViolationError,
 )
+from docmind_domain_sdk.request_context import (
+    QUESTION_INTENT_EVALUATION,
+    with_question_intent,
+)
 from docmind_recruitment_plugin import PLUGIN_ID, RecruitmentJDPlugin
 
 
@@ -1797,6 +1801,32 @@ def _selectable_jd_state(paths, *, focus_file=None):
     )
 
 
+def _materialized_generated_jd_state(paths):
+    display_items = ["岗位甲", "岗位乙"]
+    answer = "1. 岗位甲\n2. 岗位乙"
+    return ConversationState(
+        mode="content",
+        last_user_question="有哪些岗位？",
+        last_route="normal_retrieval",
+        last_content_user_question="有哪些岗位？",
+        last_content_route="normal_retrieval",
+        last_effective_search_query="合成岗位",
+        last_answer_text=answer,
+        last_answer_preview=answer,
+        last_answer_type="enumeration_generated",
+        last_result_set_items=display_items,
+        last_result_set_entity_type="岗位",
+        last_result_set_selectable=True,
+        last_generated_result_items=display_items,
+        last_generated_result_source_candidates=list(paths),
+        last_generated_result_source_hits=[[paths[1]], [paths[2]]],
+        last_generated_result_focuses=[
+            "core-generated:v1:synthetic-a",
+            "core-generated:v1:synthetic-b",
+        ],
+    )
+
+
 def test_first_turn_unique_file_reference_dispatches_complete_repo_document(
     monkeypatch,
     tmp_path,
@@ -1834,7 +1864,10 @@ def test_first_turn_unique_file_reference_dispatches_complete_repo_document(
         repo_state.docs[0],
     ]
     assert observed[1].query == _LONG_SYNTHETIC_JD
-    assert observed[1].options == _RECRUITMENT_OPTIONS
+    assert observed[1].options == with_question_intent(
+        _RECRUITMENT_OPTIONS,
+        QUESTION_INTENT_EVALUATION,
+    )
     assert captured["printed"][0].startswith("## 单 JD 显式规则比较\n\n")
     assert "JD 明确为外包" in captured["printed"][0]
     assert captured["state_updates"] == captured["printed"]
@@ -1877,7 +1910,10 @@ def test_result_set_ordinal_dispatches_selected_full_document(
 
     assert [request.query for request in observed] == [question, repo_state.docs[1]]
     assert observed[1].query != question
-    assert observed[1].options == _RECRUITMENT_OPTIONS
+    assert observed[1].options == with_question_intent(
+        _RECRUITMENT_OPTIONS,
+        QUESTION_INTENT_EVALUATION,
+    )
     assert captured["materials"][0]["allowed_paths"] == {_RESOLVED_JD_PATH}
     assert captured["printed"][0].startswith("## 单 JD 显式规则比较\n\n")
     assert captured["prompts"] == []
@@ -1918,7 +1954,10 @@ def test_focus_continuation_dispatches_focused_full_document(
     )
 
     assert [request.query for request in observed] == [question, repo_state.docs[0]]
-    assert observed[1].options == _RECRUITMENT_OPTIONS
+    assert observed[1].options == with_question_intent(
+        _RECRUITMENT_OPTIONS,
+        QUESTION_INTENT_EVALUATION,
+    )
     assert captured["materials"][0]["allowed_paths"] == {_RESOLVED_JD_PATH}
     assert captured["printed"][0].startswith("## 单 JD 显式规则比较\n\n")
     assert captured["prompts"] == []
@@ -1968,10 +2007,14 @@ def test_resolved_jd_handled_preserves_focus_for_demonstrative_continuation(
     assert captured["dialog_inputs"][1]["focused_file"] == _RESOLVED_JD_PATH
     assert captured["events"][1].name == "content_followup"
     assert captured["materials"][1]["allowed_paths"] == {_RESOLVED_JD_PATH}
-    assert [answer.startswith("## JD 明确约束\n\n") for answer in captured["printed"]] == [
+    assert [answer.startswith("## JD 本身分析\n\n") for answer in captured["printed"]] == [
         True,
         True,
     ]
+    assert all(
+        "当前没有加载明确求职规则" in answer
+        for answer in captured["printed"]
+    )
     assert state.last_result_set_focus_file == _RESOLVED_JD_PATH
     assert captured["prompts"] == []
     assert fake_models.calls == []
@@ -1991,24 +2034,7 @@ def test_generated_ordinal_dispatches_proven_backing_and_preserves_domain_focus(
         paths,
         ["合成资料甲。", _LONG_SYNTHETIC_JD, "合成资料丙。"],
     )
-    generated_answer = "1. 岗位甲\n2. 岗位乙"
-    state = ConversationState(
-        mode="content",
-        last_user_question="有哪些岗位？",
-        last_route="normal_retrieval",
-        last_content_user_question="有哪些岗位？",
-        last_content_route="normal_retrieval",
-        last_effective_search_query="合成岗位",
-        last_answer_text=generated_answer,
-        last_answer_preview=generated_answer,
-        last_answer_type=None,
-        last_result_set_items=list(paths),
-        last_result_set_entity_type="文件",
-        last_result_set_selectable=False,
-        last_generated_result_items=["岗位甲", "岗位乙"],
-        last_generated_result_source_candidates=list(paths),
-        last_generated_result_source_hits=[[_RESOLVED_JD_PATH], [paths[2]]],
-    )
+    state = _materialized_generated_jd_state(paths)
     questions = [
         "第 1 个怎么样",
         "这个 JD 符合我的求职条件吗",
@@ -2036,16 +2062,77 @@ def test_generated_ordinal_dispatches_proven_backing_and_preserves_domain_focus(
         questions[1],
         repo_state.docs[1],
     ]
+    assert observed[1].options == with_question_intent(
+        {},
+        QUESTION_INTENT_EVALUATION,
+    )
+    assert observed[3].options == with_question_intent(
+        {},
+        QUESTION_INTENT_EVALUATION,
+    )
     assert captured["materials"][0]["allowed_paths"] == {_RESOLVED_JD_PATH}
     assert captured["materials"][1]["allowed_paths"] == {_RESOLVED_JD_PATH}
     assert captured["dialog_inputs"][1]["focused_file"] == _RESOLVED_JD_PATH
-    assert state.last_result_set_focus_file == _RESOLVED_JD_PATH
+    assert state.last_result_set_focus_file is None
     assert state.last_generated_result_source_hits == [
         [_RESOLVED_JD_PATH],
         [paths[2]],
     ]
+    assert state.last_selected_candidate == "岗位甲"
+    assert state.last_selected_source_files == [_RESOLVED_JD_PATH]
+    assert captured["printed"][0].startswith("## JD 本身分析\n\n")
+    assert "当前没有加载明确求职规则" in captured["printed"][0]
+    assert "## JD 明确约束" not in captured["printed"][0]
     assert captured["prompts"] == []
     assert fake_models.calls == []
+
+
+@pytest.mark.parametrize(
+    ("question", "materialized_question"),
+    [
+        ("第 1 个要求是什么？", "对象《岗位甲》要求是什么？"),
+        ("第 1 个薪资多少？", "对象《岗位甲》薪资多少？"),
+        ("第 1 个需要几年经验？", "对象《岗位甲》需要几年经验？"),
+    ],
+)
+def test_generated_ordinal_detail_questions_keep_detail_generation_semantics(
+    monkeypatch,
+    tmp_path,
+    question,
+    materialized_question,
+):
+    observed = _capture_recruitment_execute(monkeypatch)
+    host = create_domain_host(
+        plugin=RecruitmentJDPlugin(),
+        expected_plugin_id=PLUGIN_ID,
+    )
+    paths = ["招聘/资料甲.md", _RESOLVED_JD_PATH, "招聘/资料丙.md"]
+    repo_state = _repo_with_documents(
+        paths,
+        ["合成资料甲。", _LONG_SYNTHETIC_JD, "合成资料丙。"],
+    )
+
+    _state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=[question],
+        initial_state=_materialized_generated_jd_state(paths),
+        initial_focus=None,
+        use_real_dialog_events=True,
+        use_real_state_updates=True,
+        material_indices=[[0]],
+        domain_options={},
+        repo_state=repo_state,
+        generate=True,
+    )
+
+    assert [request.query for request in observed] == [question]
+    assert captured["materials"][0]["allowed_paths"] == {_RESOLVED_JD_PATH}
+    assert captured["prompts"][0]["question"] == materialized_question
+    assert captured["prompts"][0]["result_set_items"] == ["岗位甲"]
+    assert captured["printed"] == ["受控模型回答"]
+    assert len(fake_models.calls) == 1
 
 
 def test_unique_non_jd_abstains_and_preserves_normal_retrieval_fallback(
@@ -2182,8 +2269,17 @@ def test_resolved_document_does_not_invent_missing_recruitment_rules(
         generate=True,
     )
 
-    assert observed[1].options == options
-    assert captured["printed"][0].startswith("## JD 明确约束\n\n")
+    assert observed[1].options == with_question_intent(
+        options,
+        QUESTION_INTENT_EVALUATION,
+    )
+    assert captured["printed"][0].startswith("## JD 本身分析\n\n")
+    assert "当前没有加载明确求职规则" in captured["printed"][0]
+    assert "不进行个性化匹配" in captured["printed"][0]
+    assert "不作投递建议" in captured["printed"][0]
+    assert "建议投" not in captured["printed"][0]
+    assert "不建议投" not in captured["printed"][0]
+    assert "## JD 明确约束" not in captured["printed"][0]
     assert "## 单 JD 显式规则比较" not in captured["printed"][0]
 
 

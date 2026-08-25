@@ -5,7 +5,12 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
-from docmind_domain_sdk import DomainResult, JsonValue
+from docmind_domain_sdk import (
+    DomainResult,
+    JsonValue,
+    QUESTION_INTENT_EVALUATION,
+    with_question_intent,
+)
 
 from ai.repo_meta.category import resolve_repo_content_category_scope
 from ai.structured_skill_summary import summarize_structured_skill_summary_with_remote
@@ -78,7 +83,15 @@ def _dispatch_with_session_options(
     domain_dispatch_port: DomainDispatchPort,
     query: str,
     domain_options: Mapping[str, JsonValue] | None,
+    *,
+    question_intent: str | None = None,
 ):
+    if question_intent is not None:
+        return dispatch_domain_request(
+            domain_dispatch_port,
+            query,
+            options=with_question_intent(domain_options, question_intent),
+        )
     if domain_options is None:
         return dispatch_domain_request(domain_dispatch_port, query)
     return dispatch_domain_request(
@@ -582,6 +595,7 @@ def run_chat_loop(
                         domain_dispatch_port,
                         resolved_document.text,
                         domain_options,
+                        question_intent=QUESTION_INTENT_EVALUATION,
                     )
                     resolved_domain_answer = _minimal_handled_domain_answer(
                         resolved_domain_result

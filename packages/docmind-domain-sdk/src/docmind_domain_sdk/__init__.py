@@ -22,6 +22,12 @@ from .dto import (
 )
 from .errors import ProtocolViolationError
 from .protocol import DomainPlugin
+from .request_context import (
+    QUESTION_INTENT_EVALUATION,
+    REQUEST_CONTEXT_NAMESPACE,
+    get_question_intent,
+    with_question_intent,
+)
 from .validation import (
     MAX_OPTIONS_CONTAINER_ITEMS,
     MAX_OPTIONS_DEPTH,
@@ -56,6 +62,8 @@ __all__ = [
     "PluginStopRequest",
     "LifecycleResult",
     "DomainPlugin",
+    "QUESTION_INTENT_EVALUATION",
+    "REQUEST_CONTEXT_NAMESPACE",
     "PROTOCOL_VERSION",
     "ProtocolViolationError",
     "MAX_OPTIONS_ENCODED_BYTES",
@@ -68,4 +76,6 @@ __all__ = [
     "validate_probe_boundary",
     "validate_request_boundary",
     "validate_result_boundary",
+    "get_question_intent",
+    "with_question_intent",
 ]

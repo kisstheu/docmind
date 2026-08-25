@@ -4,6 +4,7 @@ from collections.abc import Sequence
 
 from docmind_domain_sdk import (
     PROTOCOL_VERSION,
+    QUESTION_INTENT_EVALUATION,
     DomainRequest,
     DomainResult,
     LifecycleResult,
@@ -14,6 +15,7 @@ from docmind_domain_sdk import (
     ProbeResult,
     SourceSyncRequest,
     SourceSyncResult,
+    get_question_intent,
 )
 
 from .extraction import extract_constraints
@@ -26,6 +28,7 @@ from .request_options import (
     parse_recruitment_request_options,
 )
 from .rendering import render_markdown
+from .evaluation_rendering import render_unpersonalized_evaluation
 
 
 PLUGIN_ID = "org.docmind.recruitment.jd-constraints"
@@ -125,7 +128,10 @@ class RecruitmentJDPlugin:
             )
 
         if rules is None or rules == JobSearchRules():
-            answer_markdown = render_markdown(extracted)
+            if get_question_intent(request.options) == QUESTION_INTENT_EVALUATION:
+                answer_markdown = render_unpersonalized_evaluation(extracted)
+            else:
+                answer_markdown = render_markdown(extracted)
         else:
             comparison = compare_job_search_rules(extracted, rules)
             answer_markdown = render_job_rule_comparison(comparison)

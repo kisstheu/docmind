@@ -125,6 +125,10 @@ _BARE_SINGLE_RESULT_REFERENCE = (
     rf"^(?:(?:那|那么|就|那就))?第(?P<index>{_ORDINAL_TOKEN})"
     r"(?:个)?(?:呢|怎么样|如何)?$"
 )
+_BARE_SINGLE_RESULT_QUESTION_REFERENCE = (
+    rf"^(?:(?:那|那么|就|那就))?第(?P<index>{_ORDINAL_TOKEN})(?:个)?"
+    r"(?:的)?(?=.{1,24}$)(?=.{0,20}(?:什么|多少|几|怎么|如何|是否|哪|吗|呢)).+$"
+)
 _SELECTION_HELP = (
     "当前只支持选择单个文件或整个文件集合。"
     "请改为“第 N 个文件再展开”或“这些文件分别讲了什么”。"
@@ -577,6 +581,8 @@ def _extract_file_result_set_index(question: str) -> int | None:
     match = re.search(_SINGLE_FILE_REFERENCE, compact)
     if not match:
         match = re.fullmatch(_BARE_SINGLE_RESULT_REFERENCE, compact)
+    if not match:
+        match = re.fullmatch(_BARE_SINGLE_RESULT_QUESTION_REFERENCE, compact)
     if not match:
         return None
     ordinal = _parse_result_set_ordinal(match.group("index"))

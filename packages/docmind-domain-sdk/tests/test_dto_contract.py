@@ -31,6 +31,12 @@ from docmind_domain_sdk import (
     SourceSyncResult,
 )
 from docmind_domain_sdk._version import __version__
+from docmind_domain_sdk.request_context import (
+    QUESTION_INTENT_EVALUATION,
+    REQUEST_CONTEXT_NAMESPACE,
+    get_question_intent,
+    with_question_intent,
+)
 
 from fixtures import INLINE_TEXT, PLUGIN_ID, domain_request, domain_result, source_ref, source_snapshot
 
@@ -48,6 +54,28 @@ def test_request_options_default_to_an_independent_empty_object() -> None:
 
     assert first.options == second.options == {}
     assert first.options is not second.options
+
+
+def test_request_context_carries_evaluation_intent_without_mutating_session_options() -> None:
+    session_options = {"org.example.synthetic": {"enabled": True}}
+
+    request_options = with_question_intent(
+        session_options,
+        QUESTION_INTENT_EVALUATION,
+    )
+
+    assert session_options == {"org.example.synthetic": {"enabled": True}}
+    assert request_options["org.example.synthetic"] == {"enabled": True}
+    assert request_options[REQUEST_CONTEXT_NAMESPACE] == {
+        "question_intent": QUESTION_INTENT_EVALUATION,
+    }
+    assert get_question_intent(request_options) == QUESTION_INTENT_EVALUATION
+    assert get_question_intent(
+        {REQUEST_CONTEXT_NAMESPACE: {"question_intent": "description"}}
+    ) is None
+    assert get_question_intent(
+        {REQUEST_CONTEXT_NAMESPACE: {"question_intent": []}}
+    ) is None
 
 
 def test_request_options_round_trip_nested_json_and_valid_scalars() -> None:
