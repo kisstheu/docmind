@@ -612,6 +612,43 @@ def file_result_set_display_name(path: str) -> str:
     return normalized.rsplit("/", 1)[-1]
 
 
+def sort_file_result_set_by_filename(
+    question: str,
+    items: list[str] | tuple[str, ...] | None,
+    *,
+    entity_type: str | None,
+    selectable: bool | None,
+) -> list[str] | None:
+    """Sort an active selectable file result set by its visible file name."""
+    normalized_question = re.sub(
+        r"[。！？!?]+$",
+        "",
+        str(question or "").strip(),
+    ).strip()
+    if (
+        normalized_question != "按文件名排列"
+        or not items
+        or entity_type != "文件"
+        or selectable is not True
+    ):
+        return None
+
+    return sorted(
+        list(items),
+        key=lambda path: (file_result_set_display_name(path), str(path)),
+    )
+
+
+def render_file_result_set_filename_sort(items: list[str] | tuple[str, ...]) -> str:
+    """Render every sorted item using its user-visible file name."""
+    lines = ["已按文件名排列："]
+    lines.extend(
+        f"{index}. {file_result_set_display_name(path)}"
+        for index, path in enumerate(items, 1)
+    )
+    return "\n".join(lines)
+
+
 def materialize_single_file_result_set_question(
     question: str,
     selected_file_path: str,

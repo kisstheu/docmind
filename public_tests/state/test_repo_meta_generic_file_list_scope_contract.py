@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from ai.repo_meta.classifier import (
 )
 from app import chat_loop as chat_runtime
 import app.chat_loop_parts.runner as chat_runner
+import app.dialog.result_set as result_set_operations
 from app.chat_loop_handlers import try_handle_retrieval_force_local_or_empty_context
 from app.chat_loop_handlers.guards import looks_like_analytic_retrieval_question
 from app.chat_state_helpers import update_state_after_local_answer
@@ -296,6 +298,73 @@ def test_generic_file_list_creates_visible_ordered_set_and_empty_repo_does_not()
     assert resolve_file_result_set_selection("这些文件分别讲了什么？", []) is None
 
 
+def test_file_result_set_filename_sort_uses_visible_name_without_changing_membership():
+    paths = ["03_说明.pdf", "01_资料.pdf", "02_记录.txt"]
+
+    sorted_paths = result_set_operations.sort_file_result_set_by_filename(
+        "按文件名排列",
+        paths,
+        entity_type="文件",
+        selectable=True,
+    )
+
+    assert sorted_paths == ["01_资料.pdf", "02_记录.txt", "03_说明.pdf"]
+    assert Counter(sorted_paths) == Counter(paths)
+    assert paths == ["03_说明.pdf", "01_资料.pdf", "02_记录.txt"]
+
+
+def test_file_result_set_filename_sort_uses_repo_path_as_same_name_tie_breaker():
+    paths = [r"z\同名.pdf", "a/同名.pdf", r"b\01_资料.pdf"]
+
+    sorted_paths = result_set_operations.sort_file_result_set_by_filename(
+        " 按文件名排列。 ",
+        paths,
+        entity_type="文件",
+        selectable=True,
+    )
+
+    assert sorted_paths == [r"b\01_资料.pdf", "a/同名.pdf", r"z\同名.pdf"]
+
+
+@pytest.mark.parametrize(
+    ("question", "items", "entity_type", "selectable"),
+    [
+        ("按文件名排序", ["02_记录.txt", "01_资料.pdf"], "文件", True),
+        ("按修改时间排列", ["02_记录.txt", "01_资料.pdf"], "文件", True),
+        ("按文件名排列", [], "文件", True),
+        ("按文件名排列", None, "文件", True),
+        ("按文件名排列", ["对象乙", "对象甲"], "岗位", True),
+        ("按文件名排列", ["02_记录.txt", "01_资料.pdf"], "文件", False),
+    ],
+)
+def test_file_result_set_filename_sort_does_not_take_over_adjacent_requests(
+    question,
+    items,
+    entity_type,
+    selectable,
+):
+    assert result_set_operations.sort_file_result_set_by_filename(
+        question,
+        items,
+        entity_type=entity_type,
+        selectable=selectable,
+    ) is None
+
+
+def test_sorted_file_result_set_keeps_ordinal_selection_semantics():
+    sorted_paths = result_set_operations.sort_file_result_set_by_filename(
+        "按文件名排列",
+        ["03_说明.pdf", "01_资料.pdf", "02_记录.txt"],
+        entity_type="文件",
+        selectable=True,
+    )
+
+    selection = resolve_file_result_set_selection("第二个文件", sorted_paths or [])
+
+    assert selection is not None
+    assert selection.paths == ("02_记录.txt",)
+
+
 @pytest.mark.parametrize(
     "question",
     [
@@ -433,6 +502,160 @@ def _run_turns(
         domain_dispatch_port=domain_dispatch_port or EmptyDomainHost(),
     )
     return allowed_paths, query_result_sets, client
+
+
+def _run_filename_sort_acceptance(
+    monkeypatch,
+    tmp_path,
+    *,
+    questions: list[str],
+    repo_paths: list[str],
+    state: ConversationState,
+):
+    inputs = iter([*questions, "q"])
+    calls = {
+        "signals": [],
+        "events": [],
+        "routes": [],
+        "queries": [],
+        "rewrites": [],
+        "materials": [],
+    }
+    logger = _LoggerStub()
+    client = _ClientStub()
+    real_signals = chat_runner.analyze_question_signals
+    real_event = chat_runner.detect_dialog_event
+    real_query = chat_runner.build_search_query
+    real_materials = chat_runner.build_retrieval_materials
+
+    monkeypatch.setattr(chat_runtime, "_read_user_question", lambda **_kwargs: next(inputs))
+    monkeypatch.setattr(chat_runtime, "_flush_pending_tty_input_unix", lambda: False)
+    monkeypatch.setattr(chat_runtime, "conversation_state", state)
+
+    def capture_signals(question, **kwargs):
+        calls["signals"].append(question)
+        return real_signals(question, **kwargs)
+
+    def capture_event(question, *args, **kwargs):
+        calls["events"].append(question)
+        return real_event(question, *args, **kwargs)
+
+    def capture_route(question, *_args, **_kwargs):
+        calls["routes"].append(question)
+        return {
+            "route": "repo_meta" if question == "当前知识库有哪些文件？" else "normal_retrieval",
+            "smalltalk_reply": "",
+            "route_question_input": question,
+        }
+
+    def capture_query(**kwargs):
+        calls["queries"].append(kwargs["question"])
+        return real_query(**kwargs)
+
+    def capture_rewrite(question, *_args, **_kwargs):
+        calls["rewrites"].append(question)
+        return question
+
+    def capture_materials(**kwargs):
+        calls["materials"].append(kwargs["question"])
+        return real_materials(**kwargs)
+
+    monkeypatch.setattr(chat_runner, "analyze_question_signals", capture_signals)
+    monkeypatch.setattr(chat_runner, "detect_dialog_event", capture_event)
+    monkeypatch.setattr(chat_runner, "resolve_route", capture_route)
+    monkeypatch.setattr(chat_runner, "build_search_query", capture_query)
+    monkeypatch.setattr("app.retrieval_flow.query.rewrite_search_query", capture_rewrite)
+    monkeypatch.setattr(chat_runner, "build_retrieval_materials", capture_materials)
+    chat_runtime.run_chat_loop(
+        _indexed_repo_state(repo_paths),
+        _EmbeddingStub(),
+        client,
+        "offline-model",
+        "http://127.0.0.1:9",
+        "offline-model",
+        logger,
+        notes_dir=tmp_path / "notes",
+        change_log_file=tmp_path / "changes.db",
+        domain_dispatch_port=EmptyDomainHost(),
+    )
+    return SimpleNamespace(calls=calls, client=client, state=chat_runtime.conversation_state)
+
+
+def test_runner_sorts_active_file_result_set_before_routing_or_retrieval(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    paths = ["03_说明.pdf", "01_资料.pdf", "02_记录.txt"]
+    state = _selectable_file_state(paths)
+    state.last_result_set_focus_file = "03_说明.pdf"
+
+    result = _run_filename_sort_acceptance(
+        monkeypatch,
+        tmp_path,
+        questions=["按文件名排列"],
+        repo_paths=paths,
+        state=state,
+    )
+
+    output = capsys.readouterr().out
+    assert "已按文件名排列：\n1. 01_资料.pdf\n2. 02_记录.txt\n3. 03_说明.pdf" in output
+    assert result.calls == {
+        "signals": [],
+        "events": [],
+        "routes": [],
+        "queries": [],
+        "rewrites": [],
+        "materials": [],
+    }
+    assert result.client.models.calls == []
+    assert result.state.last_result_set_items == [
+        "01_资料.pdf",
+        "02_记录.txt",
+        "03_说明.pdf",
+    ]
+    assert result.state.last_answer_type == "enumeration_file"
+    assert result.state.last_result_set_entity_type == "文件"
+    assert result.state.last_result_set_selectable is True
+    assert result.state.last_result_set_focus_file == "03_说明.pdf"
+
+
+def test_real_two_turn_file_list_then_filename_sort_stays_local(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    paths = ["03_说明.pdf", "01_资料.pdf", "02_记录.txt"]
+
+    result = _run_filename_sort_acceptance(
+        monkeypatch,
+        tmp_path,
+        questions=["当前知识库有哪些文件？", "按文件名排列"],
+        repo_paths=paths,
+        state=ConversationState(),
+    )
+
+    output = capsys.readouterr().out
+    assert "当前知识库里的文件如下：\n1. 03_说明.pdf\n2. 01_资料.pdf\n3. 02_记录.txt" in output
+    assert "已按文件名排列：\n1. 01_资料.pdf\n2. 02_记录.txt\n3. 03_说明.pdf" in output
+    assert result.calls["routes"] == ["当前知识库有哪些文件？"]
+    assert result.calls["events"] == ["当前知识库有哪些文件？"]
+    assert result.calls["signals"] == ["当前知识库有哪些文件？"]
+    assert result.calls["queries"] == []
+    assert result.calls["rewrites"] == []
+    assert result.calls["materials"] == []
+    assert result.client.models.calls == []
+    assert result.state.last_result_set_items == [
+        "01_资料.pdf",
+        "02_记录.txt",
+        "03_说明.pdf",
+    ]
+    selection = resolve_file_result_set_selection(
+        "第二个文件",
+        result.state.last_result_set_items,
+    )
+    assert selection is not None
+    assert selection.paths == ("02_记录.txt",)
 
 
 class _RecordingEmptyDomainHost(EmptyDomainHost):

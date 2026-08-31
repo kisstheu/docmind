@@ -28,7 +28,9 @@ from app.dialog.result_set import (
     materialize_generated_result_set_item_question,
     materialize_single_file_result_set_question,
     materialize_structured_generated_result_set,
+    render_file_result_set_filename_sort,
     render_structured_generated_result_set,
+    sort_file_result_set_by_filename,
     structured_generated_enumeration_schema,
 )
 from app.domain_dispatch_port import (
@@ -229,6 +231,40 @@ def run_chat_loop(
                     f"{question} -> {corrected_result_set_question}"
                 )
                 question = corrected_result_set_question
+            sorted_result_set_items = sort_file_result_set_by_filename(
+                question,
+                runtime.conversation_state.last_result_set_items,
+                entity_type=runtime.conversation_state.last_result_set_entity_type,
+                selectable=runtime.conversation_state.last_result_set_selectable,
+            )
+            if sorted_result_set_items is not None:
+                local_answer = render_file_result_set_filename_sort(
+                    sorted_result_set_items
+                )
+                logger.info(
+                    "🔤 [文件结果集本地排序] "
+                    f"items={len(sorted_result_set_items)}"
+                )
+                print_answer(local_answer, start_qa)
+                append_memory(memory_buffer, question, local_answer)
+                runtime.conversation_state = update_state_after_local_answer(
+                    runtime.conversation_state,
+                    question=question,
+                    answer=local_answer,
+                    route=(
+                        runtime.conversation_state.last_route
+                        or "normal_retrieval"
+                    ),
+                    local_topic=None,
+                    is_content_answer=False,
+                )
+                runtime.conversation_state.last_result_set_items = (
+                    sorted_result_set_items
+                )
+                runtime.conversation_state.last_result_set_entity_type = "文件"
+                runtime.conversation_state.last_result_set_selectable = True
+                runtime.conversation_state.last_answer_type = "enumeration_file"
+                continue
             question_signals = analyze_question_signals(
                 question,
                 last_effective_search_query=(
