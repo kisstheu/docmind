@@ -35,9 +35,10 @@ LIST_DETAIL_MODIFIERS = (
 _FILE_LIST_TOPIC_META_TERMS = {"类型", "格式", "类别", "分类", "方面", "方向", "数量", "大小", "体积", "容量"}
 _FILE_LIST_OBJECT_TERMS = ("文件名", "文档名", "资料名", "文件", "文档", "资料")
 _FILE_LIST_QUESTION_INTENT_TERMS = ("有些什么", "有哪一些", "有哪些", "有什么", "有哪")
+_FILE_LIST_COMMAND_TERMS = ("列出来", "列一下", "列一个", "列出", "列下", "罗列", "清单")
 _FILE_LIST_OBJECT_PATTERN = rf"(?:{'|'.join(_FILE_LIST_OBJECT_TERMS)})"
 _FILE_LIST_QUESTION_INTENT_PATTERN = rf"(?:{'|'.join(_FILE_LIST_QUESTION_INTENT_TERMS)})"
-_FILE_LIST_COMMAND_PATTERN = r"(?:列出来|列一下|列一个|列出|列下|罗列|清单)"
+_FILE_LIST_COMMAND_PATTERN = rf"(?:{'|'.join(_FILE_LIST_COMMAND_TERMS)})"
 _FILE_LIST_POLITE_PREFIX_PATTERN = r"(?:(?:请|麻烦|帮我|请帮我|麻烦帮我))?"
 _FILE_LIST_TOPIC_PATTERNS = (
     rf"{_FILE_LIST_POLITE_PREFIX_PATTERN}(?:把)?"
@@ -59,7 +60,24 @@ _GENERIC_STATUS_SCOPE = (
 
 
 def _normalize_file_list_question(question: str) -> str:
-    return re.sub(r"[？?！!，,。.、；;：:\s]+", "", clean_text(question))
+    return re.sub(r"[？?！!，,。.、；;：:\s]+", "", (question or "").strip())
+
+
+def _extract_file_list_request_fragment(question: str) -> str:
+    """Keep the narrowest delimited fragment that contains a complete list request."""
+    parts = [
+        part
+        for part in re.split(r"[？?！!，,。.、；;：:\s]+", (question or "").strip())
+        if part
+    ]
+    for start in range(len(parts) - 1, -1, -1):
+        fragment = "".join(parts[start:])
+        has_object = any(term in fragment for term in _FILE_LIST_OBJECT_TERMS)
+        has_intent = any(term in fragment for term in _FILE_LIST_QUESTION_INTENT_TERMS)
+        has_command = any(term in fragment for term in _FILE_LIST_COMMAND_TERMS)
+        if has_object and (has_intent or has_command):
+            return fragment
+    return _normalize_file_list_question(question)
 
 
 def _is_generic_repository_scope(slot: str) -> bool:
@@ -166,7 +184,7 @@ def is_followup_to_list_files(last_topic: str | None, current_question: str) -> 
 
 def parse_file_list_request(question: str) -> str | None:
     """Return ``None`` for non-list, ``""`` for repo-wide, or the intact topic."""
-    q = _normalize_file_list_question(question)
+    q = _extract_file_list_request_fragment(question)
     if not q:
         return None
 
