@@ -43,8 +43,14 @@ OPAQUE_TOPICS = (
 
 EXPLICIT_TOPIC_TEMPLATES = (
     "有哪些关于{topic}的文档？",
-    "{topic}相关有哪些资料？",
-    "有哪些{topic}文档？",
+    "有哪些{topic}相关资料？",
+    "关于{topic}的文件有哪些？",
+)
+
+AMBIGUOUS_POSTFIX_TOPIC_CASES = (
+    ("顺便问一下", "蓝鲸计划", "资料"),
+    ("接着说", "Orchid-42", "资料"),
+    ("我再看看", "甲类", "文件"),
 )
 
 
@@ -132,6 +138,24 @@ def test_explicit_topic_is_invariant_under_discourse_lead_in(lead_in, topic, tem
     assert parse_file_list_request(question) == topic
     assert extract_topic_from_list_request(question) == topic
     assert classify_repo_meta_question(question) == "list_files_by_topic"
+
+
+@pytest.mark.parametrize(
+    ("lead_in", "topic", "object_term"),
+    AMBIGUOUS_POSTFIX_TOPIC_CASES,
+)
+def test_unsegmented_postfix_topic_does_not_swallow_lead_in(
+    lead_in,
+    topic,
+    object_term,
+):
+    question = f"{lead_in}{topic}相关有哪些{object_term}？"
+    forbidden_topic = f"{lead_in}{topic}"
+
+    assert parse_file_list_request(question) == ""
+    assert extract_topic_from_list_request(question) == ""
+    assert parse_file_list_request(question) != forbidden_topic
+    assert classify_repo_meta_question(question) == "list_files"
 
 
 @pytest.mark.parametrize(
