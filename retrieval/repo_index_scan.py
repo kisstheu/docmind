@@ -17,7 +17,7 @@ _EXCLUDED_PARTS = {
 }
 _MAX_FILE_BYTES = 500 * 1024
 _MAX_IMAGE_FILE_BYTES = 5 * 1024 * 1024
-_MAX_DEFAULT_PDF_FILE_BYTES = 2000 * 1024
+_MAX_DEFAULT_PDF_FILE_BYTES = 2 * 1024 * 1024
 _MAX_PDF_FILE_BYTES = 100 * 1024 * 1024
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
@@ -79,5 +79,9 @@ def _classify_file(file: Path) -> tuple[str, str]:
     else:
         size_limit = _MAX_FILE_BYTES
     if stat.st_size > size_limit:
-        return "resource_limit", f"超过当前 {suffix} 文件大小上限（{size_limit // 1024}KB）"
+        if size_limit % (1024 * 1024) == 0:
+            size_limit_label = f"{size_limit // (1024 * 1024)} MiB"
+        else:
+            size_limit_label = f"{size_limit // 1024} KiB"
+        return "resource_limit", f"超过当前 {suffix} 文件大小上限（{size_limit_label}）"
     return "index", ""

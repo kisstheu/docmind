@@ -58,6 +58,18 @@ def test_default_scan_discovers_reproduced_pdf_sizes(
     assert _relative_paths(tmp_path) == [f"document-{size_bytes}.pdf"]
 
 
+@pytest.mark.parametrize("size_bytes", [2048000, 2048001, 2097151, 2097152])
+def test_default_pdf_limit_indexes_through_exactly_2_mib(
+    tmp_path: Path,
+    monkeypatch,
+    size_bytes: int,
+) -> None:
+    monkeypatch.setenv("DOCMIND_ENABLE_HEAVY_PDF", "0")
+    _sparse_file(tmp_path / f"document-{size_bytes}.pdf", size_bytes)
+
+    assert _relative_paths(tmp_path) == [f"document-{size_bytes}.pdf"]
+
+
 def test_unsupported_html_is_rejected_and_reported(tmp_path: Path) -> None:
     html = tmp_path / "example.html"
     html.write_text("<p>Synthetic document.</p>", encoding="utf-8")
@@ -93,7 +105,7 @@ def test_internal_sidecars_are_silently_ignored(tmp_path: Path) -> None:
 
 def test_pdf_resource_limit_is_rejected_and_reported(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("DOCMIND_ENABLE_HEAVY_PDF", "0")
-    _sparse_file(tmp_path / "oversized.pdf", 2 * 1024 * 1024)
+    _sparse_file(tmp_path / "oversized.pdf", 2 * 1024 * 1024 + 1)
     logger = _RecordingLogger()
 
     scanned = scan_repository(tmp_path, logger)
@@ -101,7 +113,7 @@ def test_pdf_resource_limit_is_rejected_and_reported(tmp_path: Path, monkeypatch
     assert scanned["paths"] == []
     assert scanned["rejected_files"][0]["path"] == "oversized.pdf"
     assert scanned["rejected_files"][0]["category"] == "resource_limit"
-    assert "大小上限" in scanned["rejected_files"][0]["reason"]
+    assert scanned["rejected_files"][0]["reason"] == "超过当前 .pdf 文件大小上限（2 MiB）"
     warning_text = "\n".join(logger.warnings)
     assert "oversized.pdf" in warning_text
     assert "大小上限" in warning_text
@@ -112,6 +124,24 @@ def test_heavy_pdf_flag_retains_expensive_processing_opt_in(tmp_path: Path, monk
     monkeypatch.setenv("DOCMIND_ENABLE_HEAVY_PDF", "1")
 
     assert _relative_paths(tmp_path) == ["oversized.pdf"]
+
+
+def test_heavy_pdf_limit_remains_inclusive_at_100_mib(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DOCMIND_ENABLE_HEAVY_PDF", "1")
+    _sparse_file(tmp_path / "at-limit.pdf", 100 * 1024 * 1024)
+    _sparse_file(tmp_path / "over-limit.pdf", 100 * 1024 * 1024 + 1)
+    logger = _RecordingLogger()
+
+    scanned = scan_repository(tmp_path, logger)
+
+    assert scanned["paths"] == ["at-limit.pdf"]
+    assert scanned["rejected_files"] == [
+        {
+            "path": "over-limit.pdf",
+            "category": "resource_limit",
+            "reason": "超过当前 .pdf 文件大小上限（100 MiB）",
+        }
+    ]
 
 
 def test_rejected_files_are_separate_from_manifest_diff(tmp_path: Path) -> None:
