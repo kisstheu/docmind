@@ -8,7 +8,12 @@ import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from io import StringIO
 from pathlib import Path, PurePosixPath
+
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
 
 
 def extract_result_set_from_answer(answer: str, entity_type: str = "文件") -> tuple[list[str], str]:
@@ -805,7 +810,17 @@ def build_file_result_set_metadata_detail(
         name = file_result_set_display_name(item).casefold()
         display_name_counts[name] = display_name_counts.get(name, 0) + 1
 
-    lines = ["当前文件结果集详情："]
+    table = Table(
+        box=None,
+        collapse_padding=True,
+        padding=(0, 1),
+        show_edge=False,
+    )
+    table.add_column("#", no_wrap=True)
+    table.add_column("类型", no_wrap=True)
+    table.add_column("大小", no_wrap=True)
+    table.add_column("修改时间", no_wrap=True)
+    table.add_column("文件")
     for index, item in enumerate(ordered_items, 1):
         display_name = file_result_set_display_name(item) or "未知"
         _repo_index, size, modified_time, relative_path = _result_set_metadata_for_item(
@@ -823,10 +838,6 @@ def build_file_result_set_metadata_detail(
             else "未知"
         )
 
-        lines.append(f"{index}. {display_name}")
-        lines.append(f"   - 类型：{extension}")
-        lines.append(f"   - 大小：{size_text}")
-        lines.append(f"   - 修改时间：{time_text}")
         show_relative_path = bool(
             relative_path
             and (
@@ -834,10 +845,18 @@ def build_file_result_set_metadata_detail(
                 or display_name_counts.get(display_name.casefold(), 0) > 1
             )
         )
-        if show_relative_path:
-            lines.append(f"   - 相对路径：{relative_path}")
+        file_text = relative_path if show_relative_path else display_name
+        table.add_row(str(index), extension, size_text, time_text, Text(file_text))
 
-    return "\n".join(lines)
+    output = StringIO()
+    Console(
+        file=output,
+        force_terminal=False,
+        color_system=None,
+        highlight=False,
+        width=120,
+    ).print(table)
+    return f"当前文件结果集详情：\n\n{output.getvalue().rstrip()}"
 
 
 def sort_file_result_set_by_filename(

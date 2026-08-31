@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -136,31 +137,23 @@ def test_metadata_detail_preserves_order_and_maps_each_identity(tmp_path):
     )
 
     assert answer is not None
-    numbered = [line for line in answer.splitlines() if line[:1].isdigit()]
-    assert numbered == [
-        "1. 03_说明.pdf",
-        "2. 01_资料.pdf",
-        "3. 02_记录.txt",
+    assert answer.splitlines()[0] == "当前文件结果集详情："
+    assert re.search(r"#\s+类型\s+大小\s+修改时间\s+文件", answer)
+    expected_rows = [
+        ("1", ".pdf", "1.0 KiB", "2026-08-30 09:00:00", "03_说明.pdf"),
+        ("2", ".pdf", "1.0 MiB", "2026-08-29 08:00:00", "01_资料.pdf"),
+        ("3", ".txt", "1.5 KiB", "2026-08-31 10:00:00", "子目录/02_记录.txt"),
     ]
-    assert "类型：.pdf" in answer
-    assert "类型：.txt" in answer
-    assert "大小：1.0 KiB" in answer
-    assert "大小：1.0 MiB" in answer
-    assert "大小：1.5 KiB" in answer
-    assert "修改时间：2026-08-30 09:00:00" in answer
-    assert "修改时间：2026-08-29 08:00:00" in answer
-    assert "修改时间：2026-08-31 10:00:00" in answer
-    first_block = answer.split("1. 03_说明.pdf", 1)[1].split("2. 01_资料.pdf", 1)[0]
-    second_block = answer.split("2. 01_资料.pdf", 1)[1].split("3. 02_记录.txt", 1)[0]
-    third_block = answer.split("3. 02_记录.txt", 1)[1]
-    assert "大小：1.0 KiB" in first_block
-    assert "修改时间：2026-08-30 09:00:00" in first_block
-    assert "大小：1.0 MiB" in second_block
-    assert "修改时间：2026-08-29 08:00:00" in second_block
-    assert "大小：1.5 KiB" in third_block
-    assert "修改时间：2026-08-31 10:00:00" in third_block
-    assert "相对路径：子目录/02_记录.txt" in answer
-    assert f"相对路径：{items[0]}" not in answer
+    for index, extension, size, modified_time, display_path in expected_rows:
+        assert re.search(
+            rf"^\s*{index}\s+{re.escape(extension)}\s+{re.escape(size)}\s+"
+            rf"{re.escape(modified_time)}\s+{re.escape(display_path)}\s*$",
+            answer,
+            re.MULTILINE,
+        )
+        assert answer.count(display_path) == 1
+    assert answer.index("03_说明.pdf") < answer.index("01_资料.pdf")
+    assert answer.index("01_资料.pdf") < answer.index("子目录/02_记录.txt")
     assert str(notes_dir) not in answer
 
 
@@ -193,8 +186,11 @@ def test_metadata_detail_reuses_complete_repo_state_without_stat(monkeypatch, tm
     )
 
     assert answer is not None
-    assert "大小：42 B" in answer
-    assert "修改时间：2026-08-31 12:00:00" in answer
+    assert re.search(
+        r"^\s*1\s+\.txt\s+42 B\s+2026-08-31 12:00:00\s+合成资料\.txt\s*$",
+        answer,
+        re.MULTILINE,
+    )
 
 
 def test_metadata_detail_never_uses_unsafe_absolute_path_as_output(tmp_path):
@@ -211,10 +207,11 @@ def test_metadata_detail_never_uses_unsafe_absolute_path_as_output(tmp_path):
     )
 
     assert answer is not None
-    assert "1. 合成资料.pdf" in answer
-    assert "大小：未知" in answer
-    assert "修改时间：未知" in answer
-    assert "相对路径：" not in answer
+    assert re.search(
+        r"^\s*1\s+\.pdf\s+未知\s+未知\s+合成资料\.pdf\s*$",
+        answer,
+        re.MULTILINE,
+    )
     assert str(tmp_path) not in answer
 
 
@@ -235,17 +232,10 @@ def test_metadata_detail_disambiguates_duplicate_names_and_supports_windows_path
     )
 
     assert answer is not None
-    assert [line for line in answer.splitlines() if line[:1].isdigit()] == [
-        "1. 说明.pdf",
-        "2. 说明.pdf",
-        "3. 记录.TXT",
-    ]
-    assert "相对路径：项目甲/说明.pdf" in answer
-    assert "相对路径：项目乙/说明.pdf" in answer
-    assert "相对路径：目录丙/记录.TXT" in answer
-    assert "类型：.txt" in answer
-    assert "大小：未知" not in answer
-    assert "修改时间：未知" not in answer
+    assert re.search(r"^\s*1\s+\.pdf\s+10 B\s+\S+ \S+\s+项目甲/说明\.pdf\s*$", answer, re.MULTILINE)
+    assert re.search(r"^\s*2\s+\.pdf\s+20 B\s+\S+ \S+\s+项目乙/说明\.pdf\s*$", answer, re.MULTILINE)
+    assert re.search(r"^\s*3\s+\.txt\s+30 B\s+\S+ \S+\s+目录丙/记录\.TXT\s*$", answer, re.MULTILINE)
+    assert "未知" not in answer
     assert str(notes_dir) not in answer
 
 
@@ -253,12 +243,13 @@ def test_metadata_detail_preserves_unmapped_or_deleted_item_as_unknown(tmp_path)
     notes_dir = tmp_path / "notes"
     existing = "现有资料.md"
     missing = "已移动资料.pdf"
+    missing_without_type = "已删除资料"
     _write_synthetic_file(notes_dir / existing, 7, 1_700_000_000)
     repo_state = _repo_state(notes_dir, [existing])
 
     answer = result_set_operations.build_file_result_set_metadata_detail(
         "显示详情",
-        [existing, missing],
+        [existing, missing, missing_without_type],
         entity_type="文件",
         selectable=True,
         repo_state=repo_state,
@@ -266,14 +257,17 @@ def test_metadata_detail_preserves_unmapped_or_deleted_item_as_unknown(tmp_path)
     )
 
     assert answer is not None
-    assert [line for line in answer.splitlines() if line[:1].isdigit()] == [
-        "1. 现有资料.md",
-        "2. 已移动资料.pdf",
-    ]
-    missing_block = answer.split("2. 已移动资料.pdf", 1)[1]
-    assert "类型：.pdf" in missing_block
-    assert "大小：未知" in missing_block
-    assert "修改时间：未知" in missing_block
+    assert re.search(r"^\s*1\s+\.md\s+7 B\s+\S+ \S+\s+现有资料\.md\s*$", answer, re.MULTILINE)
+    assert re.search(
+        r"^\s*2\s+\.pdf\s+未知\s+未知\s+已移动资料\.pdf\s*$",
+        answer,
+        re.MULTILINE,
+    )
+    assert re.search(
+        r"^\s*3\s+未知\s+未知\s+未知\s+已删除资料\s*$",
+        answer,
+        re.MULTILINE,
+    )
     assert str(notes_dir) not in answer
 
 
