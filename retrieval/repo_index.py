@@ -96,7 +96,11 @@ __all__ = [
 
 
 def scan_repository(notes_dir: Path, logger):
-    return _scan_repository(notes_dir, logger).to_legacy_dict()
+    scanned = _scan_repository(notes_dir, logger)
+    if logger is not None:
+        for rejected in scanned.rejected_files:
+            logger.warning(f"⚠️ 未纳入知识库：{rejected.path}（{rejected.reason}）")
+    return scanned.to_legacy_dict()
 
 
 

@@ -12,7 +12,7 @@ from retrieval.repo_index_encode import (
     assemble_repo_state,
     build_cache_entries_from_prepared,
 )
-from retrieval.repo_index_scan import collect_all_files
+from retrieval.repo_index_scan import collect_all_files, scan_files
 from retrieval.repo_index_tags import (
     _SCENE_TAG_VERSION,
     _build_batch_tag_prompt,
@@ -38,7 +38,7 @@ def _format_file_info(relative_path: str, size_kb: float, mtime: datetime.dateti
 
 
 def scan_repository(notes_dir: Path, logger) -> ScannedRepo:
-    all_files = collect_all_files(notes_dir)
+    all_files, rejected_files = scan_files(notes_dir)
     entries: list[ScanEntry] = []
     file_info_list: list[str] = []
 
@@ -64,6 +64,7 @@ def scan_repository(notes_dir: Path, logger) -> ScannedRepo:
         earliest_note=file_info_list[0] if file_info_list else "无",
         latest_note=file_info_list[-1] if file_info_list else "无",
         notes_dir=notes_dir,
+        rejected_files=rejected_files,
     )
 
 

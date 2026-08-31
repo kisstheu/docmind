@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List
 
@@ -32,6 +32,13 @@ class ScanEntry:
     size_kb: float
 
 
+@dataclass(frozen=True)
+class RejectedFile:
+    path: str
+    category: str
+    reason: str
+
+
 @dataclass
 class ScannedRepo:
     entries: List[ScanEntry]
@@ -42,6 +49,7 @@ class ScannedRepo:
     earliest_note: str
     latest_note: str
     notes_dir: Path
+    rejected_files: List[RejectedFile] = field(default_factory=list)
 
     def to_legacy_dict(self) -> dict:
         return {
@@ -61,6 +69,14 @@ class ScannedRepo:
             "earliest_note": self.earliest_note,
             "latest_note": self.latest_note,
             "notes_dir": self.notes_dir,
+            "rejected_files": [
+                {
+                    "path": item.path,
+                    "category": item.category,
+                    "reason": item.reason,
+                }
+                for item in self.rejected_files
+            ],
         }
 
 

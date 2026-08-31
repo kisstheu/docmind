@@ -1,42 +1,177 @@
+from __future__ import annotations
+
 from pathlib import Path
 
+import pytest
+
+from retrieval.repo_index import scan_repository
+from retrieval.repo_index_cache import classify_manifest_diff
 from retrieval.repo_index_scan import collect_all_files
+from retrieval.repo_index_types import CacheSnapshot
+
+
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.infos: list[str] = []
+        self.warnings: list[str] = []
+
+    def info(self, message: str) -> None:
+        self.infos.append(message)
+
+    def warning(self, message: str) -> None:
+        self.warnings.append(message)
 
 
 def _relative_paths(root: Path) -> list[str]:
     return [path.relative_to(root).as_posix() for path in collect_all_files(root)]
 
 
-def test_default_scan_keeps_small_document_and_rejects_oversized_pdf(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    monkeypatch.delenv("DOCMIND_ENABLE_HEAVY_PDF", raising=False)
+def _sparse_file(path: Path, size_bytes: int) -> None:
+    with path.open("wb") as file:
+        file.truncate(size_bytes)
+
+
+def test_default_scan_discovers_normal_pdfs(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DOCMIND_ENABLE_HEAVY_PDF", "0")
     docs = tmp_path / "docs"
     docs.mkdir()
-    (docs / "alpha.md").write_text("Synthetic note.", encoding="utf-8")
-    (docs / "beta.pdf").write_bytes(b"x" * (512 * 1024 + 1))
+    _sparse_file(docs / "small.pdf", 400 * 1024)
+    _sparse_file(docs / "medium.pdf", 600 * 1024)
+    _sparse_file(docs / "normal.pdf", 1_900_000)
 
-    assert _relative_paths(tmp_path) == ["docs/alpha.md"]
-
-
-def test_heavy_pdf_flag_allows_pdf_above_default_limit(tmp_path: Path, monkeypatch) -> None:
-    docs = tmp_path / "docs"
-    docs.mkdir()
-    (docs / "beta.pdf").write_bytes(b"x" * (512 * 1024 + 1))
-    monkeypatch.setenv("DOCMIND_ENABLE_HEAVY_PDF", "true")
-
-    assert _relative_paths(tmp_path) == ["docs/beta.pdf"]
+    assert set(_relative_paths(tmp_path)) == {
+        "docs/small.pdf",
+        "docs/medium.pdf",
+        "docs/normal.pdf",
+    }
 
 
-def test_scan_excludes_runtime_directory_and_large_text_document(
+@pytest.mark.parametrize("size_bytes", [538114, 635796, 1674547, 1901025])
+def test_default_scan_discovers_reproduced_pdf_sizes(
     tmp_path: Path,
     monkeypatch,
+    size_bytes: int,
 ) -> None:
-    monkeypatch.delenv("DOCMIND_ENABLE_HEAVY_PDF", raising=False)
-    runtime_dir = tmp_path / ".docmind_trash"
-    runtime_dir.mkdir()
-    (runtime_dir / "alpha.md").write_text("Synthetic runtime note.", encoding="utf-8")
-    (tmp_path / "oversized.md").write_bytes(b"x" * (512 * 1024 + 1))
+    monkeypatch.setenv("DOCMIND_ENABLE_HEAVY_PDF", "0")
+    _sparse_file(tmp_path / f"document-{size_bytes}.pdf", size_bytes)
 
-    assert _relative_paths(tmp_path) == []
+    assert _relative_paths(tmp_path) == [f"document-{size_bytes}.pdf"]
+
+
+def test_unsupported_html_is_rejected_and_reported(tmp_path: Path) -> None:
+    html = tmp_path / "example.html"
+    html.write_text("<p>Synthetic document.</p>", encoding="utf-8")
+    logger = _RecordingLogger()
+
+    scanned = scan_repository(tmp_path, logger)
+
+    assert scanned["paths"] == []
+    assert scanned["rejected_files"] == [
+        {
+            "path": "example.html",
+            "category": "unsupported",
+            "reason": "暂不支持 .html 文件",
+        }
+    ]
+    warning_text = "\n".join(logger.warnings)
+    assert "example.html" in warning_text
+    assert "不支持" in warning_text
+
+
+def test_internal_sidecars_are_silently_ignored(tmp_path: Path) -> None:
+    (tmp_path / "foo.pdf.ocr.txt").write_text("Synthetic OCR sidecar.", encoding="utf-8")
+    (tmp_path / "foo.pdf.converted.txt").write_text("Synthetic converted sidecar.", encoding="utf-8")
+    (tmp_path / "~$foo.docx").write_text("Synthetic lock file.", encoding="utf-8")
+    logger = _RecordingLogger()
+
+    scanned = scan_repository(tmp_path, logger)
+
+    assert scanned["paths"] == []
+    assert scanned["rejected_files"] == []
+    assert logger.warnings == []
+
+
+def test_pdf_resource_limit_is_rejected_and_reported(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DOCMIND_ENABLE_HEAVY_PDF", "0")
+    _sparse_file(tmp_path / "oversized.pdf", 2 * 1024 * 1024)
+    logger = _RecordingLogger()
+
+    scanned = scan_repository(tmp_path, logger)
+
+    assert scanned["paths"] == []
+    assert scanned["rejected_files"][0]["path"] == "oversized.pdf"
+    assert scanned["rejected_files"][0]["category"] == "resource_limit"
+    assert "大小上限" in scanned["rejected_files"][0]["reason"]
+    warning_text = "\n".join(logger.warnings)
+    assert "oversized.pdf" in warning_text
+    assert "大小上限" in warning_text
+
+
+def test_heavy_pdf_flag_retains_expensive_processing_opt_in(tmp_path: Path, monkeypatch) -> None:
+    _sparse_file(tmp_path / "oversized.pdf", 2 * 1024 * 1024)
+    monkeypatch.setenv("DOCMIND_ENABLE_HEAVY_PDF", "1")
+
+    assert _relative_paths(tmp_path) == ["oversized.pdf"]
+
+
+def test_rejected_files_are_separate_from_manifest_diff(tmp_path: Path) -> None:
+    (tmp_path / "accepted.md").write_text("Synthetic note.", encoding="utf-8")
+    (tmp_path / "example.html").write_text("<p>Synthetic document.</p>", encoding="utf-8")
+    scanned = scan_repository(tmp_path, _RecordingLogger())
+    manifest = {entry["path"]: entry["fingerprint"] for entry in scanned["entries"]}
+    snapshot = CacheSnapshot(
+        manifest={},
+        doc_cache={},
+        chunk_cache={},
+        archived_manifest={},
+        archived_doc_cache={},
+        archived_chunk_cache={},
+        usable=True,
+    )
+
+    diff = classify_manifest_diff(scanned["paths"], manifest, snapshot)
+
+    assert diff.added_paths == ["accepted.md"]
+    assert diff.modified_paths == []
+    assert diff.deleted_paths == []
+    assert diff.unchanged_paths == []
+    assert [item["path"] for item in scanned["rejected_files"]] == ["example.html"]
+
+
+def test_existing_supported_formats_remain_discoverable(tmp_path: Path) -> None:
+    for suffix in (".txt", ".md", ".pdf", ".doc", ".docx"):
+        (tmp_path / f"document{suffix}").write_bytes(b"synthetic")
+
+    assert set(_relative_paths(tmp_path)) == {
+        "document.txt",
+        "document.md",
+        "document.pdf",
+        "document.doc",
+        "document.docx",
+    }
+
+
+@pytest.mark.parametrize("directory", ["contract", "procurement", "project"])
+def test_pdf_rule_generalizes_across_directories(
+    tmp_path: Path,
+    monkeypatch,
+    directory: str,
+) -> None:
+    monkeypatch.setenv("DOCMIND_ENABLE_HEAVY_PDF", "0")
+    nested = tmp_path / directory
+    nested.mkdir()
+    _sparse_file(nested / "document.pdf", 1_500_000)
+
+    assert _relative_paths(tmp_path) == [f"{directory}/document.pdf"]
+
+
+def test_large_text_and_internal_file_are_not_relaxed_by_pdf_contract(tmp_path: Path) -> None:
+    _sparse_file(tmp_path / "oversized.txt", 512 * 1024 + 1)
+    (tmp_path / "document.pdf.ocr.txt").write_text("Synthetic sidecar.", encoding="utf-8")
+    logger = _RecordingLogger()
+
+    scanned = scan_repository(tmp_path, logger)
+
+    assert scanned["paths"] == []
+    assert [item["path"] for item in scanned["rejected_files"]] == ["oversized.txt"]
+    assert all("ocr.txt" not in warning for warning in logger.warnings)
