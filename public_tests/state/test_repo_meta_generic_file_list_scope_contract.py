@@ -185,6 +185,11 @@ def _focused_file_state(paths: list[str], focus_file: str) -> ConversationState:
 @pytest.mark.parametrize(
     "question",
     [
+        "有哪些文档？",
+        "现在有哪些文档？",
+        "那现在有哪些文档？",
+        "当前有哪些文件？",
+        "现在库里都有什么资料？",
         "当前知识库有哪些文件？",
         "目前知识库里有什么文件？",
         "知识库中都有哪些文档？",
@@ -203,13 +208,11 @@ def test_generic_file_lists_share_one_repo_wide_parse(question):
 @pytest.mark.parametrize(
     ("question", "topic"),
     [
-        ("成都有哪些文件？", "成都"),
-        ("文档管理有哪些文件？", "文档管理"),
-        ("文件系统有哪些文档？", "文件系统"),
-        ("资料管理有哪些文件？", "资料管理"),
-        ("当前项目有哪些文件？", "项目"),
+        ("有哪些蓝鲸计划文档？", "蓝鲸计划"),
+        ("有哪些Orchid-42相关资料？", "Orchid-42"),
+        ("有哪些关于X17协议的文件？", "X17协议"),
+        ("当前项目相关有哪些文件？", "项目"),
         ("目前招聘相关有哪些资料？", "招聘"),
-        ("现在这个合同有哪些文档？", "合同"),
         ("采购相关有哪些文件？", "采购"),
         ("关于合同的文件有哪些？", "合同"),
     ],
@@ -218,6 +221,27 @@ def test_topic_file_lists_keep_the_topic_core_intact(question, topic):
     assert parse_file_list_request(question) == topic
     assert extract_topic_from_list_request(question) == topic
     assert classify_repo_meta_question(question) == "list_files_by_topic"
+
+
+def test_capability_answer_context_does_not_turn_spoken_lead_in_into_topic():
+    question = "那现在有哪些文档？"
+    state = ConversationState(
+        last_user_question="能干啥？",
+        last_route="system_capability",
+        last_answer_text="1. 检索资料\n2. 整理内容",
+    )
+
+    event = detect_dialog_event(question, state, _LoggerStub())
+
+    assert event.name == "repo_meta_request"
+    assert event.route_hint == "repo_meta"
+    assert parse_file_list_request(question) == ""
+    assert extract_topic_from_list_request(question) == ""
+    assert classify_repo_meta_question(
+        question,
+        last_user_question=state.last_user_question,
+        last_local_topic=state.last_local_topic,
+    ) == "list_files"
 
 
 @pytest.mark.parametrize(

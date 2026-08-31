@@ -33,19 +33,21 @@ LIST_DETAIL_MODIFIERS = (
 )
 
 _FILE_LIST_TOPIC_META_TERMS = {"类型", "格式", "类别", "分类", "方面", "方向", "数量", "大小", "体积", "容量"}
-_FILE_LIST_OBJECT_PATTERN = r"(?:文件名|文档名|资料名|文件|文档|资料)"
-_FILE_LIST_QUESTION_INTENT_PATTERN = r"(?:有些什么|有哪一些|有哪些|有什么|有哪)"
+_FILE_LIST_OBJECT_TERMS = ("文件名", "文档名", "资料名", "文件", "文档", "资料")
+_FILE_LIST_QUESTION_INTENT_TERMS = ("有些什么", "有哪一些", "有哪些", "有什么", "有哪")
+_FILE_LIST_OBJECT_PATTERN = rf"(?:{'|'.join(_FILE_LIST_OBJECT_TERMS)})"
+_FILE_LIST_QUESTION_INTENT_PATTERN = rf"(?:{'|'.join(_FILE_LIST_QUESTION_INTENT_TERMS)})"
 _FILE_LIST_COMMAND_PATTERN = r"(?:列出来|列一下|列一个|列出|列下|罗列|清单)"
 _FILE_LIST_POLITE_PREFIX_PATTERN = r"(?:(?:请|麻烦|帮我|请帮我|麻烦帮我))?"
-_FILE_LIST_SLOT_PATTERNS = (
+_FILE_LIST_TOPIC_PATTERNS = (
     rf"{_FILE_LIST_POLITE_PREFIX_PATTERN}(?:把)?"
     rf"{_FILE_LIST_COMMAND_PATTERN}(?P<slot>.*?){_FILE_LIST_OBJECT_PATTERN}",
     rf"{_FILE_LIST_POLITE_PREFIX_PATTERN}(?:把)?(?P<slot>.*?)"
     rf"{_FILE_LIST_OBJECT_PATTERN}{_FILE_LIST_COMMAND_PATTERN}",
-    rf"(?P<slot>.*?){_FILE_LIST_QUESTION_INTENT_PATTERN}{_FILE_LIST_OBJECT_PATTERN}",
     rf"(?P<slot>.*?){_FILE_LIST_OBJECT_PATTERN}{_FILE_LIST_QUESTION_INTENT_PATTERN}",
-    rf"(?P<slot>.+?)(?:相关){_FILE_LIST_OBJECT_PATTERN}",
+    rf"(?P<slot>.+?)(?:相关){_FILE_LIST_QUESTION_INTENT_PATTERN}{_FILE_LIST_OBJECT_PATTERN}",
 )
+_FILE_LIST_RELATED_OBJECT_PATTERN = rf"(?P<slot>.+?)(?:相关){_FILE_LIST_OBJECT_PATTERN}"
 _GENERIC_REPOSITORY_SCOPE = (
     r"(?:(?:当前|目前|现在))?(?:我(?:的)?)?(?:(?:整个|全部|所有))?"
     r"(?:知识库|库)(?:里|中|内)?(?:(?:一共|总共|全部|所有|都))*"
@@ -168,7 +170,7 @@ def parse_file_list_request(question: str) -> str | None:
     if not q:
         return None
 
-    for pattern in _FILE_LIST_SLOT_PATTERNS:
+    for pattern in _FILE_LIST_TOPIC_PATTERNS:
         match = re.fullmatch(pattern, q)
         if not match:
             continue
@@ -178,6 +180,29 @@ def parse_file_list_request(question: str) -> str | None:
         topic = _normalize_file_list_slot(raw_slot)
         if _is_generic_repository_scope(topic):
             return ""
+        if topic and topic not in _FILE_LIST_TOPIC_META_TERMS:
+            return topic
+        return None
+
+    for intent in _FILE_LIST_QUESTION_INTENT_TERMS:
+        intent_index = q.find(intent)
+        if intent_index < 0:
+            continue
+        remainder = q[intent_index + len(intent):]
+        for object_term in _FILE_LIST_OBJECT_TERMS:
+            if not remainder.endswith(object_term):
+                continue
+            raw_slot = remainder[:-len(object_term)]
+            if not raw_slot:
+                return ""
+            topic = _normalize_file_list_slot(raw_slot)
+            if topic and topic not in _FILE_LIST_TOPIC_META_TERMS:
+                return topic
+            return None
+
+    related_match = re.fullmatch(_FILE_LIST_RELATED_OBJECT_PATTERN, q)
+    if related_match:
+        topic = _normalize_file_list_slot(related_match.group("slot"))
         if topic and topic not in _FILE_LIST_TOPIC_META_TERMS:
             return topic
         return None
