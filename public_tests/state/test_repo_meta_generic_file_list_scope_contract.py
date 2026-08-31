@@ -588,6 +588,7 @@ def test_runner_sorts_active_file_result_set_before_routing_or_retrieval(
 ):
     paths = ["03_说明.pdf", "01_资料.pdf", "02_记录.txt"]
     state = _selectable_file_state(paths)
+    state.last_local_topic = "list_files"
     state.last_result_set_focus_file = "03_说明.pdf"
 
     result = _run_filename_sort_acceptance(
@@ -618,6 +619,7 @@ def test_runner_sorts_active_file_result_set_before_routing_or_retrieval(
     assert result.state.last_result_set_entity_type == "文件"
     assert result.state.last_result_set_selectable is True
     assert result.state.last_result_set_focus_file == "03_说明.pdf"
+    assert result.state.last_local_topic == "list_files"
 
 
 def test_real_two_turn_file_list_then_filename_sort_stays_local(
@@ -650,6 +652,7 @@ def test_real_two_turn_file_list_then_filename_sort_stays_local(
         "02_记录.txt",
         "03_说明.pdf",
     ]
+    assert result.state.last_local_topic == "list_files"
     selection = resolve_file_result_set_selection(
         "第二个文件",
         result.state.last_result_set_items,

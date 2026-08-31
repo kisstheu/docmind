@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path, PurePosixPath
 
 
 def extract_result_set_from_answer(answer: str, entity_type: str = "文件") -> tuple[list[str], str]:
@@ -610,6 +613,231 @@ def file_result_set_display_name(path: str) -> str:
     """Return a prompt-safe file name without exposing parent directories."""
     normalized = str(path or "").strip().replace("\\", "/")
     return normalized.rsplit("/", 1)[-1]
+
+
+def format_file_result_set_size(num_bytes: int) -> str:
+    """Format a file size with deterministic binary units for result-set details."""
+    size = max(0, int(num_bytes))
+    if size < 1024:
+        return f"{size} B"
+    for unit, divisor in (
+        ("KiB", 1024),
+        ("MiB", 1024**2),
+        ("GiB", 1024**3),
+    ):
+        if unit == "GiB" or size < divisor * 1024:
+            return f"{size / divisor:.1f} {unit}"
+    raise AssertionError("unreachable")
+
+
+def _normalize_file_result_set_identity(path: object) -> str:
+    normalized = str(path or "").strip().replace("\\", "/")
+    normalized = re.sub(r"/+", "/", normalized)
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
+def _safe_notes_relative_path(path: object, notes_dir: Path) -> str | None:
+    normalized = _normalize_file_result_set_identity(path)
+    if not normalized:
+        return None
+
+    root = Path(os.path.abspath(notes_dir))
+    is_windows_absolute = bool(re.match(r"^[A-Za-z]:/", normalized))
+    if is_windows_absolute and Path(normalized).anchor == "":
+        return None
+
+    if normalized.startswith("/") or is_windows_absolute:
+        candidate = Path(normalized)
+    else:
+        relative = PurePosixPath(normalized)
+        if relative.is_absolute() or ".." in relative.parts:
+            return None
+        candidate = root.joinpath(*relative.parts)
+
+    try:
+        absolute_candidate = Path(os.path.abspath(candidate))
+        return absolute_candidate.relative_to(root).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def _unique_identity_indices(paths: list[object], notes_dir: Path) -> dict[str, int]:
+    indices: dict[str, int] = {}
+    duplicates: set[str] = set()
+    for index, path in enumerate(paths):
+        identity = _safe_notes_relative_path(path, notes_dir)
+        if not identity:
+            continue
+        if identity in indices:
+            duplicates.add(identity)
+        else:
+            indices[identity] = index
+    for identity in duplicates:
+        indices.pop(identity, None)
+    return indices
+
+
+def _coerce_file_result_set_size(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        size = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return size if size >= 0 else None
+
+
+def _coerce_file_result_set_time(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return datetime.fromtimestamp(value)
+        except (OSError, OverflowError, ValueError):
+            return None
+    return None
+
+
+def _result_set_metadata_for_item(
+    item: str,
+    *,
+    repo_state,
+    notes_dir: Path,
+    path_indices: dict[str, int],
+    basename_indices: dict[str, list[int]],
+) -> tuple[int | None, int | None, datetime | None, str | None]:
+    relative_path = _safe_notes_relative_path(item, notes_dir)
+    repo_index = path_indices.get(relative_path or "")
+    if repo_index is None:
+        basename = file_result_set_display_name(item).casefold()
+        matches = basename_indices.get(basename, [])
+        if len(matches) == 1:
+            repo_index = matches[0]
+
+    if repo_index is None:
+        return None, None, None, relative_path
+
+    repo_paths = list(getattr(repo_state, "paths", []) or [])
+    repo_identity = _safe_notes_relative_path(repo_paths[repo_index], notes_dir)
+    if not repo_identity:
+        return None, None, None, relative_path
+    relative_path = repo_identity
+
+    matching_records = []
+    for record in getattr(repo_state, "doc_records", []) or []:
+        if not isinstance(record, dict):
+            continue
+        if _safe_notes_relative_path(record.get("path"), notes_dir) == repo_identity:
+            matching_records.append(record)
+    record = matching_records[0] if len(matching_records) == 1 else None
+
+    size = None
+    modified_time = None
+    if record is not None:
+        for key in ("file_size", "size", "bytes"):
+            size = _coerce_file_result_set_size(record.get(key))
+            if size is not None:
+                break
+        modified_time = _coerce_file_result_set_time(record.get("file_time"))
+
+    file_times = list(getattr(repo_state, "file_times", []) or [])
+    if modified_time is None and repo_index < len(file_times):
+        modified_time = _coerce_file_result_set_time(file_times[repo_index])
+
+    stat_path = None
+    all_files = list(getattr(repo_state, "all_files", []) or [])
+    if repo_index < len(all_files):
+        all_file_relative = _safe_notes_relative_path(all_files[repo_index], notes_dir)
+        if all_file_relative == repo_identity:
+            stat_path = Path(all_files[repo_index])
+    if stat_path is None:
+        stat_path = Path(notes_dir).joinpath(*PurePosixPath(repo_identity).parts)
+
+    if size is None or modified_time is None:
+        try:
+            stat_result = stat_path.stat()
+        except (OSError, ValueError):
+            stat_result = None
+        if stat_result is not None:
+            if size is None:
+                size = stat_result.st_size
+            if modified_time is None:
+                modified_time = datetime.fromtimestamp(stat_result.st_mtime)
+
+    return repo_index, size, modified_time, relative_path
+
+
+def build_file_result_set_metadata_detail(
+    question: str,
+    items: list[str] | tuple[str, ...] | None,
+    *,
+    entity_type: str | None,
+    selectable: bool | None,
+    repo_state,
+    notes_dir: Path,
+) -> str | None:
+    """Render metadata for the active file result set without changing its order."""
+    normalized_question = re.sub(
+        r"[。！？!?]+$",
+        "",
+        str(question or "").strip(),
+    ).strip()
+    if (
+        normalized_question != "显示详情"
+        or not items
+        or entity_type != "文件"
+        or selectable is not True
+    ):
+        return None
+
+    ordered_items = list(items)
+    repo_paths = list(getattr(repo_state, "paths", []) or [])
+    path_indices = _unique_identity_indices(repo_paths, Path(notes_dir))
+    basename_indices: dict[str, list[int]] = {}
+    for index, path in enumerate(repo_paths):
+        basename = file_result_set_display_name(path).casefold()
+        basename_indices.setdefault(basename, []).append(index)
+
+    display_name_counts: dict[str, int] = {}
+    for item in ordered_items:
+        name = file_result_set_display_name(item).casefold()
+        display_name_counts[name] = display_name_counts.get(name, 0) + 1
+
+    lines = ["当前文件结果集详情："]
+    for index, item in enumerate(ordered_items, 1):
+        display_name = file_result_set_display_name(item) or "未知"
+        _repo_index, size, modified_time, relative_path = _result_set_metadata_for_item(
+            item,
+            repo_state=repo_state,
+            notes_dir=Path(notes_dir),
+            path_indices=path_indices,
+            basename_indices=basename_indices,
+        )
+        extension = PurePosixPath(display_name).suffix.lower() or "未知"
+        size_text = format_file_result_set_size(size) if size is not None else "未知"
+        time_text = (
+            modified_time.strftime("%Y-%m-%d %H:%M:%S")
+            if modified_time is not None
+            else "未知"
+        )
+
+        lines.append(f"{index}. {display_name}")
+        lines.append(f"   - 类型：{extension}")
+        lines.append(f"   - 大小：{size_text}")
+        lines.append(f"   - 修改时间：{time_text}")
+        show_relative_path = bool(
+            relative_path
+            and (
+                "/" in relative_path
+                or display_name_counts.get(display_name.casefold(), 0) > 1
+            )
+        )
+        if show_relative_path:
+            lines.append(f"   - 相对路径：{relative_path}")
+
+    return "\n".join(lines)
 
 
 def sort_file_result_set_by_filename(

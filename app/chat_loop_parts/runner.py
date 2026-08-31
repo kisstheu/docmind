@@ -21,6 +21,7 @@ from app.dialog.question_scope import (
     decide_file_result_set_scope,
 )
 from app.dialog.result_set import (
+    build_file_result_set_metadata_detail,
     build_structured_generated_enumeration_prompt,
     build_corrected_result_set_request,
     file_result_set_display_name,
@@ -52,6 +53,7 @@ from app.chat_state_helpers import (
     append_memory,
     print_answer,
     update_state_after_local_answer,
+    update_state_after_local_file_result_set_answer,
     update_state_after_retrieval_answer,
 )
 from app.chat_text.core import normalize_colloquial_question
@@ -219,6 +221,31 @@ def run_chat_loop(
             )
             if file_action_handled:
                 continue
+            detail_result_set_items = runtime.conversation_state.last_result_set_items
+            detail_answer = build_file_result_set_metadata_detail(
+                question,
+                detail_result_set_items,
+                entity_type=runtime.conversation_state.last_result_set_entity_type,
+                selectable=runtime.conversation_state.last_result_set_selectable,
+                repo_state=repo_state,
+                notes_dir=notes_dir,
+            )
+            if detail_answer is not None:
+                logger.info(
+                    "📋 [文件结果集本地详情] "
+                    f"items={len(detail_result_set_items or [])}"
+                )
+                print_answer(detail_answer, start_qa)
+                append_memory(memory_buffer, question, detail_answer)
+                runtime.conversation_state = (
+                    update_state_after_local_file_result_set_answer(
+                        runtime.conversation_state,
+                        question=question,
+                        answer=detail_answer,
+                        items=detail_result_set_items or [],
+                    )
+                )
+                continue
             corrected_result_set_question = build_corrected_result_set_request(
                 question,
                 runtime.conversation_state.last_user_question,
@@ -247,23 +274,14 @@ def run_chat_loop(
                 )
                 print_answer(local_answer, start_qa)
                 append_memory(memory_buffer, question, local_answer)
-                runtime.conversation_state = update_state_after_local_answer(
-                    runtime.conversation_state,
-                    question=question,
-                    answer=local_answer,
-                    route=(
-                        runtime.conversation_state.last_route
-                        or "normal_retrieval"
-                    ),
-                    local_topic=None,
-                    is_content_answer=False,
+                runtime.conversation_state = (
+                    update_state_after_local_file_result_set_answer(
+                        runtime.conversation_state,
+                        question=question,
+                        answer=local_answer,
+                        items=sorted_result_set_items,
+                    )
                 )
-                runtime.conversation_state.last_result_set_items = (
-                    sorted_result_set_items
-                )
-                runtime.conversation_state.last_result_set_entity_type = "文件"
-                runtime.conversation_state.last_result_set_selectable = True
-                runtime.conversation_state.last_answer_type = "enumeration_file"
                 continue
             question_signals = analyze_question_signals(
                 question,

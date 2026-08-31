@@ -212,6 +212,52 @@ def update_state_after_local_answer(
     return state
 
 
+def update_state_after_local_file_result_set_answer(
+    state,
+    *,
+    question: str,
+    answer: str,
+    items: list[str] | tuple[str, ...],
+):
+    """Write back a local file-set display operation while preserving its context."""
+    previous_local_topic = state.last_local_topic
+    previous_content_context = (
+        state.last_content_route,
+        state.last_content_user_question,
+        state.last_content_topic,
+    )
+    previous_focus_file = state.last_result_set_focus_file
+    previous_summary = (
+        state.last_result_set_summary_text,
+        state.last_result_set_summary_level,
+    )
+
+    state = update_state_after_local_answer(
+        state,
+        question=question,
+        answer=answer,
+        route=state.last_route or "normal_retrieval",
+        local_topic=previous_local_topic,
+        is_content_answer=False,
+    )
+    state.last_local_topic = previous_local_topic
+    (
+        state.last_content_route,
+        state.last_content_user_question,
+        state.last_content_topic,
+    ) = previous_content_context
+    state.last_result_set_items = list(items)
+    state.last_result_set_entity_type = "文件"
+    state.last_result_set_selectable = True
+    state.last_result_set_focus_file = previous_focus_file
+    (
+        state.last_result_set_summary_text,
+        state.last_result_set_summary_level,
+    ) = previous_summary
+    state.last_answer_type = "enumeration_file"
+    return state
+
+
 def update_state_after_retrieval_answer(
     state,
     question: str,
