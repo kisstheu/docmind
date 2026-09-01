@@ -11,6 +11,10 @@ from app.chat_text.core import (
     needs_timeline_evidence,
     redact_sensitive_text,
 )
+from app.chat_text.file_lookup import (
+    looks_like_file_set_content_question,
+    looks_like_implicit_file_set_content_question,
+)
 from retrieval.search_engine import (
     build_context_text,
     build_inventory_candidates_text,
@@ -47,6 +51,14 @@ def build_retrieval_materials(
 
     if not flags["skip_retrieval"]:
         event_name = getattr(event, "name", None)
+        ensure_file_set_content_coverage = bool(
+            event_name == "result_set_followup"
+            and allowed_paths is not None
+            and (
+                looks_like_file_set_content_question(question)
+                or looks_like_implicit_file_set_content_question(question)
+            )
+        )
         effective_allowed_paths = allowed_paths
         if event_name == "selected_candidate_followup" and selected_source_files:
             selected_path_set = {str(path or "").strip() for path in selected_source_files if str(path or "").strip()}
@@ -93,6 +105,7 @@ def build_retrieval_materials(
                 scope_label=scope_label,
                 task_mode=getattr(event, "name", None),
                 content_target=content_target,
+                ensure_allowed_path_coverage=ensure_file_set_content_coverage,
             )
             current_focus_file = retrieval["current_focus_file"]
             relevant_indices = retrieval["relevant_indices"]
@@ -136,9 +149,25 @@ def build_safe_final_prompt(
 
     constrained_context_text = safe_context_text
     constrained_question = safe_question
+    is_file_set_content_operation = bool(
+        event_name == "result_set_followup"
+        and (
+            looks_like_file_set_content_question(question)
+            or looks_like_implicit_file_set_content_question(question)
+        )
+    )
 
     if safe_result_set_items and event_name in {"result_set_followup", "result_set_expansion_followup", "structured_request"}:
-        if event_name == "result_set_followup":
+        if is_file_set_content_operation:
+            result_set_block = (
+                "【活动文件结果集】\n"
+                + "\n".join(f"{index}. {item}" for index, item in enumerate(safe_result_set_items[:20], 1))
+                + "\n\n"
+                "【文件结果集内容操作约束】\n"
+                "当前问题以整个活动文件结果集为对象。请严格按上述顺序覆盖每个文件，不能漏项，"
+                "也不能新增集合外文件。每项只使用该文件的参考片段；证据不足时在对应项明确说明。\n\n"
+            )
+        elif event_name == "result_set_followup":
             result_set_block = (
                 "【上一轮候选集合】\n"
                 + "\n".join(f"- {item}" for item in safe_result_set_items[:20])

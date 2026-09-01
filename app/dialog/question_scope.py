@@ -21,6 +21,7 @@ from app.dialog_utils import is_content_followup_question, is_summary_followup_r
 from app.chat_text.file_lookup import (
     has_explicit_focus_reference,
     looks_like_file_set_content_question,
+    looks_like_implicit_file_set_content_question,
     looks_like_standalone_general_question,
 )
 
@@ -42,6 +43,7 @@ class _QuestionScopeState(Protocol):
 class QuestionSignals:
     standalone_general_question: bool
     file_set_content_question: bool
+    implicit_file_set_content_question: bool
     explicit_focus_reference: bool
     explicit_single_file_result_reference: bool
     result_set_comparison_followup: bool
@@ -76,6 +78,9 @@ def analyze_question_signals(
     return QuestionSignals(
         standalone_general_question=looks_like_standalone_general_question(question),
         file_set_content_question=looks_like_file_set_content_question(question),
+        implicit_file_set_content_question=looks_like_implicit_file_set_content_question(
+            question
+        ),
         explicit_focus_reference=has_explicit_focus_reference(question),
         explicit_single_file_result_reference=has_explicit_single_file_result_reference(
             question
@@ -166,7 +171,13 @@ def decide_file_result_set_scope(
     if selected_file_paths is not None:
         result_scope_paths = selected_file_paths
     elif (
-        signals.file_set_content_question
+        (
+            signals.file_set_content_question
+            or (
+                signals.implicit_file_set_content_question
+                and not effective_focus_file
+            )
+        )
         and state.last_result_set_entity_type == "文件"
         and state.last_result_set_items
     ):

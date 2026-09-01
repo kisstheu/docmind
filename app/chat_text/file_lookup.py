@@ -22,7 +22,14 @@ _FILE_SET_REFERENCE_TERMS = (
 _FILE_SET_CONTENT_TERMS = (
     "主要内容", "内容是什么", "什么内容", "主题", "概括", "总结",
     "讲了什么", "讲什么", "说了什么", "说什么", "记录了什么", "记录什么",
-    "主要记录", "大致说", "主要涉及什么",
+    "主要记录", "大致说", "主要涉及什么", "介绍",
+)
+_IMPLICIT_FILE_SET_CONTENT_PATTERNS = (
+    re.compile(r"^(?:主要|大致)?(?:讲|说|写|记录|介绍)(?:了)?(?:什么|啥)(?:内容)?$"),
+    re.compile(
+        r"^(?:分别|各自)(?:讲|说|写|记录|介绍)(?:了)?(?:什么|啥)(?:内容)?$"
+    ),
+    re.compile(r"^(?:分别|各自)(?:介绍|说明|讲讲|说说|总结|概括)(?:一下|下)?$"),
 )
 _FOCUS_REFERENCE_PREFIXES = (
     "它",
@@ -97,6 +104,14 @@ def looks_like_file_set_content_question(question: str) -> bool:
     if re.search(r"(?:来自|出自|位于|在).*(?:哪个|哪些|哪张|哪份)", q):
         return False
     return True
+
+
+def looks_like_implicit_file_set_content_question(question: str) -> bool:
+    """Identify a subjectless content operation that needs an active collection."""
+    q = re.sub(r"[，。！？?.!?\s]+", "", (question or ""))
+    if not q:
+        return False
+    return any(pattern.fullmatch(q) for pattern in _IMPLICIT_FILE_SET_CONTENT_PATTERNS)
 
 
 def has_explicit_focus_reference(question: str) -> bool:

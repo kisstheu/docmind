@@ -9,6 +9,7 @@ from app.chat_text.file_lookup import (
     has_explicit_focus_reference,
     looks_like_focused_file_content_question,
     looks_like_file_set_content_question,
+    looks_like_implicit_file_set_content_question,
     looks_like_standalone_general_question,
 )
 from app.dialog.repo_meta_rules import (
@@ -137,6 +138,11 @@ def _looks_like_file_topic_result_set_followup(question: str, state: "Conversati
         state.last_result_set_selectable,
     ):
         return False
+    if (
+        not state.last_result_set_focus_file
+        and looks_like_implicit_file_set_content_question(question)
+    ):
+        return True
     if is_summary_followup_request(question):
         return True
     if has_explicit_single_file_result_reference(question):

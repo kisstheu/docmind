@@ -116,7 +116,6 @@ def test_repo_meta_file_enumeration_stays_selectable_and_ordered():
         (3, "有哪些岗位？", "合成岗位", 3),
         (3, "有哪些审批节点？", "合成节点", 3),
         (4, "有哪些采购方案？", "合成方案", 2),
-        (3, "这些文件主要内容是什么？", "合成主题", 3),
     ],
 )
 def test_generated_numbered_followup_without_mapping_keeps_context_but_disables_ordinal(
@@ -136,6 +135,20 @@ def test_generated_numbered_followup_without_mapping_keeps_context_but_disables_
     assert state.last_result_set_entity_type == "文件"
     assert state.last_answer_type is None
     assert state.last_result_set_selectable is False
+
+
+def test_file_set_content_enumeration_keeps_underlying_files_selectable():
+    old_files = ["合成合同.md", "合成采购记录.md", "合成验收说明.md"]
+    state = _write_generated_followup(
+        _file_result_set(old_files),
+        question="这些文件主要内容是什么？",
+        answer=_numbered_items("合成主题", 3),
+    )
+
+    assert state.last_result_set_items == old_files
+    assert state.last_result_set_entity_type == "文件"
+    assert state.last_answer_type is None
+    assert state.last_result_set_selectable is True
 
 
 def test_unsafe_generated_ordinal_returns_local_clarification_without_old_selection():

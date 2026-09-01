@@ -1191,6 +1191,30 @@ def test_runner_uses_one_visible_scope_for_retrieval_and_query_context(
     assert "隐藏丁.md" not in allowed[0]
 
 
+@pytest.mark.parametrize(
+    "question",
+    ["讲了什么？", "这些文档分别讲了什么？", "分别介绍一下"],
+)
+def test_runner_file_set_content_operation_bypasses_file_locator_shortcut(
+    monkeypatch,
+    tmp_path,
+    question,
+):
+    paths = ["合成岗位资料.md", "合成合同说明.md", "合成采购记录.md"]
+    allowed, query_sets, client = _run_turns(
+        monkeypatch,
+        tmp_path,
+        questions=[question],
+        repo_paths=paths,
+        state=_selectable_file_state(paths),
+    )
+
+    assert allowed == [set(paths)]
+    assert query_sets == [paths]
+    assert len(client.models.calls) == 1
+    assert "【文件结果集内容操作约束】" in client.models.calls[0]
+
+
 def test_runner_and_retrieval_state_writeback_share_question_scope_instances(
     monkeypatch,
     tmp_path,

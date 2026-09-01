@@ -296,6 +296,11 @@ def update_state_after_retrieval_answer(
         question_signals.standalone_general_question
         and not scope_decision.selected_result_set_item_turn
     )
+    preserves_active_file_result_set = (
+        prev_result_set_entity_type == "文件"
+        and bool(prev_result_set_items)
+        and not clears_result_set_focus
+    )
 
     state.last_user_question = question
     state.last_route = "normal_retrieval"
@@ -533,13 +538,21 @@ def update_state_after_retrieval_answer(
             "人物": "enumeration_person",
         }
         fallback_file_items = extract_file_items(answer_text)
+        full_file_result_set_content_scope = (
+            prev_result_set_entity_type == "文件"
+            and bool(prev_result_set_items)
+            and tuple(scope_decision.result_scope_paths or ())
+            == tuple(prev_result_set_items or ())
+        )
         preserve_source_file_refs = (
             not is_synthesis_answer
+            and not preserves_active_file_result_set
             and bool(fallback_file_items)
             and _looks_like_source_backed_analytic_answer(question, answer_text)
         )
         fallback_to_file_result_set = (
             not is_synthesis_answer
+            and not full_file_result_set_content_scope
             and bool(fallback_file_items)
             and not preserve_source_file_refs
             and _looks_like_file_locator_answer(answer_text)
@@ -559,6 +572,10 @@ def update_state_after_retrieval_answer(
                 or has_prev_materialized_generated_result_set
             )
             and bool(prev_result_set_items)
+        )
+        file_result_set_content_operation = (
+            preserve_result_set_on_result_set_followup
+            and full_file_result_set_content_scope
         )
         preserve_parent_result_set_scope = (
             (
@@ -580,12 +597,11 @@ def update_state_after_retrieval_answer(
         generated_unmaterialized_enumeration = (
             preserve_result_set_on_result_set_followup
             and not scope_decision.requires_result_set_generation
+            and not file_result_set_content_operation
             and bool(extract_numbered_items(answer_text))
         )
         preserve_file_scope_on_content_question = (
-            preserve_result_set_on_result_set_followup
-            and prev_result_set_entity_type == "文件"
-            and question_signals.file_set_content_question
+            file_result_set_content_operation
         )
         preserve_file_scope_on_synthesis = (
             is_synthesis_answer
@@ -670,6 +686,7 @@ def update_state_after_retrieval_answer(
             or preserve_file_result_set_on_no_evidence_followup
             or preserve_parent_result_set_scope
             or preserve_materialized_generated_selection
+            or preserves_active_file_result_set
         ):
             state.last_result_set_items = prev_result_set_items
             state.last_result_set_entity_type = prev_result_set_entity_type
@@ -707,6 +724,14 @@ def update_state_after_retrieval_answer(
                 state.last_answer_type = None
                 state.last_result_set_selectable = prev_result_set_selectable
                 logger.debug("🧪 [状态保留] 受限内容追问未产出新集合，保留父结果集范围")
+            elif preserve_file_result_set_on_no_evidence_followup:
+                state.last_answer_type = prev_answer_type
+                state.last_result_set_selectable = prev_result_set_selectable
+                logger.debug("🧪 [状态保留] 文件短追问未拿到新证据，继续沿用上一轮文件结果集")
+            elif preserves_active_file_result_set:
+                state.last_answer_type = None
+                state.last_result_set_selectable = prev_result_set_selectable
+                logger.debug("🧪 [状态保留] 普通内容回答没有明确失效依据，保留活动文件结果集")
             else:
                 state.last_answer_type = prev_answer_type or entity_to_answer_type.get(prev_result_set_entity_type)
             if not preserve_file_result_set_on_summary_followup and not preserve_file_scope_on_content_question and not preserve_file_scope_on_synthesis:

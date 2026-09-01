@@ -48,6 +48,7 @@ def perform_retrieval(
     scope_label: str | None = None,
     task_mode: str | None = None,
     content_target: str | None = None,
+    ensure_allowed_path_coverage: bool = False,
 ):
     chunk_texts = list(getattr(repo_state, "chunk_texts", []) or [])
     chunk_paths = list(getattr(repo_state, "chunk_paths", []) or [])
@@ -444,6 +445,38 @@ def perform_retrieval(
                 logger.info(
                     f"   ⚖️ [比较题补证据] 追加 {appended_compare} 个正文命中片段用于对照"
                 )
+
+    if ensure_allowed_path_coverage and allowed_path_set:
+        repo_path_order = [
+            str(path or "").strip()
+            for path in list(getattr(repo_state, "paths", []) or [])
+            if str(path or "").strip() in allowed_path_set
+        ]
+        for path in sorted(allowed_path_set):
+            if path not in repo_path_order:
+                repo_path_order.append(path)
+
+        best_index_by_path: dict[str, int] = {}
+        for idx in ranked_candidate_indices:
+            path = str(chunk_paths[idx] or "").strip()
+            if path in allowed_path_set and path not in best_index_by_path:
+                best_index_by_path[path] = idx
+
+        coverage_indices = [
+            best_index_by_path[path]
+            for path in repo_path_order
+            if path in best_index_by_path
+        ]
+        if coverage_indices:
+            coverage_set = set(coverage_indices)
+            relevant_indices = coverage_indices + [
+                idx for idx in relevant_indices if idx not in coverage_set
+            ]
+            top_k = max(top_k, len(coverage_indices))
+            logger.info(
+                "   📚 [结果集内容覆盖] "
+                f"为 {len(coverage_indices)}/{len(allowed_path_set)} 个活动文件保留证据片段"
+            )
 
     relevant_indices = relevant_indices[:top_k]
     logger.info(f"   🔍 [溯源完毕] 本轮检索候选片段数量: {len(relevant_indices)}")

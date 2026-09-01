@@ -513,8 +513,18 @@ def run_chat_loop(
                 event.content_target
                 and scope_decision.result_scope_paths is not None
             )
+            file_result_set_content_operation = bool(
+                event.name == "result_set_followup"
+                and scope_decision.result_scope_paths is not None
+                and len(scope_decision.result_scope_paths) > 1
+                and (
+                    question_signals.file_set_content_question
+                    or question_signals.implicit_file_set_content_question
+                )
+            )
             analytic_retrieval = (
                 scoped_content_lookup
+                or file_result_set_content_operation
                 or scope_decision.requires_result_set_generation
                 or _loop_handlers.looks_like_analytic_retrieval_question(
                     question,
@@ -820,7 +830,10 @@ def run_chat_loop(
                 )
                 continue
             fallback_local_answer = None
-            if not scope_decision.requires_result_set_generation:
+            if (
+                not scope_decision.requires_result_set_generation
+                and not file_result_set_content_operation
+            ):
                 fallback_local_answer = runtime.try_handle_retrieval_force_local_or_empty_context(
                     route=route,
                     question=question,
