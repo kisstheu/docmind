@@ -1,70 +1,38 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 
-def normalize_colloquial_question(question: str) -> str:
-    q = question.strip()
-
-    replacements = [
-        (r"找个?仁儿", "找人"),
-        (r"找个?仁", "找人"),
-        (r"找个?银", "找人"),
-        (r"找个?人儿", "找人"),
-        (r"仁儿", "人"),
-        (r"\b仁\b", "人"),
-        (r"\b银\b", "人"),
-    ]
-
-    for pattern, repl in replacements:
-        q = re.sub(pattern, repl, q)
-
-    q = re.sub(
-        r"((?:\u8bb2|\u5199|\u8bf4|\u8bb0\u5f55|\u4ecb\u7ecd)(?:\u4e86)?|\u5185\u5bb9(?:\u662f|\u6709)?)(?:\u5565)(?=[\uff1f?\u3002\uff01!\s]*$)",
-        lambda match: f"{match.group(1)}什么",
-        q,
-    )
-
-    return q
-
-
-def redact_sensitive_text(text: str) -> str:
-    t = text or ""
-    t = re.sub(r"\b\d{17}[\dXx]\b", "[身份证号已脱敏]", t)
-    t = re.sub(r"\b1[3-9]\d{9}\b", "[手机号已脱敏]", t)
-    t = re.sub(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b", "[邮箱已脱敏]", t)
-    t = re.sub(r"\b\d{16,19}\b", "[长数字已脱敏]", t)
-    return t
-
-
-def strip_structured_request_words(text: str) -> str:
-    t = (text or "").strip()
-    if not t:
-        return ""
-
-    t = re.sub(r"^(给我|帮我|请你|麻烦你|我想|我先|先)\s*", "", t)
-    t = re.sub(r"(吧|吗|呢|呀|啊)$", "", t)
-    t = re.sub(r"(时间线|时间顺序|整理一下|梳理一下|分析一下|总结一下)", " ", t)
-
-    if t in {"更详细的", "详细的", "详细点", "更详细", "详细一些"}:
-        return ""
-
-    return re.sub(r"\s+", " ", t).strip()
-
-
-def build_clean_merged_query(event_merged_query: str, current_question: str) -> str:
-    parent = strip_structured_request_words(event_merged_query)
-    current = strip_structured_request_words(current_question)
-
-    if not parent and not current:
-        return (current_question or "").strip()
-    if not parent:
-        return current or (current_question or "").strip()
-    if not current:
-        return parent
-
-    return re.sub(r"\s+", " ", f"{parent} {current}".strip())
+_COLLOQUIAL_REPLACEMENTS = (
+    (re.compile(r"找个?仁儿"), "找人"),
+    (re.compile(r"找个?仁"), "找人"),
+    (re.compile(r"找个?银"), "找人"),
+    (re.compile(r"找个?人儿"), "找人"),
+    (re.compile(r"仁儿"), "人"),
+    (re.compile(r"\b仁\b"), "人"),
+    (re.compile(r"\b银\b"), "人"),
+)
+_CONTENT_COLLOQUIAL_PATTERN = re.compile(
+    r"((?:\u8bb2|\u5199|\u8bf4|\u8bb0\u5f55|\u4ecb\u7ecd)(?:\u4e86)?"
+    r"|\u5185\u5bb9(?:\u662f|\u6709)?)(?:\u5565)(?=[\uff1f?\u3002\uff01!\s]*$)"
+)
+_SENSITIVE_REDACTIONS = (
+    (re.compile(r"\b\d{17}[\dXx]\b"), "[身份证号已脱敏]"),
+    (re.compile(r"\b1[3-9]\d{9}\b"), "[手机号已脱敏]"),
+    (
+        re.compile(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b"),
+        "[邮箱已脱敏]",
+    ),
+    (re.compile(r"\b\d{16,19}\b"), "[长数字已脱敏]"),
+)
+_STRUCTURED_REQUEST_PREFIX_PATTERN = re.compile(
+    r"^(给我|帮我|请你|麻烦你|我想|我先|先)\s*"
+)
+_STRUCTURED_REQUEST_SUFFIX_PATTERN = re.compile(r"(吧|吗|呢|呀|啊)$")
+_STRUCTURED_REQUEST_WORDS_PATTERN = re.compile(
+    r"(时间线|时间顺序|整理一下|梳理一下|分析一下|总结一下)"
+)
+_WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
 QUERY_FILLERS = {
@@ -85,6 +53,123 @@ QUERY_FILLERS = {
     "展开点",
     "展开说说",
 }
+_SORTED_QUERY_FILLERS = tuple(sorted(QUERY_FILLERS, key=len, reverse=True))
+_STRONG_DATE_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"\d{4}年\d{1,2}月\d{1,2}[日号]?(?:后|之前|之后|以后)?",
+        r"\d{1,2}月\d{1,2}[日号]?(?:后|之前|之后|以后)?",
+        r"\d{1,2}[日号](?:后|之前|之后|以后)?",
+        r"\d{1,2}:\d{2}",
+    )
+)
+_STRONG_EXACT_TERMS = (
+    "时间线",
+    "经过",
+    "过程",
+    "详细点",
+    "更详细",
+    "法律性质",
+    "性质",
+    "合法吗",
+    "是否合法",
+    "合法",
+    "合规吗",
+    "合规",
+    "动作",
+    "做法",
+    "行为",
+    "处理",
+    "公司",
+    "对方",
+    "之后",
+    "后来",
+    "后续",
+)
+_TIMELINE_DATE_PATTERN = re.compile(
+    r"(?:\d{4}年\d{1,2}月\d{1,2}日|\d{1,2}月\d{1,2}日|\d{1,2}日|\d{1,2}:\d{2})"
+)
+_TIMELINE_EVIDENCE_KEYWORDS = ("时间线", "经过", "过程", "梳理", "更详细", "详细点")
+_RESULT_EXPANSION_MARKERS = {
+    "更详细",
+    "更详细的",
+    "详细点",
+    "具体点",
+    "展开点",
+    "展开说说",
+    "继续",
+    "然后呢",
+    "后来呢",
+    "扩大范围",
+    "范围大点",
+    "范围放宽",
+    "放宽范围",
+    "放宽一点",
+    "扩大检索",
+    "分析下",
+    "分析一下",
+    "法律性质",
+    "性质",
+    "合法吗",
+    "是否合法",
+}
+_RELATED_MARKERS = ("有关", "相关")
+_RECORD_SCOPE_MARKERS = ("记录", "文档", "文件")
+_LISTING_MARKERS = ("哪些", "哪几", "有哪", "最近")
+
+
+def _normalize_spaces(text: str) -> str:
+    return _WHITESPACE_PATTERN.sub(" ", text).strip()
+
+
+def normalize_colloquial_question(question: str) -> str:
+    q = question.strip()
+
+    for pattern, repl in _COLLOQUIAL_REPLACEMENTS:
+        q = pattern.sub(repl, q)
+
+    q = _CONTENT_COLLOQUIAL_PATTERN.sub(
+        lambda match: f"{match.group(1)}什么",
+        q,
+    )
+
+    return q
+
+
+def redact_sensitive_text(text: str) -> str:
+    t = text or ""
+    for pattern, replacement in _SENSITIVE_REDACTIONS:
+        t = pattern.sub(replacement, t)
+    return t
+
+
+def strip_structured_request_words(text: str) -> str:
+    t = (text or "").strip()
+    if not t:
+        return ""
+
+    t = _STRUCTURED_REQUEST_PREFIX_PATTERN.sub("", t)
+    t = _STRUCTURED_REQUEST_SUFFIX_PATTERN.sub("", t)
+    t = _STRUCTURED_REQUEST_WORDS_PATTERN.sub(" ", t)
+
+    if t in {"更详细的", "详细的", "详细点", "更详细", "详细一些"}:
+        return ""
+
+    return _normalize_spaces(t)
+
+
+def build_clean_merged_query(event_merged_query: str, current_question: str) -> str:
+    parent = strip_structured_request_words(event_merged_query)
+    current = strip_structured_request_words(current_question)
+
+    if not parent and not current:
+        return (current_question or "").strip()
+    if not parent:
+        return current or (current_question or "").strip()
+    if not current:
+        return parent
+
+    return _normalize_spaces(f"{parent} {current}")
 
 
 def normalize_question_for_retrieval(question: str) -> str:
@@ -94,11 +179,10 @@ def normalize_question_for_retrieval(question: str) -> str:
 
     q = q.replace("？", "").replace("?", "").replace("。", "").strip()
 
-    for filler in sorted(QUERY_FILLERS, key=len, reverse=True):
+    for filler in _SORTED_QUERY_FILLERS:
         q = q.replace(filler, " ")
 
-    q = re.sub(r"\s+", " ", q).strip()
-    return q
+    return _normalize_spaces(q)
 
 
 def keep_only_allowed_terms(query: str, question: str, logger=None) -> str:
@@ -129,11 +213,7 @@ def keep_only_allowed_terms(query: str, question: str, logger=None) -> str:
     return " ".join(kept)
 
 
-def extract_strong_terms_from_question(question: str) -> list[str]:
-    q = normalize_question_for_retrieval(question)
-    if not q:
-        return []
-
+def _extract_strong_terms_from_normalized_question(q: str) -> list[str]:
     result: list[str] = []
 
     def add(term: str):
@@ -142,45 +222,23 @@ def extract_strong_terms_from_question(question: str) -> list[str]:
             result.append(t)
 
     # 只提取问题里明确写出来的时间短语
-    for pattern in [
-        r"\d{4}年\d{1,2}月\d{1,2}[日号]?(?:后|之前|之后|以后)?",
-        r"\d{1,2}月\d{1,2}[日号]?(?:后|之前|之后|以后)?",
-        r"\d{1,2}[日号](?:后|之前|之后|以后)?",
-        r"\d{1,2}:\d{2}",
-    ]:
-        for match in re.findall(pattern, q):
+    for pattern in _STRONG_DATE_PATTERNS:
+        for match in pattern.findall(q):
             add(match)
 
     # 只保留“当前问题中原样出现”的少量焦点词
-    exact_terms = [
-        "时间线",
-        "经过",
-        "过程",
-        "详细点",
-        "更详细",
-        "法律性质",
-        "性质",
-        "合法吗",
-        "是否合法",
-        "合法",
-        "合规吗",
-        "合规",
-        "动作",
-        "做法",
-        "行为",
-        "处理",
-        "公司",
-        "对方",
-        "之后",
-        "后来",
-        "后续",
-    ]
-
-    for term in exact_terms:
+    for term in _STRONG_EXACT_TERMS:
         if term in q:
             add(term)
 
     return result
+
+
+def extract_strong_terms_from_question(question: str) -> list[str]:
+    q = normalize_question_for_retrieval(question)
+    if not q:
+        return []
+    return _extract_strong_terms_from_normalized_question(q)
 
 
 def merge_rewritten_query_with_strong_terms(question: str, rewritten_query: str, logger=None) -> str:
@@ -208,37 +266,25 @@ def is_abstract_query(question: str) -> bool:
     if not q:
         return True
 
-    terms = extract_strong_terms_from_question(q)
+    terms = _extract_strong_terms_from_normalized_question(q)
     return not terms
 
 
 def extract_timeline_evidence_from_chunks(relevant_indices, repo_state):
-    date_patterns = [
-        r"\d{4}年\d{1,2}月\d{1,2}日",
-        r"\d{1,2}月\d{1,2}日",
-        r"\d{1,2}日",
-        r"\d{1,2}:\d{2}",
-    ]
-
     results = []
+    seen = set()
     for idx in relevant_indices:
         text = repo_state.chunk_texts[idx]
         path = repo_state.chunk_paths[idx]
 
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         for line in lines:
-            if any(re.search(p, line) for p in date_patterns):
-                results.append((path, line))
+            key = (path, line)
+            if _TIMELINE_DATE_PATTERN.search(line) and key not in seen:
+                seen.add(key)
+                results.append(key)
 
-    seen = set()
-    deduped = []
-    for path, line in results:
-        key = (path, line)
-        if key not in seen:
-            seen.add(key)
-            deduped.append((path, line))
-
-    return deduped
+    return results
 
 
 def build_timeline_evidence_text(timeline_items):
@@ -250,8 +296,7 @@ def build_timeline_evidence_text(timeline_items):
 
 
 def needs_timeline_evidence(question: str) -> bool:
-    keywords = ["时间线", "经过", "过程", "梳理", "更详细", "详细点"]
-    return any(x in question for x in keywords)
+    return any(x in question for x in _TIMELINE_EVIDENCE_KEYWORDS)
 
 
 def is_result_expansion_followup(question: str) -> bool:
@@ -259,38 +304,14 @@ def is_result_expansion_followup(question: str) -> bool:
     if not q:
         return False
 
-    markers = {
-        "更详细",
-        "更详细的",
-        "详细点",
-        "具体点",
-        "展开点",
-        "展开说说",
-        "继续",
-        "然后呢",
-        "后来呢",
-        "扩大范围",
-        "范围大点",
-        "范围放宽",
-        "放宽范围",
-        "放宽一点",
-        "扩大检索",
-        "分析下",
-        "分析一下",
-        "法律性质",
-        "性质",
-        "合法吗",
-        "是否合法",
-    }
-
-    return any(x in q for x in markers)
+    return any(x in q for x in _RESULT_EXPANSION_MARKERS)
 
 
 def is_related_record_listing_request(question: str) -> bool:
     q = (question or "").strip()
     if not q:
         return False
-    has_related = any(x in q for x in ["有关", "相关"])
-    has_record_scope = any(x in q for x in ["记录", "文档", "文件"])
-    has_listing = any(x in q for x in ["哪些", "哪几", "有哪", "最近"])
+    has_related = any(x in q for x in _RELATED_MARKERS)
+    has_record_scope = any(x in q for x in _RECORD_SCOPE_MARKERS)
+    has_listing = any(x in q for x in _LISTING_MARKERS)
     return has_related and has_record_scope and has_listing
