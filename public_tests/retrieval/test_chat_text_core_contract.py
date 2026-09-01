@@ -11,6 +11,7 @@ from app.chat_text.core import (
     is_abstract_query,
     is_related_record_listing_request,
     is_result_expansion_followup,
+    merge_rewritten_query_with_strong_terms,
     needs_timeline_evidence,
     normalize_colloquial_question,
     normalize_question_for_retrieval,
@@ -37,9 +38,9 @@ def test_colloquial_content_normalization_keeps_its_constrained_scope(
 @pytest.mark.parametrize(
     ("question", "expected"),
     [
-        (" 请帮我 看下 合同。 ", "合同"),
-        ("麻烦展开说说 采购记录？", "采购记录"),
-        ("交付\t\n验收?", "交付 验收"),
+        (" 请帮我 看下 资料甲。 ", "资料甲"),
+        ("麻烦展开说说 记录甲？", "记录甲"),
+        ("主题甲\t\n描述?", "主题甲 描述"),
     ],
 )
 def test_retrieval_normalization_keeps_filler_punctuation_and_space_behavior(
@@ -50,8 +51,8 @@ def test_retrieval_normalization_keeps_filler_punctuation_and_space_behavior(
 
 
 def test_structured_request_and_merged_query_normalization_stays_stable():
-    assert strip_structured_request_words("请你 按时间线整理一下 合同吧") == "按 合同"
-    assert build_clean_merged_query("请你 合同", "梳理一下 风险吧") == "合同 风险"
+    assert strip_structured_request_words("请你 按时间线整理一下 资料甲吧") == "按 资料甲"
+    assert build_clean_merged_query("请你 主题甲", "梳理一下 描述吧") == "主题甲 描述"
 
 
 def test_sensitive_redaction_keeps_pattern_order_and_replacements():
@@ -67,21 +68,90 @@ def test_sensitive_redaction_keeps_pattern_order_and_replacements():
     )
 
 
-def test_strong_term_extraction_keeps_date_and_focus_term_order():
-    question = "请看下2026年9月1日之后 08:30 的处理和法律性质？"
+def test_strong_term_extraction_keeps_date_and_structural_term_order():
+    question = "请看下2026年9月1日之后 08:30 的结果和状态？"
 
     assert extract_strong_terms_from_question(question) == [
         "2026年9月1日之后",
         "9月1日之后",
         "1日之后",
         "08:30",
-        "法律性质",
-        "性质",
-        "处理",
         "之后",
     ]
     assert is_abstract_query(question) is False
     assert is_abstract_query("请帮我看下") is True
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("梳理一下时间线", ["时间线"]),
+        ("之后发生了什么", ["之后"]),
+        ("后来呢", ["后来"]),
+        ("全过程", ["过程"]),
+    ],
+)
+def test_structural_query_terms_remain_core_anchors(question, expected):
+    assert extract_strong_terms_from_question(question) == expected
+    assert is_abstract_query(question) is False
+
+
+def test_date_query_terms_remain_core_anchors():
+    question = "8月20日之后发生了什么？"
+
+    assert extract_strong_terms_from_question(question) == [
+        "8月20日之后",
+        "20日之后",
+        "之后",
+    ]
+    assert is_abstract_query(question) is False
+
+
+@pytest.mark.parametrize(
+    ("question", "rewritten_query", "expected"),
+    [
+        ("对象甲怎么描述的？", "对象甲 描述", "对象甲 描述"),
+        ("事项甲是什么颜色？", "事项甲 颜色", "事项甲 颜色"),
+        ("条目甲叫什么名称？", "条目甲 名称", "条目甲 名称"),
+    ],
+)
+def test_ordinary_content_terms_remain_rewrite_content(
+    question,
+    rewritten_query,
+    expected,
+):
+    assert extract_strong_terms_from_question(question) == []
+    assert merge_rewritten_query_with_strong_terms(question, rewritten_query) == expected
+    assert is_abstract_query(question) is True
+
+
+@pytest.mark.parametrize(
+    ("question", "rewritten_query", "expected"),
+    [
+        ("对象甲怎么描述的？", "怎么", "怎么"),
+        ("事项甲是什么颜色？", "是什么", "是什么"),
+        ("条目甲叫什么名称？", "叫什么", "叫什么"),
+    ],
+)
+def test_ordinary_content_terms_are_not_promoted_as_structural_terms(
+    question,
+    rewritten_query,
+    expected,
+):
+    assert merge_rewritten_query_with_strong_terms(question, rewritten_query) == expected
+
+
+def test_ordinary_content_terms_are_not_structural_anchors():
+    question = "描述、原因、颜色和名称分别是什么？"
+
+    assert extract_strong_terms_from_question(question) == []
+    assert is_abstract_query(question) is True
+
+
+@pytest.mark.parametrize("question", ["详细点", "更详细"])
+def test_answer_depth_followups_do_not_depend_on_strong_terms(question):
+    assert extract_strong_terms_from_question(question) == []
+    assert is_result_expansion_followup(question) is True
 
 
 def test_timeline_evidence_keeps_first_seen_order_and_path_scoped_dedupe():

@@ -63,25 +63,10 @@ _STRONG_DATE_PATTERNS = tuple(
         r"\d{1,2}:\d{2}",
     )
 )
-_STRONG_EXACT_TERMS = (
+_STRUCTURAL_QUERY_TERMS = (
     "时间线",
     "经过",
     "过程",
-    "详细点",
-    "更详细",
-    "法律性质",
-    "性质",
-    "合法吗",
-    "是否合法",
-    "合法",
-    "合规吗",
-    "合规",
-    "动作",
-    "做法",
-    "行为",
-    "处理",
-    "公司",
-    "对方",
     "之后",
     "后来",
     "后续",
@@ -226,8 +211,8 @@ def _extract_strong_terms_from_normalized_question(q: str) -> list[str]:
         for match in pattern.findall(q):
             add(match)
 
-    # 只保留“当前问题中原样出现”的少量焦点词
-    for term in _STRONG_EXACT_TERMS:
+    # Core 只提升通用结构语义，不维护业务或普通内容词表。
+    for term in _STRUCTURAL_QUERY_TERMS:
         if term in q:
             add(term)
 
@@ -300,6 +285,10 @@ def needs_timeline_evidence(question: str) -> bool:
 
 
 def is_result_expansion_followup(question: str) -> bool:
+    raw_q = (question or "").strip()
+    if "详细点" in raw_q:
+        return True
+
     q = normalize_question_for_retrieval(question)
     if not q:
         return False
