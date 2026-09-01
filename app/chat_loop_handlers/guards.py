@@ -5,7 +5,7 @@ import re
 from app.context_anchor import is_context_dependent_question
 from app.dialog.state_machine import ConversationState
 from app.dialog_utils import is_followup_question, is_summary_followup_request
-from app.chat_text.file_lookup import looks_like_file_set_content_question
+from app.chat_text.file_lookup import looks_like_all_items_file_set_content_question
 from app.dialog.task_semantics import (
     classify_answer_mode,
     is_complex_answer_mode,
@@ -149,7 +149,7 @@ def looks_like_analytic_retrieval_question(
         return True
     if is_summary_followup_request(question):
         return True
-    if looks_like_file_set_content_question(question):
+    if looks_like_all_items_file_set_content_question(question):
         return True
     if re.search(
         r"(?:(?:\u54ea\u4e9b|\u54ea\u51e0(?:\u4e2a|\u4efd|\u5f20)?)(?:\u6587\u4ef6|\u6587\u6863|\u8bb0\u5f55|\u622a\u56fe)"

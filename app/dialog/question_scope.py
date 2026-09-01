@@ -20,6 +20,7 @@ from app.dialog.task_semantics import (
 from app.dialog_utils import is_content_followup_question, is_summary_followup_request
 from app.chat_text.file_lookup import (
     has_explicit_focus_reference,
+    looks_like_all_items_file_set_content_question,
     looks_like_file_set_content_question,
     looks_like_implicit_file_set_content_question,
     looks_like_standalone_general_question,
@@ -44,6 +45,7 @@ class QuestionSignals:
     standalone_general_question: bool
     file_set_content_question: bool
     implicit_file_set_content_question: bool
+    all_items_file_set_content_question: bool
     explicit_focus_reference: bool
     explicit_single_file_result_reference: bool
     result_set_comparison_followup: bool
@@ -79,6 +81,9 @@ def analyze_question_signals(
         standalone_general_question=looks_like_standalone_general_question(question),
         file_set_content_question=looks_like_file_set_content_question(question),
         implicit_file_set_content_question=looks_like_implicit_file_set_content_question(
+            question
+        ),
+        all_items_file_set_content_question=looks_like_all_items_file_set_content_question(
             question
         ),
         explicit_focus_reference=has_explicit_focus_reference(question),
@@ -171,13 +176,7 @@ def decide_file_result_set_scope(
     if selected_file_paths is not None:
         result_scope_paths = selected_file_paths
     elif (
-        (
-            signals.file_set_content_question
-            or (
-                signals.implicit_file_set_content_question
-                and not effective_focus_file
-            )
-        )
+        signals.all_items_file_set_content_question
         and state.last_result_set_entity_type == "文件"
         and state.last_result_set_items
     ):
@@ -185,7 +184,7 @@ def decide_file_result_set_scope(
     elif (
         effective_focus_file
         and event_name == "content_followup"
-        and not signals.file_set_content_question
+        and not signals.all_items_file_set_content_question
     ):
         result_scope_paths = (effective_focus_file,)
 
@@ -239,7 +238,7 @@ def decide_file_result_set_scope(
         and effective_focus_file
         and result_scope_paths[0] == effective_focus_file
         and event_name == "content_followup"
-        and not signals.file_set_content_question
+        and not signals.all_items_file_set_content_question
     )
 
     return ScopeDecision(

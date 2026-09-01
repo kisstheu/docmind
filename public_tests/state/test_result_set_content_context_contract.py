@@ -8,6 +8,7 @@ import pytest
 
 from app.chat_state_helpers import update_state_after_retrieval_answer
 from app.chat_text.file_lookup import (
+    looks_like_all_items_file_set_content_question,
     looks_like_file_set_content_question,
     looks_like_implicit_file_set_content_question,
 )
@@ -73,10 +74,12 @@ def _event_and_scope(
 @pytest.mark.parametrize(
     "question",
     [
-        "讲了什么？",
         "这些合同文档分别讲了什么？",
         "分别介绍一下",
         "总结一下这些采购文件",
+        "都是讲了啥？",
+        "都讲了什么？",
+        "各自讲什么？",
     ],
 )
 def test_content_followup_binds_the_complete_active_file_set(question):
@@ -95,11 +98,50 @@ def test_content_followup_binds_the_complete_active_file_set(question):
         "哪些文档提到了合成验收条件？",
         "患者讲了什么？",
         "第二个问题详细说明",
+        "讲了什么？",
+        "第三个讲什么？",
+        "这个讲什么？",
+        "关于合成主题讲了什么？",
     ],
 )
 def test_adjacent_questions_do_not_claim_implicit_file_set_content(question):
     assert looks_like_implicit_file_set_content_question(question) is False
     assert looks_like_file_set_content_question(question) is False
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "这些岗位资料都讲了什么？",
+        "这些合同文档各自讲什么？",
+        "每个采购文件大概讲什么？",
+        "都是讲了啥？",
+        "都讲了什么？",
+        "各自讲什么？",
+    ],
+)
+def test_all_items_content_intent_generalizes_across_domains_and_colloquial_forms(
+    question,
+):
+    signals = analyze_question_signals(
+        question,
+        last_effective_search_query="合成资料集合",
+    )
+
+    assert looks_like_all_items_file_set_content_question(question) is True
+    assert signals.all_items_file_set_content_question is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["讲了什么？", "第三个讲什么？", "这个讲什么？", "关于合成主题讲了什么？"],
+)
+def test_non_all_items_content_questions_do_not_expand_to_the_complete_file_set(question):
+    paths = ["合成资料甲.md", "合成资料乙.md", "合成资料丙.md"]
+    signals, _event, scope = _event_and_scope(question, _file_result_set(paths))
+
+    assert signals.all_items_file_set_content_question is False
+    assert scope.result_scope_paths != tuple(paths)
 
 
 def test_implicit_content_followup_prefers_an_already_selected_file():
@@ -111,6 +153,18 @@ def test_implicit_content_followup_prefers_an_already_selected_file():
     assert event.name == "content_followup"
     assert scope.result_scope_paths == (paths[2],)
     assert scope.query_result_set_items == (paths[2],)
+
+
+def test_collective_content_request_overrides_selected_focus_with_complete_file_set():
+    paths = ["合成资料甲.md", "合成资料乙.md", "合成资料丙.md"]
+    state = _file_result_set(paths, focus=paths[2])
+
+    signals, event, scope = _event_and_scope("都是讲了啥？", state, focus=paths[2])
+
+    assert signals.all_items_file_set_content_question is True
+    assert event.name == "result_set_followup"
+    assert scope.result_scope_paths == tuple(paths)
+    assert scope.query_result_set_items == tuple(paths)
 
 
 @pytest.mark.parametrize(
@@ -209,9 +263,11 @@ def test_normal_retrieval_answer_does_not_erase_active_file_set_without_reset_si
 @pytest.mark.parametrize(
     "question",
     [
-        "讲了什么？",
         "这些文档分别讲了什么？",
         "分别介绍一下",
+        "都是讲了啥？",
+        "都讲了什么？",
+        "各自讲什么？",
     ],
 )
 def test_file_set_content_retrieval_keeps_evidence_from_every_scoped_file(question):
@@ -253,7 +309,8 @@ def test_file_set_content_retrieval_keeps_evidence_from_every_scoped_file(questi
         allowed_paths=set(scope.result_scope_paths or ()),
     )
 
-    retrieved_paths = {
+    retrieved_paths = [
         repo_state.chunk_paths[index] for index in materials["relevant_indices"]
-    }
-    assert retrieved_paths == set(paths)
+    ]
+    assert set(retrieved_paths) == set(paths)
+    assert retrieved_paths == paths

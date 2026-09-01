@@ -1313,9 +1313,11 @@ def build_result_set_followup_query(
         entity_type = (last_result_set_entity_type or "项").strip()
         candidate_items = list(last_result_set_items)
         if entity_type == "文件":
-            from app.chat_text.file_lookup import looks_like_file_set_content_question
+            from app.chat_text.file_lookup import (
+                looks_like_all_items_file_set_content_question,
+            )
 
-            if looks_like_file_set_content_question(q):
+            if looks_like_all_items_file_set_content_question(q):
                 candidate_items = list(last_result_set_items)
             else:
                 candidate_items = _narrow_result_set_files_by_question(candidate_items, q)

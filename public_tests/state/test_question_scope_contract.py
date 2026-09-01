@@ -68,6 +68,7 @@ def _decide(
     [
         ("Python里的生成器和普通函数有什么区别？", "standalone_general_question"),
         ("这些文件分别讲了什么？", "file_set_content_question"),
+        ("都是讲了啥？", "all_items_file_set_content_question"),
         ("它主要解决什么问题？", "explicit_focus_reference"),
         ("第二个文件再详细说说。", "explicit_single_file_result_reference"),
         ("它和第二个文件相比，哪个更适合当前目标？", "result_set_comparison_followup"),

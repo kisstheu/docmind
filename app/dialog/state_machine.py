@@ -7,9 +7,8 @@ from typing import Optional
 from app.context_anchor import is_context_dependent_question
 from app.chat_text.file_lookup import (
     has_explicit_focus_reference,
+    looks_like_all_items_file_set_content_question,
     looks_like_focused_file_content_question,
-    looks_like_file_set_content_question,
-    looks_like_implicit_file_set_content_question,
     looks_like_standalone_general_question,
 )
 from app.dialog.repo_meta_rules import (
@@ -129,7 +128,7 @@ def _looks_like_file_topic_result_set_followup(question: str, state: "Conversati
         return False
     if state.last_result_set_entity_type != "文件" or not state.last_result_set_items:
         return False
-    if looks_like_file_set_content_question(question):
+    if looks_like_all_items_file_set_content_question(question):
         return True
     if not has_selectable_result_set(
         state.last_result_set_items,
@@ -138,11 +137,6 @@ def _looks_like_file_topic_result_set_followup(question: str, state: "Conversati
         state.last_result_set_selectable,
     ):
         return False
-    if (
-        not state.last_result_set_focus_file
-        and looks_like_implicit_file_set_content_question(question)
-    ):
-        return True
     if is_summary_followup_request(question):
         return True
     if has_explicit_single_file_result_reference(question):
@@ -359,7 +353,7 @@ def detect_dialog_event(
             or has_explicit_focus_reference(question)
             or is_context_dependent_question(question, state.last_effective_search_query)
         )
-        and not looks_like_file_set_content_question(question)
+        and not looks_like_all_items_file_set_content_question(question)
         and not has_explicit_single_file_result_reference(question)
         and not looks_like_result_set_comparison_followup(question)
     ):

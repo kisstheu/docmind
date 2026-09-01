@@ -18,16 +18,18 @@ _ANALYTIC_FILE_LOOKUP_BLOCK_PATTERNS = (
 
 _FILE_SET_REFERENCE_TERMS = (
     "这些", "上述", "它们", "这几份", "这几个", "这批", "前面", "上面",
+    "每个", "各个",
 )
 _FILE_SET_CONTENT_TERMS = (
     "主要内容", "内容是什么", "什么内容", "主题", "概括", "总结",
     "讲了什么", "讲什么", "说了什么", "说什么", "记录了什么", "记录什么",
+    "讲了啥", "讲啥", "说了啥", "说啥",
     "主要记录", "大致说", "主要涉及什么", "介绍",
 )
 _IMPLICIT_FILE_SET_CONTENT_PATTERNS = (
-    re.compile(r"^(?:主要|大致)?(?:讲|说|写|记录|介绍)(?:了)?(?:什么|啥)(?:内容)?$"),
     re.compile(
-        r"^(?:分别|各自)(?:讲|说|写|记录|介绍)(?:了)?(?:什么|啥)(?:内容)?$"
+        r"^(?:都(?:是)?|分别|各自)(?:主要|大致)?"
+        r"(?:讲|说|写|记录|介绍)(?:了)?(?:什么|啥)(?:内容)?$"
     ),
     re.compile(r"^(?:分别|各自)(?:介绍|说明|讲讲|说说|总结|概括)(?:一下|下)?$"),
 )
@@ -107,11 +109,19 @@ def looks_like_file_set_content_question(question: str) -> bool:
 
 
 def looks_like_implicit_file_set_content_question(question: str) -> bool:
-    """Identify a subjectless content operation that needs an active collection."""
+    """Identify a subjectless all-items operation that needs an active collection."""
     q = re.sub(r"[，。！？?.!?\s]+", "", (question or ""))
     if not q:
         return False
     return any(pattern.fullmatch(q) for pattern in _IMPLICIT_FILE_SET_CONTENT_PATTERNS)
+
+
+def looks_like_all_items_file_set_content_question(question: str) -> bool:
+    """Return whether content is requested for every member of a file set."""
+    return (
+        looks_like_file_set_content_question(question)
+        or looks_like_implicit_file_set_content_question(question)
+    )
 
 
 def has_explicit_focus_reference(question: str) -> bool:
@@ -315,7 +325,10 @@ def maybe_build_file_location_answer(
         return None
     if (content_target or "").strip():
         return None
-    if _looks_like_topic_summary_followup(question) or looks_like_file_set_content_question(question):
+    if (
+        _looks_like_topic_summary_followup(question)
+        or looks_like_all_items_file_set_content_question(question)
+    ):
         return None
 
     is_direct_lookup = is_file_location_lookup_query(question, search_query)

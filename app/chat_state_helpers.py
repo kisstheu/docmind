@@ -619,7 +619,7 @@ def update_state_after_retrieval_answer(
             and bool(current_result_set_focus_file)
             and is_focus_related_event
             and not clears_result_set_focus
-            and not question_signals.file_set_content_question
+            and not question_signals.all_items_file_set_content_question
             and (
                 scope_decision.has_single_focus_scope
                 or (event_name or "").strip() == "content_followup"
