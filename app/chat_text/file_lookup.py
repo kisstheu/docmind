@@ -33,6 +33,13 @@ _IMPLICIT_FILE_SET_CONTENT_PATTERNS = (
     ),
     re.compile(r"^(?:分别|各自)(?:介绍|说明|讲讲|说说|总结|概括)(?:一下|下)?$"),
 )
+_BARE_CONTENT_QUESTION_PATTERNS = (
+    re.compile(
+        r"^(?:\u4e3b\u8981|\u5927\u81f4)?"
+        r"(?:\u8bb2|\u8bf4|\u5199|\u8bb0\u5f55|\u4ecb\u7ecd)(?:\u4e86)?\u4ec0\u4e48(?:\u5185\u5bb9)?$"
+    ),
+    re.compile(r"^\u5185\u5bb9(?:\u662f|\u6709)?\u4ec0\u4e48$"),
+)
 _FOCUS_REFERENCE_PREFIXES = (
     "它",
     "其",
@@ -114,6 +121,14 @@ def looks_like_implicit_file_set_content_question(question: str) -> bool:
     if not q:
         return False
     return any(pattern.fullmatch(q) for pattern in _IMPLICIT_FILE_SET_CONTENT_PATTERNS)
+
+
+def looks_like_bare_content_question(question: str) -> bool:
+    """Identify a subjectless content question whose scope must come from state."""
+    q = re.sub(r"[，。！？?.!?\s]+", "", (question or ""))
+    if not q:
+        return False
+    return any(pattern.fullmatch(q) for pattern in _BARE_CONTENT_QUESTION_PATTERNS)
 
 
 def looks_like_all_items_file_set_content_question(question: str) -> bool:

@@ -1194,6 +1194,8 @@ def test_runner_uses_one_visible_scope_for_retrieval_and_query_context(
 @pytest.mark.parametrize(
     "question",
     [
+        "讲了什么？",
+        "讲了啥？",
         "这些文档分别讲了什么？",
         "分别介绍一下",
         "都是讲了啥？",

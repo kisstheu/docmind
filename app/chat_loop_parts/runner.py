@@ -532,7 +532,10 @@ def run_chat_loop(
                 event.name == "result_set_followup"
                 and scope_decision.result_scope_paths is not None
                 and len(scope_decision.result_scope_paths) > 1
-                and question_signals.all_items_file_set_content_question
+                and (
+                    question_signals.all_items_file_set_content_question
+                    or question_signals.bare_content_question
+                )
             )
             analytic_retrieval = (
                 scoped_content_lookup

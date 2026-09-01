@@ -20,6 +20,12 @@ def normalize_colloquial_question(question: str) -> str:
     for pattern, repl in replacements:
         q = re.sub(pattern, repl, q)
 
+    q = re.sub(
+        r"((?:\u8bb2|\u5199|\u8bf4|\u8bb0\u5f55|\u4ecb\u7ecd)(?:\u4e86)?|\u5185\u5bb9(?:\u662f|\u6709)?)(?:\u5565)(?=[\uff1f?\u3002\uff01!\s]*$)",
+        lambda match: f"{match.group(1)}什么",
+        q,
+    )
+
     return q
 
 

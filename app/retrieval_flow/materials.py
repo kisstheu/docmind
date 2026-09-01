@@ -13,6 +13,7 @@ from app.chat_text.core import (
 )
 from app.chat_text.file_lookup import (
     looks_like_all_items_file_set_content_question,
+    looks_like_bare_content_question,
 )
 from retrieval.search_engine import (
     build_context_text,
@@ -53,7 +54,10 @@ def build_retrieval_materials(
         ensure_file_set_content_coverage = bool(
             event_name == "result_set_followup"
             and allowed_paths is not None
-            and looks_like_all_items_file_set_content_question(question)
+            and (
+                looks_like_all_items_file_set_content_question(question)
+                or looks_like_bare_content_question(question)
+            )
         )
         effective_allowed_paths = allowed_paths
         if event_name == "selected_candidate_followup" and selected_source_files:
@@ -147,7 +151,10 @@ def build_safe_final_prompt(
     constrained_question = safe_question
     is_file_set_content_operation = bool(
         event_name == "result_set_followup"
-        and looks_like_all_items_file_set_content_question(question)
+        and (
+            looks_like_all_items_file_set_content_question(question)
+            or looks_like_bare_content_question(question)
+        )
     )
 
     if safe_result_set_items and event_name in {"result_set_followup", "result_set_expansion_followup", "structured_request"}:

@@ -8,6 +8,7 @@ from app.context_anchor import is_context_dependent_question
 from app.chat_text.file_lookup import (
     has_explicit_focus_reference,
     looks_like_all_items_file_set_content_question,
+    looks_like_bare_content_question,
     looks_like_focused_file_content_question,
     looks_like_standalone_general_question,
 )
@@ -434,6 +435,12 @@ def detect_dialog_event(
     elif state.last_result_set_items and looks_like_result_set_comparison_followup(question):
         rs_match = True
     elif state.last_result_set_items and _looks_like_group_reference_result_set_followup(question):
+        rs_match = True
+    elif (
+        state.last_result_set_items
+        and not current_result_set_focus_file
+        and looks_like_bare_content_question(question)
+    ):
         rs_match = True
 
     if prev_route in {"normal_retrieval", "repo_meta"} and rs_match and is_result_set_answer:

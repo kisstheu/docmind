@@ -8,10 +8,12 @@ import pytest
 
 from app.chat_state_helpers import update_state_after_retrieval_answer
 from app.chat_text.file_lookup import (
+    looks_like_bare_content_question,
     looks_like_all_items_file_set_content_question,
     looks_like_file_set_content_question,
     looks_like_implicit_file_set_content_question,
 )
+from app.chat_text.core import normalize_colloquial_question
 from app.dialog.question_scope import (
     analyze_question_signals,
     decide_file_result_set_scope,
@@ -56,6 +58,7 @@ def _event_and_scope(
     *,
     focus: str | None = None,
 ):
+    question = normalize_colloquial_question(question)
     signals = analyze_question_signals(
         question,
         last_effective_search_query=state.last_effective_search_query,
@@ -92,13 +95,44 @@ def test_content_followup_binds_the_complete_active_file_set(question):
     assert scope.query_result_set_entity == "文件"
 
 
+@pytest.mark.parametrize("question", ["讲了什么？", "讲了啥？"])
+def test_bare_content_followup_binds_the_complete_active_file_set(question):
+    paths = ["合成岗位资料.md", "合成合同说明.md", "合成采购记录.md"]
+    normalized = normalize_colloquial_question(question)
+    signals, event, scope = _event_and_scope(question, _file_result_set(paths))
+
+    assert normalized == "讲了什么？"
+    assert looks_like_bare_content_question(normalized) is True
+    assert signals.bare_content_question is True
+    assert signals.all_items_file_set_content_question is False
+    assert event.name == "result_set_followup"
+    assert scope.result_scope_paths == tuple(paths)
+    assert scope.query_result_set_items == tuple(paths)
+    assert scope.query_result_set_entity == "文件"
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("讲了啥？", "讲了什么？"),
+        ("写了啥？", "写了什么？"),
+        ("说了啥？", "说了什么？"),
+        ("内容是啥？", "内容是什么？"),
+    ],
+)
+def test_content_colloquial_normalization_is_constrained_to_terminal_interrogative(
+    question,
+    expected,
+):
+    assert normalize_colloquial_question(question) == expected
+
+
 @pytest.mark.parametrize(
     "question",
     [
         "哪些文档提到了合成验收条件？",
         "患者讲了什么？",
         "第二个问题详细说明",
-        "讲了什么？",
         "第三个讲什么？",
         "这个讲什么？",
         "关于合成主题讲了什么？",
@@ -107,6 +141,31 @@ def test_content_followup_binds_the_complete_active_file_set(question):
 def test_adjacent_questions_do_not_claim_implicit_file_set_content(question):
     assert looks_like_implicit_file_set_content_question(question) is False
     assert looks_like_file_set_content_question(question) is False
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["这是啥文件？", "啥时候修改的？", "他干了啥？", "哪个是啥？"],
+)
+def test_non_content_colloquial_questions_are_not_normalized_or_claimed(question):
+    normalized = normalize_colloquial_question(question)
+
+    assert normalized == question
+    assert looks_like_bare_content_question(normalized) is False
+    signals = analyze_question_signals(
+        normalized,
+        last_effective_search_query="合成资料集合",
+    )
+    assert signals.bare_content_question is False
+
+
+@pytest.mark.parametrize("question", ["这是啥文件？", "啥时候修改的？", "他干了啥？"])
+def test_non_content_colloquial_questions_do_not_enter_result_set_content_event(question):
+    signals, event, scope = _event_and_scope(question, _file_result_set(["合成资料.md"]))
+
+    assert signals.bare_content_question is False
+    assert event.name != "result_set_followup"
+    assert scope.result_scope_paths is None
 
 
 @pytest.mark.parametrize(
@@ -132,10 +191,7 @@ def test_all_items_content_intent_generalizes_across_domains_and_colloquial_form
     assert signals.all_items_file_set_content_question is True
 
 
-@pytest.mark.parametrize(
-    "question",
-    ["讲了什么？", "第三个讲什么？", "这个讲什么？", "关于合成主题讲了什么？"],
-)
+@pytest.mark.parametrize("question", ["第三个讲什么？", "这个讲什么？", "关于合成主题讲了什么？"])
 def test_non_all_items_content_questions_do_not_expand_to_the_complete_file_set(question):
     paths = ["合成资料甲.md", "合成资料乙.md", "合成资料丙.md"]
     signals, _event, scope = _event_and_scope(question, _file_result_set(paths))
@@ -153,6 +209,33 @@ def test_implicit_content_followup_prefers_an_already_selected_file():
     assert event.name == "content_followup"
     assert scope.result_scope_paths == (paths[2],)
     assert scope.query_result_set_items == (paths[2],)
+
+
+def test_colloquial_bare_content_followup_prefers_an_already_selected_file():
+    paths = ["合成资料甲.md", "合成资料乙.md", "合成资料丙.md"]
+    state = _file_result_set(paths, focus=paths[2])
+
+    signals, event, scope = _event_and_scope("讲了啥？", state, focus=paths[2])
+
+    assert signals.bare_content_question is True
+    assert event.name == "content_followup"
+    assert scope.result_scope_paths == (paths[2],)
+    assert scope.query_result_set_items == (paths[2],)
+
+
+@pytest.mark.parametrize("question", ["讲了什么？", "讲了啥？"])
+def test_bare_content_without_file_state_does_not_create_result_set_scope(question):
+    state = ConversationState(
+        last_route="normal_retrieval",
+        last_content_route="normal_retrieval",
+    )
+
+    signals, event, scope = _event_and_scope(question, state)
+
+    assert signals.bare_content_question is True
+    assert event.name != "result_set_followup"
+    assert scope.result_scope_paths is None
+    assert scope.query_result_set_items is None
 
 
 def test_collective_content_request_overrides_selected_focus_with_complete_file_set():
