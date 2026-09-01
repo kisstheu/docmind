@@ -31,6 +31,19 @@ _DETAIL_FOLLOWUPS = (
     "细说", "再分析", "分析一下", "分析下",
 )
 
+_EXPLANATORY_FOLLOWUP_TERMS = (
+    "什么意思", "怎么理解", "如何理解", "到底是啥", "到底是什么",
+    "具体讲讲", "具体说说", "讲清楚", "说清楚", "解释一下", "解释下",
+    "干嘛的", "做什么用", "有什么用", "有什么作用", "怎么起作用",
+    "为什么", "为何", "原理", "和刚才", "有什么关系",
+)
+
+_EVIDENCE_LOOKUP_TERMS = (
+    "哪份文件", "哪个文件", "哪些文件", "哪篇文档", "哪个文档", "哪些文档",
+    "在哪一页", "第几页", "哪一页", "原文", "来源", "出处", "哪句",
+    "哪里写", "哪儿写", "还有别的文件", "是否提到", "有没有提到",
+)
+
 _OPEN_EVALUATION_TERMS = (
     "怎么样", "咋样", "好不好", "值不值得", "是否值得", "合不合适",
 )
@@ -104,6 +117,23 @@ def is_detail_explanation_request(question: str) -> bool:
     return any(term in q for term in _DETAIL_FOLLOWUPS)
 
 
+def is_explanatory_followup_request(question: str) -> bool:
+    """Identify a domain-neutral request to explain or clarify existing content."""
+    q = _normalize(question)
+    if not q or len(q) > 40:
+        return False
+    if any(term in q for term in _EVIDENCE_LOOKUP_TERMS):
+        return False
+    if is_detail_explanation_request(question):
+        return True
+    if any(term in q for term in _EXPLANATORY_FOLLOWUP_TERMS):
+        return True
+    return bool(
+        re.search(r"^(?:什么是).+", q)
+        or re.search(r".+(?:又|到底)?(?:是啥|是什么)$", q)
+    )
+
+
 def is_document_evaluation_request(question: str) -> bool:
     """Identify a domain-neutral request to evaluate one resolved document."""
     q = _normalize(question)
@@ -158,6 +188,7 @@ __all__ = [
     "is_complex_answer_mode",
     "is_detail_explanation_request",
     "is_document_evaluation_request",
+    "is_explanatory_followup_request",
     "is_recommendation_request",
     "is_selected_candidate_detail_request",
 ]

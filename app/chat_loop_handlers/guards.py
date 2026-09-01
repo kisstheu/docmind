@@ -10,6 +10,7 @@ from app.dialog.task_semantics import (
     classify_answer_mode,
     is_complex_answer_mode,
     is_detail_explanation_request,
+    is_explanatory_followup_request,
 )
 
 CONTEXTLESS_FOLLOWUP_REPLY = (
@@ -192,3 +193,31 @@ def is_simple_retrieval_turn(question: str, event_name: str) -> bool:
     if event_name == "unknown" and len(q) <= 28:
         return True
     return False
+
+
+def should_escalate_explanatory_followup_after_direct_answer(
+    question: str,
+    *,
+    event_name: str,
+    state: ConversationState,
+    current_source_files: list[str] | tuple[str, ...],
+) -> bool:
+    """Use source continuity to deepen an explanatory turn after a direct answer."""
+    if state.last_answer_strategy != "direct_evidence":
+        return False
+    if event_name not in {"content_followup", "entity_lookup_followup", "action_request", "unknown"}:
+        return False
+    if not is_explanatory_followup_request(question):
+        return False
+
+    previous_sources = {
+        str(path or "").strip().replace("\\", "/").lower()
+        for path in (state.last_answer_source_files or [])
+        if str(path or "").strip()
+    }
+    current_sources = {
+        str(path or "").strip().replace("\\", "/").lower()
+        for path in current_source_files
+        if str(path or "").strip()
+    }
+    return bool(previous_sources.intersection(current_sources))

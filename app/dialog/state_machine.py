@@ -160,6 +160,8 @@ class ConversationState:
     last_effective_search_query: str | None = None
     last_answer_text: str | None = None
     last_answer_type: str | None = None
+    last_answer_strategy: str | None = None
+    last_answer_source_files: list[str] | None = None
     last_result_set_query: str | None = None
     last_result_set_items: list[str] | None = None
     last_result_set_entity_type: str | None = None
@@ -491,6 +493,8 @@ def apply_event_to_state(state: ConversationState, event: DialogEvent) -> Conver
         last_effective_search_query=state.last_effective_search_query,
         last_answer_text=state.last_answer_text,
         last_answer_type=state.last_answer_type,
+        last_answer_strategy=state.last_answer_strategy,
+        last_answer_source_files=state.last_answer_source_files,
         last_result_set_query=state.last_result_set_query,
 
         last_result_set_items=state.last_result_set_items,

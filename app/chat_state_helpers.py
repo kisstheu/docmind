@@ -188,6 +188,8 @@ def update_state_after_local_answer(
     state.last_local_topic = local_topic
     state.last_answer_preview = answer[:200]
     state.last_answer_text = answer
+    state.last_answer_strategy = "local"
+    state.last_answer_source_files = None
     if local_topic in {"category_summary", "category_count_breakdown", "category_overview"}:
         state.last_category_context_answer = answer
 
@@ -270,6 +272,7 @@ def update_state_after_retrieval_answer(
     question_signals: QuestionSignals | object = _MISSING_QUESTION_SCOPE_FACT,
     scope_decision: ScopeDecision | object = _MISSING_QUESTION_SCOPE_FACT,
     generated_result_provenance=None,
+    answer_strategy: str = "content",
 ):
     question_signals, scope_decision = _resolve_question_scope_facts(
         state=state,
@@ -312,6 +315,12 @@ def update_state_after_retrieval_answer(
 
     state.last_answer_text = answer_text
     state.last_answer_preview = answer_text[:200]
+    state.last_answer_strategy = answer_strategy
+    state.last_answer_source_files = (
+        extract_file_items(answer_text)
+        if answer_strategy == "direct_evidence"
+        else None
+    )
 
     structured_decision = decision_result
     if structured_decision is None and (event_name or "").strip() == "decision_request":

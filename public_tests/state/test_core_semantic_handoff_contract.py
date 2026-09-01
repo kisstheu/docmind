@@ -9,6 +9,9 @@ import pytest
 from ai.query_router import route_question
 from ai.repo_meta.answering import answer_repo_meta_question
 from app.chat_state_helpers import update_state_after_retrieval_answer
+from app.chat_loop_handlers.guards import (
+    should_escalate_explanatory_followup_after_direct_answer,
+)
 from app.chat_text.lookup_answer_main import maybe_build_direct_lookup_answer
 from app.chat_text.file_lookup import maybe_build_file_location_answer
 from app.dialog.question_scope import analyze_question_signals, decide_file_result_set_scope
@@ -79,6 +82,84 @@ def _scope_facts(question: str, state: ConversationState, event_name: str):
         event_name=event_name,
     )
     return signals, decision
+
+
+def _direct_answer_state(source: str = "合成主题说明.md") -> ConversationState:
+    return ConversationState(
+        last_route="normal_retrieval",
+        last_content_route="normal_retrieval",
+        last_content_user_question="合成概念甲是啥？",
+        last_effective_search_query="合成概念甲",
+        last_answer_text=(
+            "根据当前检索片段，先给你可直接核对的证据：\n"
+            "1. 合成概念甲的定义。\n"
+            f"   来源：{source}"
+        ),
+        last_answer_strategy="direct_evidence",
+        last_answer_source_files=[source],
+    )
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "合成条件乙又是啥？",
+        "合成条款乙又是什么？",
+        "合成批次乙到底是什么？",
+        "什么意思？",
+        "具体讲讲",
+    ],
+)
+def test_direct_answer_followup_escalation_is_domain_neutral(question):
+    state = _direct_answer_state()
+    event = detect_dialog_event(question, state, _CaptureLogger())
+
+    assert should_escalate_explanatory_followup_after_direct_answer(
+        question,
+        event_name=event.name,
+        state=state,
+        current_source_files=["合成主题说明.md"],
+    ) is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["哪份文件写的？", "在哪一页？", "原文是哪句？", "还有别的文件提到吗？"],
+)
+def test_direct_answer_source_lookup_does_not_escalate(question):
+    state = _direct_answer_state()
+    event = detect_dialog_event(question, state, _CaptureLogger())
+
+    assert should_escalate_explanatory_followup_after_direct_answer(
+        question,
+        event_name=event.name,
+        state=state,
+        current_source_files=["合成主题说明.md"],
+    ) is False
+
+
+def test_direct_answer_followup_requires_source_topic_continuity():
+    state = _direct_answer_state()
+
+    assert should_escalate_explanatory_followup_after_direct_answer(
+        "合成概念乙又是啥？",
+        event_name="content_followup",
+        state=state,
+        current_source_files=["另一主题说明.md"],
+    ) is False
+
+
+def test_direct_answer_does_not_pollute_repo_inventory_topic_switch():
+    state = _direct_answer_state()
+    event = detect_dialog_event("当前有哪些文件？", state, _CaptureLogger())
+
+    assert event.name == "repo_meta_request"
+    assert should_escalate_explanatory_followup_after_direct_answer(
+        "当前有哪些文件？",
+        event_name=event.name,
+        state=state,
+        current_source_files=["合成主题说明.md"],
+    ) is False
 
 
 def test_local_inventory_semantic_maps_to_bounded_repo_meta_action(monkeypatch):

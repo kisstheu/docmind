@@ -49,6 +49,9 @@ from app.chat_retrieval_flow import (
     build_search_query,
     resolve_route,
 )
+from app.chat_loop_handlers.guards import (
+    should_escalate_explanatory_followup_after_direct_answer,
+)
 from app.chat_state_helpers import (
     append_memory,
     print_answer,
@@ -139,6 +142,18 @@ def _structured_response_payload(response):
             return None
     parsed = getattr(response, "parsed", None)
     return parsed if parsed is not None else getattr(response, "text", None)
+
+
+def _retrieval_source_files(repo_state, relevant_indices) -> list[str]:
+    chunk_paths = list(getattr(repo_state, "chunk_paths", []) or [])
+    sources: list[str] = []
+    for index in relevant_indices or []:
+        if not isinstance(index, int) or index < 0 or index >= len(chunk_paths):
+            continue
+        path = str(chunk_paths[index] or "").strip()
+        if path and path not in sources:
+            sources.append(path)
+    return sources
 
 
 def _source_term_groups_for_domain_adapter(
@@ -625,6 +640,23 @@ def run_chat_loop(
             ):
                 current_focus_file = scope_decision.result_scope_paths[0]
             last_relevant_indices = materials["relevant_indices"]
+            elaboration_after_direct_answer = (
+                should_escalate_explanatory_followup_after_direct_answer(
+                    question,
+                    event_name=event.name,
+                    state=runtime.conversation_state,
+                    current_source_files=_retrieval_source_files(
+                        repo_state,
+                        last_relevant_indices,
+                    ),
+                )
+            )
+            if elaboration_after_direct_answer:
+                analytic_retrieval = True
+                logger.info(
+                    "🛰️ [连续解释升级] 上一轮为本地证据直答且主题连续，"
+                    "本轮进入内容生成"
+                )
             resolved_domain_path = None
             if (
                 scope_decision.result_scope_paths is not None
@@ -824,6 +856,7 @@ def run_chat_loop(
                     ),
                     question_signals=question_signals,
                     scope_decision=scope_decision,
+                    answer_strategy="direct_evidence",
                 )
                 continue
             fallback_local_answer = None
@@ -848,6 +881,7 @@ def run_chat_loop(
                     prefer_content_answer=(
                         focused_file_content_followup
                         or scoped_content_lookup
+                        or elaboration_after_direct_answer
                     ),
                 )
             if fallback_local_answer:

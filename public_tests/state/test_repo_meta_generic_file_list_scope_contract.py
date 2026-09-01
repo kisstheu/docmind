@@ -1705,6 +1705,84 @@ def test_successful_simple_lookup_stays_local_without_generation(
     assert client.models.calls == []
 
 
+def _run_direct_explanation_turns(monkeypatch, tmp_path, questions):
+    direct_questions: list[str] = []
+
+    def direct_answer(**kwargs):
+        direct_questions.append(kwargs["question"])
+        return (
+            "根据当前检索片段，先给你可直接核对的证据：\n"
+            "1. 合成概念的标题式定义。\n"
+            "   来源：共享概念指南.md"
+        )
+
+    monkeypatch.setattr(chat_runner, "maybe_build_direct_lookup_answer", direct_answer)
+    monkeypatch.setattr(
+        "app.chat_loop_handlers.maybe_build_direct_lookup_answer",
+        direct_answer,
+    )
+    allowed, query_sets, client = _run_turns(
+        monkeypatch,
+        tmp_path,
+        questions=questions,
+        repo_paths=["共享概念指南.md"],
+        repo_chunks=[
+            "合成概念甲与合成概念乙属于同一主题。"
+            "合成概念乙用于说明连续解释行为。"
+        ],
+        state=ConversationState(),
+    )
+    return SimpleNamespace(
+        allowed=allowed,
+        query_sets=query_sets,
+        client=client,
+        direct_questions=direct_questions,
+        state=chat_runtime.conversation_state,
+    )
+
+
+def test_first_definition_turn_preserves_direct_local_answer(monkeypatch, tmp_path):
+    result = _run_direct_explanation_turns(
+        monkeypatch,
+        tmp_path,
+        ["合成概念甲是啥？"],
+    )
+
+    assert result.direct_questions == ["合成概念甲是啥？"]
+    assert result.client.models.calls == []
+    assert result.state.last_answer_strategy == "direct_evidence"
+    assert result.state.last_answer_source_files == ["共享概念指南.md"]
+
+
+@pytest.mark.parametrize("followup", ["详细讲下", "什么意思？", "合成概念乙又是啥？"])
+def test_explanatory_turn_after_direct_answer_reaches_generation(
+    monkeypatch,
+    tmp_path,
+    followup,
+):
+    result = _run_direct_explanation_turns(
+        monkeypatch,
+        tmp_path,
+        ["合成概念甲是啥？", followup],
+    )
+
+    assert result.direct_questions == ["合成概念甲是啥？"]
+    assert len(result.client.models.calls) == 1
+    assert result.state.last_answer_strategy == "content"
+    assert "标题式定义" not in result.state.last_answer_text
+
+
+def test_source_lookup_after_direct_answer_stays_local(monkeypatch, tmp_path):
+    result = _run_direct_explanation_turns(
+        monkeypatch,
+        tmp_path,
+        ["合成概念甲是啥？", "哪份文件写的？"],
+    )
+
+    assert result.client.models.calls == []
+    assert "哪份文件写的？" in result.direct_questions
+
+
 def test_runner_rejects_out_of_range_then_keeps_set_for_valid_choice(
     monkeypatch,
     tmp_path,

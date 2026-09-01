@@ -22,6 +22,8 @@ def test_event_application_sets_mode_without_mutating_input(event, expected_mode
 
 def test_event_application_preserves_control_state_fields() -> None:
     original = ConversationState(
+        last_answer_strategy="direct_evidence",
+        last_answer_source_files=["docs/alpha.md"],
         last_result_set_items=["docs/alpha.md", "docs/beta.md"],
         last_result_set_entity_type="file",
         last_selected_candidate="Candidate A",
@@ -37,6 +39,8 @@ def test_event_application_preserves_control_state_fields() -> None:
     )
 
     assert transitioned.last_result_set_items == ["docs/alpha.md", "docs/beta.md"]
+    assert transitioned.last_answer_strategy == "direct_evidence"
+    assert transitioned.last_answer_source_files == ["docs/alpha.md"]
     assert transitioned.last_selected_candidate == "Candidate A"
     assert transitioned.last_selected_source_files == ["docs/alpha.md"]
     assert transitioned.pending_action_type == "rename"
