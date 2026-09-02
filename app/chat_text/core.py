@@ -98,6 +98,24 @@ _RESULT_EXPANSION_MARKERS = {
     "合法吗",
     "是否合法",
 }
+_ANSWER_DEPTH_FOLLOWUP_PATTERNS = (
+    re.compile(
+        r"^(?:\u53ef\u4ee5|\u80fd\u5426|\u80fd\u4e0d\u80fd|\u8bf7|\u9ebb\u70e6)?"
+        r"(?:\u518d|\u66f4)?"
+        r"(?:(?:\u5177\u4f53|\u8be6\u7ec6|\u6df1\u5165)"
+        r"(?:(?:\u8bf4|\u8bb2)(?:\u8bf4|\u8bb2)?|\u8bf4\u660e|\u5206\u6790|\u89e3\u91ca)?"
+        r"|\u5c55\u5f00(?:(?:\u8bf4|\u8bb2)(?:\u8bf4|\u8bb2)?)?)"
+        r"(?:\u4e00\u4e0b|\u4e0b|\u4e9b|\u4e00\u70b9|\u4e00\u4e9b|\u70b9|\u4e00\u70b9\u70b9)?"
+        r"(?:\u5417|\u5462|\u5427)?$"
+    ),
+    re.compile(
+        r"^(?:\u53ef\u4ee5|\u80fd\u5426|\u80fd\u4e0d\u80fd)?(?:\u518d)?"
+        r"(?:\u8bf4|\u8bb2|\u56de\u7b54)(?:\u5f97)?(?:\u518d|\u66f4)?"
+        r"(?:\u5177\u4f53|\u8be6\u7ec6|\u6df1\u5165)"
+        r"(?:\u4e00\u4e0b|\u4e0b|\u4e9b|\u4e00\u70b9|\u4e00\u4e9b|\u70b9|\u4e00\u70b9\u70b9)?"
+        r"(?:\u5417|\u5462|\u5427)?$"
+    ),
+)
 _RELATED_MARKERS = ("有关", "相关")
 _RECORD_SCOPE_MARKERS = ("记录", "文档", "文件")
 _LISTING_MARKERS = ("哪些", "哪几", "有哪", "最近")
@@ -285,6 +303,9 @@ def needs_timeline_evidence(question: str) -> bool:
 
 
 def is_result_expansion_followup(question: str) -> bool:
+    if is_answer_depth_followup(question):
+        return True
+
     raw_q = (question or "").strip()
     if "详细点" in raw_q:
         return True
@@ -294,6 +315,13 @@ def is_result_expansion_followup(question: str) -> bool:
         return False
 
     return any(x in q for x in _RESULT_EXPANSION_MARKERS)
+
+
+def is_answer_depth_followup(question: str) -> bool:
+    q = re.sub(r"[，。！？、,.!?；;：:\s]+", "", (question or "").strip().lower())
+    if not q or len(q) > 24:
+        return False
+    return any(pattern.fullmatch(q) for pattern in _ANSWER_DEPTH_FOLLOWUP_PATTERNS)
 
 
 def is_related_record_listing_request(question: str) -> bool:

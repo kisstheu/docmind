@@ -12,6 +12,7 @@ from app.chat_text.file_lookup import (
     looks_like_focused_file_content_question,
     looks_like_standalone_general_question,
 )
+from app.chat_text.core import is_answer_depth_followup
 from app.dialog.repo_meta_rules import (
     extract_content_lookup_target,
     is_list_format_modifier,
@@ -145,6 +146,23 @@ def _looks_like_file_topic_result_set_followup(question: str, state: "Conversati
     return False
 
 
+def _looks_like_collection_elaboration_followup(
+    question: str,
+    state: "ConversationState | None",
+) -> bool:
+    if state is None:
+        return False
+    if state.last_result_set_entity_type != "文件" or not state.last_result_set_items:
+        return False
+    if not state.last_result_set_summary_text:
+        return False
+    if not is_answer_depth_followup(question):
+        return False
+    if has_explicit_single_file_result_reference(question):
+        return False
+    return not looks_like_result_set_comparison_followup(question)
+
+
 @dataclass
 class ConversationState:
     mode: str = "idle"
@@ -258,6 +276,9 @@ def detect_dialog_event(
         return DialogEvent(name="selected_candidate_followup", route_hint="normal_retrieval")
     if answer_mode == "decision":
         return DialogEvent(name="decision_request", route_hint="normal_retrieval")
+
+    if _looks_like_collection_elaboration_followup(question, state):
+        return DialogEvent(name="synthesis_request", route_hint="normal_retrieval")
 
     if file_topic_result_set_followup:
         return DialogEvent(name="result_set_followup", route_hint="normal_retrieval")

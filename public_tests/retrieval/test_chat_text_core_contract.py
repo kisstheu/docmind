@@ -8,6 +8,7 @@ from app.chat_text.core import (
     build_clean_merged_query,
     extract_strong_terms_from_question,
     extract_timeline_evidence_from_chunks,
+    is_answer_depth_followup,
     is_abstract_query,
     is_related_record_listing_request,
     is_result_expansion_followup,
@@ -152,6 +153,34 @@ def test_ordinary_content_terms_are_not_structural_anchors():
 def test_answer_depth_followups_do_not_depend_on_strong_terms(question):
     assert extract_strong_terms_from_question(question) == []
     assert is_result_expansion_followup(question) is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "再具体些",
+        "可以再具体些吗？",
+        "说得再具体一点",
+        "能否更详细一些？",
+        "展开说说",
+        "再详细说说。",
+    ],
+)
+def test_answer_depth_followup_recognizes_subjectless_natural_variants(question):
+    assert is_answer_depth_followup(question) is True
+    assert is_result_expansion_followup(question) is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "具体有哪些文件？",
+        "请详细分析新的合同议题。",
+        "第二份采购资料再具体说明一下。",
+    ],
+)
+def test_answer_depth_followup_rejects_subjectful_adjacent_requests(question):
+    assert is_answer_depth_followup(question) is False
 
 
 def test_timeline_evidence_keeps_first_seen_order_and_path_scoped_dedupe():

@@ -75,6 +75,7 @@ def _decide(
         ("它和第二个文件相比，哪个更适合当前目标？", "result_set_comparison_followup"),
         ("展开说说", "content_followup_question"),
         ("再详细说说。", "detail_explanation_request"),
+        ("可以再具体些吗？", "answer_depth_followup"),
         ("再总结一下。", "summary_followup_request"),
     ],
 )

@@ -504,6 +504,39 @@ def _run_turns(
     return allowed_paths, query_result_sets, client
 
 
+def test_runner_binds_collection_elaboration_to_the_previous_answer_file_set(
+    monkeypatch,
+    tmp_path,
+):
+    paths = ["合成岗位资料.md", "合成合同说明.md", "合成采购记录.md"]
+    state = _selectable_file_state(paths)
+    state.last_route = "normal_retrieval"
+    state.last_content_route = "normal_retrieval"
+    state.last_content_user_question = "是关于什么的？"
+    state.last_effective_search_query = "合成集合主题"
+    state.last_answer_text = "这些材料共同描述一个合成主题。"
+    state.last_answer_preview = state.last_answer_text
+    state.last_answer_type = None
+    state.last_result_set_summary_text = state.last_answer_text
+    state.last_result_set_summary_level = 1
+    state.last_result_set_focus_file = paths[0]
+
+    allowed, query_sets, client = _run_turns(
+        monkeypatch,
+        tmp_path,
+        questions=["可以再具体些吗？"],
+        repo_paths=paths,
+        state=state,
+    )
+
+    assert allowed == [set(paths)]
+    assert query_sets == [paths]
+    assert len(client.models.calls) == 1
+    assert "【集合范围约束】" in client.models.calls[0]
+    assert "不得收缩为单个文件" in client.models.calls[0]
+    assert all(path in client.models.calls[0] for path in paths)
+
+
 def _run_filename_sort_acceptance(
     monkeypatch,
     tmp_path,

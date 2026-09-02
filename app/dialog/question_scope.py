@@ -18,6 +18,7 @@ from app.dialog.task_semantics import (
     is_document_evaluation_request,
 )
 from app.dialog_utils import is_content_followup_question, is_summary_followup_request
+from app.chat_text.core import is_answer_depth_followup
 from app.chat_text.file_lookup import (
     has_explicit_focus_reference,
     looks_like_bare_content_question,
@@ -35,6 +36,7 @@ class _QuestionScopeState(Protocol):
     last_answer_preview: str | None
     last_result_set_selectable: bool | None
     last_result_set_focus_file: str | None
+    last_result_set_summary_text: str | None
     last_generated_result_items: list[str] | None
     last_generated_result_source_candidates: list[str] | None
     last_generated_result_source_hits: list[list[str]] | None
@@ -53,6 +55,7 @@ class QuestionSignals:
     result_set_comparison_followup: bool
     content_followup_question: bool
     detail_explanation_request: bool
+    answer_depth_followup: bool
     summary_followup_request: bool
     context_dependent_question: bool
     document_evaluation_request: bool
@@ -98,6 +101,7 @@ def analyze_question_signals(
         ),
         content_followup_question=is_content_followup_question(question),
         detail_explanation_request=is_detail_explanation_request(question),
+        answer_depth_followup=is_answer_depth_followup(question),
         summary_followup_request=is_summary_followup_request(question),
         context_dependent_question=is_context_dependent_question(
             question,
@@ -115,9 +119,15 @@ def decide_file_result_set_scope(
     current_focus_file: str | None,
     event_name: str,
 ) -> ScopeDecision:
+    collection_scope_continuation = bool(
+        signals.answer_depth_followup
+        and state.last_result_set_entity_type == "文件"
+        and state.last_result_set_items
+        and state.last_result_set_summary_text
+    )
     effective_focus_file = (
         None
-        if signals.standalone_general_question
+        if signals.standalone_general_question or collection_scope_continuation
         else current_focus_file or state.last_result_set_focus_file
     )
 
@@ -191,6 +201,8 @@ def decide_file_result_set_scope(
         and state.last_result_set_items
     ):
         result_scope_paths = tuple(state.last_result_set_items)
+    elif collection_scope_continuation:
+        result_scope_paths = tuple(state.last_result_set_items or ())
     elif (
         effective_focus_file
         and event_name == "content_followup"
@@ -252,7 +264,9 @@ def decide_file_result_set_scope(
     )
 
     return ScopeDecision(
-        clear_current_focus=signals.standalone_general_question,
+        clear_current_focus=(
+            signals.standalone_general_question or collection_scope_continuation
+        ),
         effective_focus_file=effective_focus_file,
         visible_file_paths=visible_file_paths,
         file_result_set_selection=file_result_set_selection,

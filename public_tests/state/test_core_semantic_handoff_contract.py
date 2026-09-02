@@ -19,6 +19,10 @@ from app.dialog.state_machine import ConversationState, detect_dialog_event
 from app.domain_dispatch_port import adapt_domain_content_query
 from app.domain_host import EmptyDomainHost
 from app.retrieval_flow.query import build_search_query
+from app.retrieval_flow.materials import (
+    build_retrieval_materials,
+    build_safe_final_prompt,
+)
 from bootstrap.domain_composition import create_domain_host
 from docmind_recruitment_plugin import PLUGIN_ID, RecruitmentJDPlugin
 from retrieval.search_engine import perform_retrieval
@@ -67,6 +71,174 @@ def _file_result_state(paths: list[str]) -> ConversationState:
         last_result_set_summary_text="这些材料整体围绕一个合成主题。",
         last_result_set_summary_level=1,
     )
+
+
+@pytest.mark.parametrize(
+    ("paths", "summary"),
+    [
+        (
+            ["合成岗位甲.md", "合成岗位乙.md"],
+            "这些材料共同描述候选要求。",
+        ),
+        (
+            ["合成合同甲.md", "合成合同乙.md"],
+            "这些材料共同描述履约约束。",
+        ),
+        (
+            ["合成采购甲.md", "合成采购乙.md"],
+            "这些材料共同描述采购条件。",
+        ),
+    ],
+)
+def test_subjectless_elaboration_inherits_previous_collection_answer_scope(
+    paths,
+    summary,
+):
+    state = _file_result_state(paths)
+    state.last_answer_text = summary
+    state.last_answer_preview = summary
+    state.last_result_set_summary_text = summary
+    state.last_result_set_focus_file = paths[0]
+    question = "可以再具体些吗？"
+
+    event = detect_dialog_event(
+        question,
+        state,
+        _CaptureLogger(),
+        focused_file=paths[0],
+    )
+    signals = analyze_question_signals(
+        question,
+        last_effective_search_query=state.last_effective_search_query,
+    )
+    scope = decide_file_result_set_scope(
+        question,
+        signals=signals,
+        state=state,
+        current_focus_file=paths[0],
+        event_name=event.name,
+    )
+
+    assert signals.answer_depth_followup is True
+    assert event.name == "synthesis_request"
+    assert scope.clear_current_focus is True
+    assert scope.effective_focus_file is None
+    assert scope.result_scope_paths == tuple(paths)
+    assert scope.query_result_set_items == tuple(paths)
+    assert scope.query_result_set_entity == "文件"
+
+
+def test_subjectful_detail_request_does_not_inherit_old_collection_scope():
+    paths = ["合成合同甲.md", "合成合同乙.md"]
+    state = _file_result_state(paths)
+    question = "请详细分析新的采购议题。"
+
+    event = detect_dialog_event(question, state, _CaptureLogger())
+    signals, scope = _scope_facts(question, state, event.name)
+
+    assert signals.answer_depth_followup is False
+    assert event.name != "synthesis_request"
+    assert scope.result_scope_paths is None
+    assert scope.query_result_set_items is None
+
+
+def test_explicit_file_detail_still_selects_one_item_after_collection_answer():
+    paths = ["合成资料甲.md", "合成资料乙.md", "合成资料丙.md"]
+    state = _file_result_state(paths)
+    question = "第二个文件再详细说说。"
+
+    event = detect_dialog_event(question, state, _CaptureLogger())
+    signals, scope = _scope_facts(question, state, event.name)
+
+    assert signals.answer_depth_followup is False
+    assert event.name == "result_set_followup"
+    assert scope.result_scope_paths == (paths[1],)
+
+
+def test_collection_elaboration_keeps_every_scoped_source_in_retrieval_and_prompt():
+    paths = ["合成岗位资料.md", "合成合同说明.md", "合成采购记录.md"]
+    state = _file_result_state(paths)
+    state.last_result_set_focus_file = paths[0]
+    question = "可以再具体些吗？"
+    event = detect_dialog_event(
+        question,
+        state,
+        _CaptureLogger(),
+        focused_file=paths[0],
+    )
+    signals = analyze_question_signals(
+        question,
+        last_effective_search_query=state.last_effective_search_query,
+    )
+    scope = decide_file_result_set_scope(
+        question,
+        signals=signals,
+        state=state,
+        current_focus_file=paths[0],
+        event_name=event.name,
+    )
+    logger = _CaptureLogger()
+    search_query, context_anchor = build_search_query(
+        question=question,
+        event=event,
+        flags=determine_query_flags(question),
+        memory_buffer=[],
+        last_effective_search_query=state.last_effective_search_query,
+        last_user_question=state.last_content_user_question,
+        last_answer_type=state.last_answer_type,
+        last_result_set_items=list(scope.query_result_set_items or ()),
+        last_result_set_entity_type=scope.query_result_set_entity,
+        logger=logger,
+        ollama_api_url="http://127.0.0.1:9",
+        ollama_model="synthetic-model",
+    )
+    now = datetime.now()
+    repo_state = SimpleNamespace(
+        paths=paths,
+        docs=["合成岗位内容", "合成合同内容", "合成采购内容"],
+        chunk_paths=paths,
+        chunk_texts=["合成岗位内容", "合成合同内容", "合成采购内容"],
+        chunk_file_times=[now, now, now],
+        chunk_embeddings=np.asarray(
+            [[1.0, 0.0], [-1.0, 0.0], [0.1, 0.0]],
+            dtype=float,
+        ),
+        chunk_meta=[
+            {"chunk_id": 0, "start": 0, "end": 6},
+            {"chunk_id": 0, "start": 0, "end": 6},
+            {"chunk_id": 0, "start": 0, "end": 6},
+        ],
+    )
+    materials = build_retrieval_materials(
+        question=question,
+        search_query=search_query,
+        context_anchor=context_anchor,
+        flags=determine_query_flags(question),
+        repo_state=repo_state,
+        model_emb=_EmbeddingStub(),
+        logger=logger,
+        current_focus_file=(None if scope.clear_current_focus else paths[0]),
+        event=event,
+        allowed_paths=set(scope.result_scope_paths or ()),
+    )
+    retrieved_paths = [
+        repo_state.chunk_paths[index] for index in materials["relevant_indices"]
+    ]
+    prompt = build_safe_final_prompt(
+        memory_buffer=["用户问：是关于什么的？", f"AI答：{state.last_answer_text}"],
+        current_focus_file=materials["current_focus_file"],
+        inventory_candidates_text=materials["inventory_candidates_text"],
+        context_text=materials["context_text"],
+        timeline_evidence_text=materials["timeline_evidence_text"],
+        question=question,
+        event_name=event.name,
+        result_set_items=list(scope.query_result_set_items or ()),
+    )
+
+    assert retrieved_paths == paths
+    assert "【集合范围约束】" in prompt
+    assert "不得收缩为单个文件" in prompt
+    assert all(path in prompt for path in paths)
 
 
 def _scope_facts(question: str, state: ConversationState, event_name: str):

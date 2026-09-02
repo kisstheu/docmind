@@ -52,11 +52,16 @@ def build_retrieval_materials(
     if not flags["skip_retrieval"]:
         event_name = getattr(event, "name", None)
         ensure_file_set_content_coverage = bool(
-            event_name == "result_set_followup"
-            and allowed_paths is not None
+            allowed_paths is not None
             and (
-                looks_like_all_items_file_set_content_question(question)
-                or looks_like_bare_content_question(question)
+                event_name == "synthesis_request"
+                or (
+                    event_name == "result_set_followup"
+                    and (
+                        looks_like_all_items_file_set_content_question(question)
+                        or looks_like_bare_content_question(question)
+                    )
+                )
             )
         )
         effective_allowed_paths = allowed_paths
@@ -157,7 +162,12 @@ def build_safe_final_prompt(
         )
     )
 
-    if safe_result_set_items and event_name in {"result_set_followup", "result_set_expansion_followup", "structured_request"}:
+    if safe_result_set_items and event_name in {
+        "result_set_followup",
+        "result_set_expansion_followup",
+        "structured_request",
+        "synthesis_request",
+    }:
         if is_file_set_content_operation:
             result_set_block = (
                 "【活动文件结果集】\n"
@@ -187,7 +197,7 @@ def build_safe_final_prompt(
                 "新增项必须有参考片段证据，并避免重复已知候选。\n"
                 "若没有新增，请明确说明“没有识别出新的实体”。\n\n"
             )
-        else:
+        elif event_name == "structured_request":
             result_set_block = (
                 "【上一轮候选集合】\n"
                 + "\n".join(f"- {item}" for item in safe_result_set_items[:20])
@@ -196,6 +206,15 @@ def build_safe_final_prompt(
                 "当前问题是在上一轮候选集合基础上做结构化整理。\n"
                 "请按候选集合逐项输出，不能漏项；若某项字段缺失，请写“未知”或“未明确”。\n"
                 "不要新增集合外实体。\n\n"
+            )
+        else:
+            result_set_block = (
+                "【当前活动文件集合】\n"
+                + "\n".join(f"- {item}" for item in safe_result_set_items[:20])
+                + "\n\n"
+                "【集合范围约束】\n"
+                "当前问题承接上一轮集合级回答。请继续以整个活动文件集合为语义范围，"
+                "只使用该集合内的参考片段展开，不得收缩为单个文件或扩展到集合外文件。\n\n"
             )
         constrained_context_text = result_set_block + constrained_context_text
 
