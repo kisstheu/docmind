@@ -67,6 +67,7 @@ class TableRenderOptions:
     wrap: bool = True
     balanced: bool = False
     column_widths: tuple[tuple[str, int], ...] = ()
+    missing_value: str = ""
 
 
 @dataclass(frozen=True)
@@ -136,6 +137,17 @@ def build_table_generation_config(generation_config):
     raise TypeError("unsupported generation config")
 
 
+def build_keyed_table_response_schema() -> dict[str, object]:
+    """Provider-compatible sparse cells for the same local table contract."""
+    schema = _build_google_table_response_schema()
+    schema["properties"]["rows"]["items"]["items"] = {
+        "type": "object",
+        "properties": {"column": {"type": "string"}, "value": {"type": "string"}},
+        "required": ["column", "value"],
+    }
+    return schema
+
+
 def _invalid(reason: str) -> TablePresentationValidation:
     return TablePresentationValidation(table=None, valid=False, reason=reason)
 
@@ -199,6 +211,20 @@ def validate_table_presentation(
     for row in rows:
         if not isinstance(row, list):
             return _invalid("row_not_array")
+        # Keyed cells are sparse: identity, never position or value content,
+        # determines the final column. Keep the positional contract unchanged.
+        if row and isinstance(row[0], Mapping):
+            keyed = {}
+            for cell in row:
+                if not isinstance(cell, Mapping) or set(cell) != {"column", "value"}:
+                    return _invalid("keyed_cell_fields")
+                column = cell["column"]
+                if not isinstance(column, str) or column not in normalized_columns:
+                    return _invalid("unknown_cell_column")
+                if column in keyed:
+                    return _invalid("duplicate_cell_column")
+                keyed[column] = cell["value"]
+            row = [keyed.get(column, "") for column in normalized_columns]
         if len(row) != len(normalized_columns):
             return _invalid("row_width")
         normalized_row: list[str] = []
@@ -608,7 +634,7 @@ def render_structured_table(
             column_options["max_width"] = balanced_max_width
         table.add_column(Text(column), **column_options)
     for row in table_data.rows:
-        table.add_row(*(Text(cell) for cell in row))
+        table.add_row(*(Text(cell or render_options.missing_value) for cell in row))
 
     output = StringIO()
     Console(
@@ -635,6 +661,7 @@ __all__ = [
     "TablePresentationValidation",
     "bind_structured_table_row_identities",
     "build_table_generation_config",
+    "build_keyed_table_response_schema",
     "parse_table_presentation",
     "refine_structured_table",
     "render_structured_table",

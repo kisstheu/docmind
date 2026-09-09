@@ -76,7 +76,7 @@ def test_comparison_presentation_and_selected_detail_through_runner(
         if len(calls) == 1:
             assert "【多来源比较与决策任务】" in contents
             assert "先在回答前部给出简短建议和关键取舍" in contents
-            assert "默认使用紧凑 Markdown 表格" in contents
+            assert "默认输出 comparison_table 结构化表格" in contents
             assert "不强制制造表格" in contents
             assert "同一句保留比较范围、指标和必要条件" in contents
             assert "未选对象在关键指标上更优但缺条件" in contents
@@ -222,12 +222,30 @@ def test_comparison_schema_uses_existing_fields_and_preserves_generation_options
     assert original.response_mime_type is None
     assert config.temperature == 0.4
     assert config.max_output_tokens == 4096
+    assert config.thinking_config.thinking_budget == 2048
     assert config.response_mime_type == "application/json"
     schema = config.response_schema
     assert set(schema["required"]) == set(schema["properties"])
     assert schema["properties"]["source_files"]["items"]["enum"] == ["01_合成甲.md", "02_合成乙.md"]
+    assert schema["properties"]["next_actions"]["type"] == "array"
+    row_schema = schema["properties"]["comparison_table"]["properties"]["rows"]["items"]
+    assert row_schema["properties"]["source_files"] == schema["properties"]["source_files"]
     assert types.Schema.model_validate(schema)
     assert build_comparison_generation_config({}, ["甲.md", "乙.md"])["max_output_tokens"] == 8192
+
+
+@pytest.mark.parametrize("kind", ["岗位", "合同方案", "设备"])
+def test_comparison_preserves_explicit_thinking_budget_and_reserves_default_output(kind):
+    from google.genai import types
+
+    sources = [f"01_合成{kind}甲.md", f"02_合成{kind}乙.md"]
+    original = types.GenerateContentConfig(thinking_config=types.ThinkingConfig(thinking_budget=512))
+    config = build_comparison_generation_config(original, sources)
+    assert config.thinking_config == original.thinking_config
+    default = build_comparison_generation_config({}, sources)
+    assert default["thinking_config"]["thinking_budget"] == 4096
+    explicit = {"thinking_config": {"thinking_budget": 0}}
+    assert build_comparison_generation_config(explicit, sources)["thinking_config"] == explicit["thinking_config"]
 
 
 @pytest.mark.parametrize("invalid", ['{"conclusion": "未完成"}', '{"conclusion":', '{"comparison": []}'])

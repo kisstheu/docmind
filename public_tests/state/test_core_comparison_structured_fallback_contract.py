@@ -15,6 +15,13 @@ from public_tests.state.test_repo_meta_generic_file_list_scope_contract import (
 )
 
 
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_nonstandard_json_table_value_cannot_bypass_corruption_guard(constant):
+    raw = '{"comparison": "甲支持离线，依据【01_甲.md】", "comparison_table": ' + constant + '}'
+    assert parse_decision_result(raw, comparison_source_files=["01_甲.md"]) is None
+    assert build_comparison_prose_fallback(raw, ["01_甲.md"]) is None
+
+
 def _drifted_response(kind, condition, missing, incompatible, variant):
     paths, facts, conclusion, raw = _fixture(kind, condition, missing, incompatible)
     if variant == "prose":

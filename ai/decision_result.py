@@ -6,7 +6,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from ai.generation_output import validate_generated_output
-from ai.table_presentation import MAX_TABLE_OUTPUT_TOKENS
+from ai.table_presentation import (
+    MAX_TABLE_OUTPUT_TOKENS, StructuredTable, TableRenderOptions, build_keyed_table_response_schema,
+    render_structured_table, validate_table_presentation,
+)
 
 
 _NO_SELECTION_MARKERS = (
@@ -68,6 +71,29 @@ def build_comparison_generation_config(generation_config, source_paths):
               if key.endswith("source_files") else {"type": "string"})
         for key in _COMPARISON_FIELDS
     }
+    properties["next_actions"] = {"type": "array", "items": {"type": "string"}}
+    table_schema = build_keyed_table_response_schema()
+    table_schema["nullable"] = True
+    keyed_cells = table_schema["properties"]["rows"]["items"]
+    table_schema["properties"]["rows"]["items"] = {
+        "type": "object",
+        "properties": {
+            "cells": keyed_cells,
+            "action_step": {"type": "integer", "nullable": True},
+            "source_files": properties["source_files"],
+        },
+        "required": ["cells", "action_step", "source_files"],
+    }
+    properties["comparison_table"] = table_schema
+    # Generate facts before deciding; the renderer still puts the conclusion
+    # first for the user. Row references can point to the subsequent plan.
+    properties = {
+        key: properties[key] for key in (
+            "comparison_table", "comparison", "differences", "missing_information",
+            "next_actions", "conclusion", "reason", "selected_candidate",
+            "selected_source_files", "source_files",
+        )
+    }
     token_limit = (
         generation_config.get("max_output_tokens") if isinstance(generation_config, Mapping)
         else getattr(generation_config, "max_output_tokens", None)
@@ -77,6 +103,21 @@ def build_comparison_generation_config(generation_config, source_paths):
         "response_schema": {"type": "object", "properties": properties, "required": list(properties)},
         "max_output_tokens": min(token_limit or MAX_TABLE_OUTPUT_TOKENS, MAX_TABLE_OUTPUT_TOKENS),
     }
+    thinking_config = (
+        generation_config.get("thinking_config") if isinstance(generation_config, Mapping)
+        else getattr(generation_config, "thinking_config", None)
+    )
+    if thinking_config is None:
+        # Automatic thinking can consume the entire shared output budget before
+        # the keyed rows finish. Reserve half the tokens for the validated payload;
+        # preserve an explicitly configured thinking policy unchanged.
+        thinking = {"thinking_budget": updates["max_output_tokens"] // 2}
+        if isinstance(generation_config, Mapping):
+            updates["thinking_config"] = thinking
+        else:
+            from google.genai.types import ThinkingConfig
+
+            updates["thinking_config"] = ThinkingConfig(**thinking)
     if isinstance(generation_config, Mapping):
         return {**generation_config, **updates}
     return generation_config.model_copy(update=updates)
@@ -91,26 +132,33 @@ def _unique_comparison_fields(pairs):
     return payload
 
 
+def _reject_comparison_constant(value):
+    raise ValueError("non-standard JSON constant")
+
+
 def _comparison_sections(
     answer_text: str, *, allow_partial: bool = False,
 ) -> dict[str, list[str]] | None:
     """JSON is authoritative when present; malformed objects must not become prose."""
     try:
-        payload = json.loads(answer_text, object_pairs_hook=_unique_comparison_fields)
+        payload = json.loads(
+            answer_text, object_pairs_hook=_unique_comparison_fields,
+            parse_constant=_reject_comparison_constant,
+        )
     except (ValueError, TypeError):
         return None
     if not isinstance(payload, dict):
         return None
-    if not set(payload) <= set(_COMPARISON_FIELDS):
+    if not set(payload) <= set(_COMPARISON_FIELDS) | {"comparison_table"}:
         return None
-    if not allow_partial and set(payload) != set(_COMPARISON_FIELDS):
+    if not allow_partial and not set(_COMPARISON_FIELDS) <= set(payload):
         return None
     sections = {}
     for key, alias in _COMPARISON_FIELDS.items():
         if key not in payload:
             continue
         value = payload[key]
-        if key.endswith("source_files"):
+        if key.endswith("source_files") or (key == "next_actions" and isinstance(value, list)):
             if not isinstance(value, list) or not all(isinstance(path, str) for path in value):
                 return None
             sections[alias] = value
@@ -118,6 +166,8 @@ def _comparison_sections(
             sections[alias] = [value.strip()]
         else:
             return None
+    if payload.get("comparison_table") is not None:
+        sections["comparison_table"] = [json.dumps(payload["comparison_table"], ensure_ascii=False)]
     return sections
 
 
@@ -137,6 +187,7 @@ class DecisionResult:
     missing_information: str = ""
     selected_source_files: tuple[str, ...] = ()
     next_actions: str = ""
+    comparison_table: StructuredTable | None = None
 
     @property
     def has_selection(self) -> bool:
@@ -311,6 +362,57 @@ def _referenced_context_files(text: str, source_paths) -> tuple[str, ...]:
     ))
 
 
+def _comparison_table(sections, source_paths) -> StructuredTable | None:
+    """Bind keyed facts and row actions before using the existing table wheel.
+
+    The global plan owns action wording, conditions and order. Row actions
+    contain only a 1-based reference to a complete step of that plan.
+    Selection provenance is deliberately not used to infer action priority.
+    """
+    raw = _section_text(sections, "comparison_table")
+    if not raw:
+        return None
+    payload = json.loads(raw)
+    if not isinstance(payload, dict) or set(payload) != {"columns", "rows"}:
+        return None
+    columns, rows = payload["columns"], payload["rows"]
+    if not isinstance(columns, list) or not isinstance(rows, list):
+        return None
+    actions = sections.get("next_actions", [])
+    bound_rows = []
+    facts = []
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"cells", "action_step", "source_files"}:
+            return None
+        cells, step, citations = row["cells"], row["action_step"], row["source_files"]
+        if (not isinstance(cells, list) or not isinstance(citations, list) or not citations
+                or any(not isinstance(path, str) or path not in source_paths for path in citations)):
+            return None
+        if step is not None and (type(step) is not int or not 1 <= step <= len(actions)):
+            return None
+        bound = []
+        for cell in cells:
+            if (not isinstance(cell, dict) or set(cell) != {"column", "value"}
+                    or not isinstance(cell["column"], str) or not isinstance(cell["value"], str)):
+                return None
+            column, value = cell["column"], cell["value"]
+            bound.append({"column": column, "value": value})
+            facts.append(value)
+        action = actions[step - 1] if step is not None else ""
+        source = "\n".join(citations)
+        bound.extend(({"column": "下一步", "value": action}, {"column": "来源", "value": source}))
+        facts.extend((action, source))
+        bound_rows.append(bound)
+    validation = validate_table_presentation(
+        {"columns": [*columns, "下一步", "来源"], "rows": bound_rows}, previous_answer="\n".join(facts),
+    )
+    return validation.table if validation.valid else None
+
+
+def _table_evidence(table: StructuredTable | None) -> str:
+    return "\n".join(cell for row in table.rows for cell in row) if table else ""
+
+
 def parse_decision_result(
     answer_text: str, *, user_question: str = "", comparison_source_files=None,
 ) -> DecisionResult | None:
@@ -339,6 +441,9 @@ def parse_decision_result(
 
     if comparison_source_files:
         comparison = _section_text(sections, "comparison")
+        table = _comparison_table(sections, comparison_source_files)
+        if "comparison_table" in sections and table is None:
+            return None
         differences = _section_text(sections, "differences") or _section_text(sections, "risks")
         missing = _section_text(sections, "missing_information") or _section_text(sections, "unverified_requirements")
         selected_sources = _referenced_context_files(
@@ -349,7 +454,7 @@ def parse_decision_result(
         # Selection provenance is narrower than the evidence used by the answer.
         # Bind only sources actually cited in delivered sections, never the entire retrieval set.
         evidence_text = "\n".join((
-            conclusion, _section_text(sections, "reason"), comparison, differences,
+            conclusion, _section_text(sections, "reason"), comparison, differences, _table_evidence(table),
             missing, _section_text(sections, "next_actions"), _section_text(sections, "sources"),
             _section_text(sections, "selected_sources") if candidate else "",
         ))
@@ -367,6 +472,7 @@ def parse_decision_result(
             missing_information=missing,
             selected_source_files=selected_sources if candidate else (),
             next_actions=_section_text(sections, "next_actions"),
+            comparison_table=table,
         )
 
     explicit_facts = extract_explicit_user_facts(user_question)
@@ -417,9 +523,11 @@ def build_comparison_prose_fallback(answer_text: str, source_paths) -> DecisionR
             for key in ("conclusion", "reason", "comparison", "differences",
                         "missing_information", "next_actions")
         }
-        if not any(not _is_empty_value(value) for value in fields.values()):
+        table = _comparison_table(sections, source_paths)
+        if table is None and not any(not _is_empty_value(value) for value in fields.values()):
             return None
-        evidence = "\n".join((*fields.values(), _section_text(sections, "sources")))
+        evidence = "\n".join((*fields.values(), _section_text(sections, "sources"), _table_evidence(table)))
+        fields["comparison_table"] = table
     elif text.startswith("["):
         return None
     else:
@@ -440,8 +548,15 @@ def render_decision_result(result: DecisionResult) -> str:
             blocks.append(f"当前比较选定对象：**{result.selected_candidate}**（适用条件见下文）。")
         if result.reason:
             blocks.append(result.reason)
+        comparison = result.comparison
+        if result.comparison_table is not None and (
+            len(result.comparison_table.rows) > 1 or _is_empty_value(comparison)
+        ):
+            comparison = render_structured_table(
+                result.comparison_table, TableRenderOptions(missing_value="待确认"),
+            )
         for label, value in (
-            ("横向比较", result.comparison),
+            ("横向比较", comparison),
             ("差异与异常", result.differences),
             ("待确认信息", result.missing_information),
             ("下一步行动", result.next_actions),

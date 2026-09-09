@@ -24,6 +24,173 @@ from ai.table_presentation import (
 from app.dialog.task_semantics import is_table_presentation_request
 
 
+@pytest.mark.parametrize("field_a,field_b,value", [
+    ("办公方式", "入职时间", "需协商"),
+    ("结算方式", "履行期限", "需协商"),
+    ("接口类型", "续航时间", "需协商"),
+])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_sparse_keyed_fields_preserve_identity_and_missing_cells(field_a, field_b, value, reverse):
+    columns = ["对象", field_a, field_b]
+    cells = [{"column": "对象", "value": "合成甲"}, {"column": field_a, "value": value}]
+    if reverse:
+        cells.reverse()
+    result = validate_table_presentation(
+        {"columns": columns, "rows": [cells]}, previous_answer=f"合成甲 {value}",
+    )
+    assert result.valid
+    assert result.table.rows == (("合成甲", value, ""),)
+    assert "待确认" in render_structured_table(result.table, TableRenderOptions(missing_value="待确认"))
+    assert result.table.rows[0][-1] == ""  # the display marker does not invent a fact
+    reordered = refine_structured_table(result.table, f"把{field_b}列放到最前面")
+    assert reordered.valid
+    assert reordered.table.rows[0] == ("", "合成甲", value)
+
+
+@pytest.mark.parametrize("cells,reason", [
+    ([{"column": "A", "value": "值"}, {"column": "A", "value": "另值"}], "duplicate_cell_column"),
+    ([{"column": "C", "value": "值"}], "unknown_cell_column"),
+    ([{"column": "A", "value": "值"}, "值"], "keyed_cell_fields"),
+    ([{"column": "A", "value": 1}], "cell_type"),
+    ([{"column": "A", "value": "臆造事实"}], "cell_not_in_previous_answer"),
+])
+def test_keyed_fields_reject_ambiguous_or_unbound_values(cells, reason):
+    result = validate_table_presentation(
+        {"columns": ["A", "B"], "rows": [cells]}, previous_answer="值 另值",
+    )
+    assert not result.valid and result.reason == reason
+
+
+def _keyed_decision(kind):
+    paths = [f"{i:02d}_合成{kind}{name}.md" for i, name in enumerate("甲乙", 1)]
+    condition = {"岗位": "支持远程", "合同方案": "一年内结束", "设备": "支持离线"}[kind]
+    actions = [f"先确认合成{kind}甲是否{condition}，若满足则选甲。",
+               f"仅当甲不满足{condition}时，选择合成{kind}乙作为备选。"]
+    payload = {
+        "conclusion": f"{actions[0]}甲95分，条件成立时更优；{actions[1]}",
+        "selected_candidate": f"合成{kind}乙", "reason": "乙条件已明确，但甲潜在更优。",
+        "comparison": f"甲95分，条件待确认，依据【{paths[0]}】；乙90分，条件明确，依据【{paths[1]}】。",
+        "differences": "", "missing_information": f"甲是否{condition}待确认。",
+        "next_actions": actions, "selected_source_files": [paths[1]], "source_files": paths,
+        "comparison_table": {
+            "columns": ["对象", "状态", "分数", "条件"],
+            "rows": [
+                {"cells": [{"column": "分数", "value": "95"},
+                 {"column": "对象", "value": f"合成{kind}甲"},
+                 {"column": "状态", "value": "潜在更优，待确认"}], "action_step": 1, "source_files": [paths[0]]},
+                {"cells": [{"column": "对象", "value": f"合成{kind}乙"},
+                 {"column": "状态", "value": "条件明确的备选"}, {"column": "分数", "value": "90"},
+                 {"column": "条件", "value": condition}], "action_step": 2, "source_files": [paths[1]]},
+            ],
+        },
+    }
+    return paths, payload
+
+
+@pytest.mark.parametrize("kind", ["岗位", "合同方案", "设备"])
+def test_decision_reuses_table_wheel_and_global_actions_with_selected_scope(kind, monkeypatch, tmp_path):
+    from ai.decision_result import parse_decision_result, render_decision_result
+    from app import chat_loop as runtime
+    from app.dialog.state_machine import ConversationState
+    from public_tests.state.test_repo_meta_generic_file_list_scope_contract import _run_turns
+
+    paths, payload = _keyed_decision(kind)
+    raw = json.dumps(payload, ensure_ascii=False)
+    result = parse_decision_result(raw, comparison_source_files=paths)
+    table = result.comparison_table
+    assert table.rows[0][2:4] == ("95", "")
+    assert table.rows[1][4] == payload["next_actions"][1]
+    answer = render_decision_result(result)
+    assert render_structured_table(table, TableRenderOptions(missing_value="待确认")) in answer
+    assert answer.startswith("建议：\n\n" + payload["conclusion"])
+    assert result.source_files == tuple(paths) and result.selected_source_files == (paths[1],)
+    assert all(path in answer for path in paths)
+    calls = []
+
+    def generate_content(*, contents, **kwargs):
+        calls.append(contents)
+        if len(calls) == 1:
+            return SimpleNamespace(text=raw)
+        assert runtime.conversation_state.last_answer_text == answer
+        assert runtime.conversation_state.last_answer_source_files == paths
+        assert runtime.conversation_state.last_selected_source_files == [paths[1]]
+        context = contents.split("【参考片段】:", 1)[1].split("【用户最新提问】", 1)[0]
+        assert paths[1] in context and paths[0] not in context
+        return SimpleNamespace(text=f"乙条件已明确，依据【{paths[1]}】。")
+
+    _run_turns(
+        monkeypatch, tmp_path, questions=[f"比较这几个{kind}并推荐一个", "详细分析一下"],
+        repo_paths=paths, repo_chunks=["甲95分，条件待确认", "乙90分，条件明确"],
+        state=ConversationState(), client=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content)),
+    )
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("kind", ["岗位", "合同方案", "设备"])
+@pytest.mark.parametrize("bad_action", ["无条件优先执行", 0, 99, True])
+def test_independent_row_action_cannot_override_global_plan(kind, bad_action):
+    from ai.decision_result import build_comparison_prose_fallback, parse_decision_result, render_decision_result
+
+    paths, payload = _keyed_decision(kind)
+    payload["comparison_table"]["rows"][1]["action_step"] = bad_action
+    raw = json.dumps(payload, ensure_ascii=False)
+    assert parse_decision_result(raw, comparison_source_files=paths) is None
+    result = build_comparison_prose_fallback(raw, paths)
+    assert result.comparison_table is None and result.selected_candidate is None
+    answer = render_decision_result(result)
+    assert payload["comparison"] in answer and "\n".join(payload["next_actions"]) in answer
+    assert "无条件优先执行" not in answer
+
+
+@pytest.mark.parametrize("kind", ["岗位", "合同方案", "设备"])
+def test_optional_table_and_partial_structure_keep_safe_content_without_selection(kind):
+    from ai.decision_result import build_comparison_prose_fallback, parse_decision_result, render_decision_result
+
+    paths, payload = _keyed_decision(kind)
+    del payload["selected_candidate"]
+    partial = build_comparison_prose_fallback(json.dumps(payload, ensure_ascii=False), paths)
+    assert partial.comparison_table.rows[0][3] == ""
+    assert partial.selected_source_files == ()
+    assert partial.source_files == tuple(paths)
+    payload["selected_candidate"] = ""
+    payload["comparison_table"] = None
+    prose = parse_decision_result(json.dumps(payload, ensure_ascii=False), comparison_source_files=paths)
+    assert payload["comparison"] in render_decision_result(prose)
+    _, original = _keyed_decision(kind)
+    original["comparison_table"]["rows"] = original["comparison_table"]["rows"][:1]
+    single = parse_decision_result(json.dumps(original, ensure_ascii=False), comparison_source_files=paths)
+    assert original["comparison"] in render_decision_result(single)
+    assert "─" not in render_decision_result(single)
+
+
+def test_keyed_comparison_rejects_fabricated_row_source_and_corrupted_json():
+    from ai.decision_result import build_comparison_prose_fallback, parse_decision_result
+
+    paths, payload = _keyed_decision("设备")
+    payload["comparison_table"]["rows"][0]["source_files"] = ["99_臆造来源.md"]
+    raw = json.dumps(payload, ensure_ascii=False)
+    assert parse_decision_result(raw, comparison_source_files=paths) is None
+    fallback = build_comparison_prose_fallback(raw, paths)
+    assert fallback.comparison_table is None
+    assert "99_臆造来源.md" not in fallback.source_files
+    assert build_comparison_prose_fallback(raw[:-5], paths) is None
+    assert build_comparison_prose_fallback(raw.replace('"95"', '"95", "value": "90"'), paths) is None
+
+
+def test_table_only_partial_output_retains_keyed_facts_without_creating_selection():
+    from ai.decision_result import build_comparison_prose_fallback, render_decision_result
+
+    paths, payload = _keyed_decision("设备")
+    table = payload["comparison_table"]
+    table["rows"] = table["rows"][:1]
+    table["rows"][0]["action_step"] = None
+    result = build_comparison_prose_fallback(json.dumps({"comparison_table": table}, ensure_ascii=False), paths)
+    assert result.source_files == (paths[0],)
+    assert result.selected_source_files == () and result.selected_candidate is None
+    assert "合成设备甲" in render_decision_result(result)
+    assert result.comparison_table.rows[0][2:4] == ("95", "")
+
+
 def test_valid_multiline_chinese_table_is_locally_rendered_stably():
     previous_answer = "合成项甲负责接口，合成项乙负责数据处理。"
     validation = validate_table_presentation(
