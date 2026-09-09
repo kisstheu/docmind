@@ -411,7 +411,7 @@ def update_state_after_retrieval_answer(
         logger.debug(
             f"🧪 [选择状态] candidate={selected_candidate} | sources={state.last_selected_source_files}"
         )
-    elif (event_name or "").strip() == "decision_request":
+    elif is_comparison_decision or (event_name or "").strip() == "decision_request":
         state.last_selected_candidate = None
         state.last_selected_source_files = None
         logger.debug("🧪 [选择状态] 本轮未形成可靠选择，不写入推荐焦点")
@@ -431,7 +431,7 @@ def update_state_after_retrieval_answer(
     )
     answer_type = (
         None
-        if is_synthesis_answer or is_result_set_comparison_answer or is_result_set_item_answer
+        if is_synthesis_answer or is_comparison_decision or is_result_set_comparison_answer or is_result_set_item_answer
         else inferred_answer_type
     )
     state.last_answer_type = answer_type

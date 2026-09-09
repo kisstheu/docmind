@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+
+from ai.table_presentation import MAX_TABLE_OUTPUT_TOKENS
 
 
 _NO_SELECTION_MARKERS = (
@@ -36,6 +40,7 @@ _FIELD_ALIASES = {
     "差异与异常": "differences",
     "待确认信息": "missing_information",
     "推荐对象来源": "selected_sources",
+    "下一步行动": "next_actions",
 }
 _UNRELIABLE_CANDIDATE_MARKERS = (
     "根据", "综合", "考虑", "因此", "所以", "以下", "最为匹配", "较为匹配",
@@ -46,6 +51,56 @@ _FILE_PATTERN = re.compile(
     r"(?:txt|md|pdf|doc|docx|xls|xlsx|csv|ppt|pptx|png|jpg|jpeg|bmp|webp))\b",
     flags=re.IGNORECASE,
 )
+
+_COMPARISON_FIELDS = {
+    "conclusion": "conclusion", "selected_candidate": "candidate:推荐对象",
+    "reason": "reason", "comparison": "comparison", "differences": "differences",
+    "missing_information": "missing_information", "next_actions": "next_actions",
+    "selected_source_files": "selected_sources", "source_files": "sources",
+}
+
+
+def build_comparison_generation_config(generation_config, source_paths):
+    """Constrain the existing decision fields, without introducing a domain schema."""
+    properties = {
+        key: ({"type": "array", "items": {"type": "string", "enum": list(source_paths)}}
+              if key.endswith("source_files") else {"type": "string"})
+        for key in _COMPARISON_FIELDS
+    }
+    token_limit = (
+        generation_config.get("max_output_tokens") if isinstance(generation_config, Mapping)
+        else getattr(generation_config, "max_output_tokens", None)
+    )
+    updates = {
+        "response_mime_type": "application/json",
+        "response_schema": {"type": "object", "properties": properties, "required": list(properties)},
+        "max_output_tokens": min(token_limit or MAX_TABLE_OUTPUT_TOKENS, MAX_TABLE_OUTPUT_TOKENS),
+    }
+    if isinstance(generation_config, Mapping):
+        return {**generation_config, **updates}
+    return generation_config.model_copy(update=updates)
+
+
+def _comparison_sections(answer_text: str) -> dict[str, list[str]] | None:
+    """JSON is authoritative when present; malformed objects must not become prose."""
+    try:
+        payload = json.loads(answer_text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict) or set(payload) != set(_COMPARISON_FIELDS):
+        return None
+    sections = {}
+    for key, alias in _COMPARISON_FIELDS.items():
+        value = payload[key]
+        if key.endswith("source_files"):
+            if not isinstance(value, list) or not all(isinstance(path, str) for path in value):
+                return None
+            sections[alias] = value
+        elif isinstance(value, str):
+            sections[alias] = [value.strip()]
+        else:
+            return None
+    return sections
 
 
 @dataclass(frozen=True)
@@ -63,6 +118,7 @@ class DecisionResult:
     differences: str = ""
     missing_information: str = ""
     selected_source_files: tuple[str, ...] = ()
+    next_actions: str = ""
 
     @property
     def has_selection(self) -> bool:
@@ -240,7 +296,11 @@ def _referenced_context_files(text: str, source_paths) -> tuple[str, ...]:
 def parse_decision_result(
     answer_text: str, *, user_question: str = "", comparison_source_files=None,
 ) -> DecisionResult | None:
-    sections = _extract_sections(answer_text, preserve_preamble=bool(comparison_source_files))
+    structured_comparison = bool(comparison_source_files) and (answer_text or "").lstrip().startswith("{")
+    sections = (
+        _comparison_sections(answer_text) if structured_comparison else
+        _extract_sections(answer_text, preserve_preamble=bool(comparison_source_files))
+    )
     if not sections:
         return None
 
@@ -268,7 +328,7 @@ def parse_decision_result(
         # Bind only sources actually cited in delivered sections, never the entire retrieval set.
         evidence_text = "\n".join((
             conclusion, _section_text(sections, "reason"), comparison, differences,
-            missing, _section_text(sections, "sources"),
+            missing, _section_text(sections, "next_actions"), _section_text(sections, "sources"),
             _section_text(sections, "selected_sources") if candidate else "",
         ))
         return DecisionResult(
@@ -281,6 +341,7 @@ def parse_decision_result(
             differences=differences,
             missing_information=missing,
             selected_source_files=selected_sources if candidate else (),
+            next_actions=_section_text(sections, "next_actions"),
         )
 
     explicit_facts = extract_explicit_user_facts(user_question)
@@ -307,16 +368,17 @@ def parse_decision_result(
 def render_decision_result(result: DecisionResult) -> str:
     if result.comparison_requested:
         blocks = []
-        if result.has_selection:
-            blocks.append(f"我更推荐 **{result.selected_candidate}**。")
         if result.conclusion:
-            blocks.append(result.conclusion)
+            blocks.append(f"建议：\n\n{result.conclusion}")
+        elif result.has_selection:
+            blocks.append(f"当前比较选定对象：**{result.selected_candidate}**（适用条件见下文）。")
         if result.reason:
             blocks.append(result.reason)
         for label, value in (
             ("横向比较", result.comparison),
             ("差异与异常", result.differences),
             ("待确认信息", result.missing_information),
+            ("下一步行动", result.next_actions),
         ):
             if not _is_empty_value(value):
                 blocks.append(f"{label}：\n\n{value}")
@@ -362,6 +424,7 @@ def render_decision_result(result: DecisionResult) -> str:
 
 __all__ = [
     "DecisionResult",
+    "build_comparison_generation_config",
     "extract_explicit_user_facts",
     "parse_decision_result",
     "render_explicit_user_facts",

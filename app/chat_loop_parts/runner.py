@@ -31,7 +31,7 @@ from ai.table_presentation import (
 )
 from ai.repo_meta.category import resolve_repo_content_category_scope
 from ai.structured_skill_summary import summarize_structured_skill_summary_with_remote
-from ai.decision_result import parse_decision_result, render_decision_result
+from ai.decision_result import build_comparison_generation_config, parse_decision_result, render_decision_result
 from app.dialog_state_machine import ConversationState, apply_event_to_state, detect_dialog_event
 from app.dialog.question_scope import (
     analyze_question_signals,
@@ -1232,7 +1232,7 @@ def run_chat_loop(
             ))
             comparison_source_files = (
                 decision_source_paths
-                if event.name == "decision_request"
+                if event.name in {"decision_request", "action_request"}
                 and needs_multi_source_decision_delivery(question, decision_source_paths)
                 else None
             )
@@ -1252,6 +1252,10 @@ def run_chat_loop(
                 comparison_source_files=comparison_source_files,
             )
             generation_config = chat_config
+            if comparison_source_files:
+                generation_config = build_comparison_generation_config(
+                    chat_config, [redact_sensitive_text(path) for path in comparison_source_files],
+                )
             if structured_enumeration_requested:
                 final_prompt = build_structured_generated_enumeration_prompt(
                     final_prompt,
@@ -1352,7 +1356,7 @@ def run_chat_loop(
                         "🛡️ [文件集合属性覆盖守门] 生成结果漏项或越界，已回退为全成员未知回答"
                     )
             decision_result = None
-            if event.name == "decision_request":
+            if output_validation.valid and (event.name == "decision_request" or comparison_source_files):
                 decision_result = parse_decision_result(
                     answer_text, user_question=question,
                     comparison_source_files=comparison_source_files,
@@ -1366,6 +1370,9 @@ def run_chat_loop(
                     )
                 else:
                     logger.warning("⚠️ [结构化决策结果] 远程回答缺少可解析字段，不写入选择状态")
+                    if comparison_source_files:
+                        answer_text = "本轮未生成可可靠呈现的比较结果，请重试。"
+                        generation_result_valid = False
             print_answer(answer_text, start_qa)
             append_memory(memory_buffer, question, answer_text)
             if not generation_result_valid:

@@ -200,10 +200,15 @@ def needs_multi_source_decision_delivery(question: str, source_paths) -> bool:
         "0", "false", "off",
     }:
         return False
-    return (
-        is_comparison_or_ranking_request(question)
-        and len(set(source_paths)) > 1
+    q = _normalize(question)
+    # An action request can ask for a relative priority without saying “compare”.
+    # Require both a collection and an interrogative priority, not domain nouns
+    # or a factual mention of priority in a single object's documentation.
+    collection_priority = any(term in q for term in (*_COLLECTION_REFERENCES, "一批", "几个")) and bool(
+        re.search(r"(?:优先|先)(?:联系|选择|考虑|采用|确认|处理)(?:谁|哪)", q)
+        or re.search(r"(?:谁|哪个|哪一个|哪项).{0,8}(?:优先|先)(?:联系|选择|考虑|采用|确认|处理)", q)
     )
+    return (is_comparison_or_ranking_request(q) or collection_priority) and len(set(source_paths)) > 1
 
 
 def is_collection_synthesis_request(question: str, *, has_collection_context: bool = False) -> bool:
