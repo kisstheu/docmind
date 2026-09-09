@@ -37,7 +37,10 @@ from app.dialog.question_scope import (
     analyze_question_signals,
     decide_file_result_set_scope,
 )
-from app.dialog.task_semantics import is_table_presentation_request
+from app.dialog.task_semantics import (
+    is_table_presentation_request,
+    needs_multi_source_decision_delivery,
+)
 from app.dialog.result_set import (
     build_file_result_set_metadata_detail,
     build_structured_generated_enumeration_prompt,
@@ -1224,6 +1227,15 @@ def run_chat_loop(
                     f"当前选中对象={generation_result_set_items[0]} | "
                     f"来源文件={selected_file_name}"
                 )
+            decision_source_paths = list(dict.fromkeys(
+                item.path for item in (materials.get("context_source_candidates") or ())
+            ))
+            comparison_source_files = (
+                decision_source_paths
+                if event.name == "decision_request"
+                and needs_multi_source_decision_delivery(question, decision_source_paths)
+                else None
+            )
             final_prompt = build_safe_final_prompt(
                 memory_buffer=memory_buffer,
                 current_focus_file=generation_focus_file,
@@ -1237,6 +1249,7 @@ def run_chat_loop(
                 answer_entity_followup=scope_decision.answer_entity_followup,
                 selected_candidate=runtime.conversation_state.last_selected_candidate,
                 selected_source_files=runtime.conversation_state.last_selected_source_files,
+                comparison_source_files=comparison_source_files,
             )
             generation_config = chat_config
             if structured_enumeration_requested:
@@ -1340,7 +1353,10 @@ def run_chat_loop(
                     )
             decision_result = None
             if event.name == "decision_request":
-                decision_result = parse_decision_result(answer_text, user_question=question)
+                decision_result = parse_decision_result(
+                    answer_text, user_question=question,
+                    comparison_source_files=comparison_source_files,
+                )
                 if decision_result is not None:
                     answer_text = render_decision_result(decision_result)
                     logger.info(

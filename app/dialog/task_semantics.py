@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 
 from ai.table_presentation import StructuredTable, refine_structured_table
@@ -191,6 +192,18 @@ def is_comparison_or_ranking_request(question: str) -> bool:
     if any(term in q for term in ("排序", "排名", "按匹配度", "从高到低", "从低到高")):
         return True
     return bool(re.search(r"(?:哪个|哪一个|哪份|哪项).{0,10}(?:更|最)(?:合适|适合|匹配|优)", q))
+
+
+def needs_multi_source_decision_delivery(question: str, source_paths) -> bool:
+    """Delivery scope follows comparison intent and available evidence, not selection count."""
+    if os.getenv("DOCMIND_MULTI_SOURCE_DECISION_DELIVERY", "1").strip().lower() in {
+        "0", "false", "off",
+    }:
+        return False
+    return (
+        is_comparison_or_ranking_request(question)
+        and len(set(source_paths)) > 1
+    )
 
 
 def is_collection_synthesis_request(question: str, *, has_collection_context: bool = False) -> bool:

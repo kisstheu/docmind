@@ -397,8 +397,15 @@ def update_state_after_retrieval_answer(
     if structured_decision is None and (event_name or "").strip() == "decision_request":
         structured_decision = parse_decision_result(answer_text, user_question=question)
     selected_candidate = getattr(structured_decision, "selected_candidate", None)
+    is_comparison_decision = bool(getattr(structured_decision, "comparison_requested", False))
+    if is_comparison_decision:
+        state.last_answer_source_files = list(structured_decision.source_files) or None
     if selected_candidate:
-        selected_sources = list(getattr(structured_decision, "source_files", ()) or ())
+        selected_sources = list(
+            structured_decision.selected_source_files
+            if is_comparison_decision
+            else getattr(structured_decision, "source_files", ()) or ()
+        )
         state.last_selected_candidate = selected_candidate
         state.last_selected_source_files = selected_sources or None
         logger.debug(

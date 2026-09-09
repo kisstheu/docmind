@@ -49,6 +49,7 @@ def build_final_prompt(
     result_set_items=None,
     selected_candidate=None,
     selected_source_files=None,
+    comparison_source_files=None,
 ):
     focus_injection = build_focus_injection(current_focus_file)
 
@@ -94,6 +95,31 @@ def build_final_prompt(
             "严格区分用户所问实体与其属性、条件、原因、措施等相邻概念。"
             "标题、联系人、作者、文件名等身份信息不能冒充用户所问的要求、条件、能力或属性。"
             "证据覆盖不足时明确范围，不得补写。\n\n"
+        )
+    elif event_name == "decision_request" and comparison_source_files:
+        focus_injection = ""
+        task_constraint = (
+            "【多来源比较与决策任务】\n"
+            "用户要求跨来源比较。推荐数量不能收缩比较范围；先逐一核对下面各来源，"
+            "交付支撑决策的主要比较事实，再给建议。可以使用表格或分项，保留未选对象。"
+            "比较维度从用户条件和已有证据归纳，对齐含义相同的字段与表达；"
+            "明确不符合目标的事实、口径差异、异常和缺失信息，并标注对应来源。"
+            "不同口径仅在材料提供换算依据时统一并说明计算，否则提示不可直接比较。"
+            "区分用户条件、材料事实和待确认信息；不得将候选要求反向补成用户能力，"
+            "也不得将兴趣或方向对应当成已经满足要求。不要套用个人能力匹配的固定段落。"
+            "只要求比较时不必强行推荐；不能可靠选择时仍须保留已完成的比较。\n"
+            "逐行使用以下字段，字段内容可跨多行：\n"
+            "推荐结论：<基于比较的结论或暂不能选择的原因>\n"
+            "推荐对象：<最终选定的候选；未选定写无>\n"
+            "推荐理由：<建立在可见比较事实上的理由>\n"
+            "横向比较：<逐一覆盖相关对象的主要事实，可用表格；逐项标注来源>\n"
+            "差异与异常：<包含未选对象的不匹配和不可直接比较之处；标注来源>\n"
+            "待确认信息：<各对象的缺失信息及其对决策的影响；区分检索未见和原文明确缺失>\n"
+            "推荐对象来源：<仅选定对象的来源；未选定写无>\n"
+            "来源文件：<所有参与关键比较结论的来源，不能只列推荐对象来源>\n"
+            "所有来源必须逐字使用下列文件路径，不得省略编号或改写：\n"
+            + "\n".join(f"- {path}" for path in comparison_source_files)
+            + "\n\n"
         )
     elif event_name == "decision_request":
         task_constraint = (

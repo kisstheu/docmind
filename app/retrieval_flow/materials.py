@@ -204,6 +204,7 @@ def build_safe_final_prompt(
     answer_entity_followup: bool = False,
     selected_candidate: str | None = None,
     selected_source_files: list[str] | None = None,
+    comparison_source_files: list[str] | None = None,
 ) -> str:
     safe_memory_buffer = [redact_sensitive_text(x) for x in memory_buffer]
     safe_inventory_candidates_text = redact_sensitive_text(inventory_candidates_text)
@@ -330,4 +331,5 @@ def build_safe_final_prompt(
         result_set_items=safe_result_set_items,
         selected_candidate=redact_sensitive_text(selected_candidate or ""),
         selected_source_files=[redact_sensitive_text(x) for x in (selected_source_files or [])],
+        comparison_source_files=[redact_sensitive_text(x) for x in (comparison_source_files or [])],
     )

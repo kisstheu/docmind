@@ -32,6 +32,10 @@ _FIELD_ALIASES = {
     "明显差距或风险": "risks",
     "差距或风险": "risks",
     "来源文件": "sources",
+    "横向比较": "comparison",
+    "差异与异常": "differences",
+    "待确认信息": "missing_information",
+    "推荐对象来源": "selected_sources",
 }
 _UNRELIABLE_CANDIDATE_MARKERS = (
     "根据", "综合", "考虑", "因此", "所以", "以下", "最为匹配", "较为匹配",
@@ -54,6 +58,11 @@ class DecisionResult:
     unverified_requirements: str = ""
     risks: str = ""
     source_files: tuple[str, ...] = ()
+    comparison_requested: bool = False
+    comparison: str = ""
+    differences: str = ""
+    missing_information: str = ""
+    selected_source_files: tuple[str, ...] = ()
 
     @property
     def has_selection(self) -> bool:
@@ -81,14 +90,14 @@ def _is_reliable_candidate(value: str) -> bool:
     return bool(re.search(r"[A-Za-z0-9\u4e00-\u9fa5]", candidate))
 
 
-def _extract_sections(answer_text: str) -> dict[str, list[str]]:
+def _extract_sections(answer_text: str, *, preserve_preamble: bool = False) -> dict[str, list[str]]:
     labels = "|".join(sorted((re.escape(label) for label in _FIELD_ALIASES), key=len, reverse=True))
     header_re = re.compile(
         rf"^\s*(?:#{{1,6}}\s*)?(?:[-*]\s*)?(?:\*\*)?"
         rf"(?P<label>{labels})(?:\*\*)?\s*[:：]\s*(?:\*\*)?(?P<value>.*)$"
     )
     sections: dict[str, list[str]] = {}
-    current_key: str | None = None
+    current_key: str | None = "comparison" if preserve_preamble else None
     for raw_line in (answer_text or "").splitlines():
         match = header_re.match(raw_line)
         if match:
@@ -101,7 +110,7 @@ def _extract_sections(answer_text: str) -> dict[str, list[str]]:
         if current_key is not None:
             continuation = raw_line.strip()
             if continuation:
-                sections[current_key].append(continuation)
+                sections.setdefault(current_key, []).append(continuation)
     return sections
 
 
@@ -220,8 +229,18 @@ def _has_evidence_overclaim(text: str) -> bool:
     return any(marker in normalized for marker in _EVIDENCE_OVERCLAIM_MARKERS)
 
 
-def parse_decision_result(answer_text: str, *, user_question: str = "") -> DecisionResult | None:
-    sections = _extract_sections(answer_text)
+def _referenced_context_files(text: str, source_paths) -> tuple[str, ...]:
+    # Match exact context identities; do not strip numeric filename prefixes as list numbers.
+    return tuple(dict.fromkeys(
+        path for path in source_paths
+        if re.search(r"(?<![\w/\\.\-])" + re.escape(path) + r"(?![\w/\\.\-])", text)
+    ))
+
+
+def parse_decision_result(
+    answer_text: str, *, user_question: str = "", comparison_source_files=None,
+) -> DecisionResult | None:
+    sections = _extract_sections(answer_text, preserve_preamble=bool(comparison_source_files))
     if not sections:
         return None
 
@@ -235,6 +254,34 @@ def parse_decision_result(answer_text: str, *, user_question: str = "") -> Decis
     conclusion = _section_text(sections, "conclusion")
     if conclusion and any(marker in conclusion for marker in _NO_SELECTION_MARKERS):
         candidate = None
+
+    if comparison_source_files:
+        comparison = _section_text(sections, "comparison")
+        differences = _section_text(sections, "differences") or _section_text(sections, "risks")
+        missing = _section_text(sections, "missing_information") or _section_text(sections, "unverified_requirements")
+        selected_sources = _referenced_context_files(
+            _section_text(sections, "selected_sources"), comparison_source_files,
+        )
+        if not selected_sources or _is_empty_value(candidate or ""):
+            candidate = None
+        # Selection provenance is narrower than the evidence used by the answer.
+        # Bind only sources actually cited in delivered sections, never the entire retrieval set.
+        evidence_text = "\n".join((
+            conclusion, _section_text(sections, "reason"), comparison, differences,
+            missing, _section_text(sections, "sources"),
+            _section_text(sections, "selected_sources") if candidate else "",
+        ))
+        return DecisionResult(
+            conclusion=conclusion,
+            selected_candidate=candidate,
+            reason=_section_text(sections, "reason"),
+            source_files=_referenced_context_files(evidence_text, comparison_source_files),
+            comparison_requested=True,
+            comparison=comparison,
+            differences=differences,
+            missing_information=missing,
+            selected_source_files=selected_sources if candidate else (),
+        )
 
     explicit_facts = extract_explicit_user_facts(user_question)
     explicit_capabilities = "；".join(explicit_facts) if explicit_facts else _section_text(
@@ -258,6 +305,25 @@ def parse_decision_result(answer_text: str, *, user_question: str = "") -> Decis
 
 
 def render_decision_result(result: DecisionResult) -> str:
+    if result.comparison_requested:
+        blocks = []
+        if result.has_selection:
+            blocks.append(f"我更推荐 **{result.selected_candidate}**。")
+        if result.conclusion:
+            blocks.append(result.conclusion)
+        if result.reason:
+            blocks.append(result.reason)
+        for label, value in (
+            ("横向比较", result.comparison),
+            ("差异与异常", result.differences),
+            ("待确认信息", result.missing_information),
+        ):
+            if not _is_empty_value(value):
+                blocks.append(f"{label}：\n\n{value}")
+        if result.source_files:
+            blocks.append("来源：" + "、".join(result.source_files))
+        return "\n\n".join(blocks) or "当前证据不足以完成比较。"
+
     if not result.has_selection:
         return "目前没有足够匹配的候选。"
 
