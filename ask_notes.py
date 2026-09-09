@@ -179,7 +179,7 @@ def create_production_domain_host():
     )
 
 
-def main():
+def main(*, loop_options=None):
     args = _parse_args()
     apply_environment_defaults()
     logger = build_logger()
@@ -265,6 +265,7 @@ def main():
         domain_dispatch_port=domain_host,
         domain_options=args.domain_options,
         question_recorder=question_recorder,
+        **(loop_options or {}),
     )
 
 
