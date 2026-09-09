@@ -41,6 +41,16 @@ from docmind_domain_sdk.request_context import (
 from docmind_recruitment_plugin import PLUGIN_ID, RecruitmentJDPlugin
 
 
+@pytest.fixture(autouse=True)
+def _isolate_relation_review(monkeypatch):
+    # This module tests existing routing/presentation with a controlled model.
+    # The separate relation-review contracts exercise the real review boundary.
+    from ai.evidence_scope_review import EvidenceScopeReview
+    from app.chat_loop_parts import runner
+
+    monkeypatch.setattr(runner, "review_generated_evidence_scope", lambda **_: EvidenceScopeReview("VERIFIED"))
+
+
 _PLUGIN_ID = "org.example.neutral"
 _UNSET = object()
 

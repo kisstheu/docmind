@@ -17,6 +17,16 @@ from public_tests.state.test_repo_meta_generic_file_list_scope_contract import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_relation_review(monkeypatch):
+    # This module tests existing routing/presentation with a controlled model.
+    # The separate relation-review contracts exercise the real review boundary.
+    from ai.evidence_scope_review import EvidenceScopeReview
+    from app.chat_loop_parts import runner
+
+    monkeypatch.setattr(runner, "review_generated_evidence_scope", lambda **_: EvidenceScopeReview("VERIFIED"))
+
+
 _DOMAINS = [
     ("采购说明.md", "收货前", "抽检"),
     ("合同说明.md", "签署前", "复核"),

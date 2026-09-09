@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 
 from docmind_domain_sdk import (
@@ -17,6 +18,7 @@ from ai.generation_output import (
     enforce_bounded_absence_claims,
     validate_generated_output,
 )
+from ai.evidence_scope_review import review_generated_evidence_scope, render_unverified_evidence
 from ai.prompt_builder import (
     build_answer_presentation_prompt,
     build_table_presentation_prompt,
@@ -32,6 +34,7 @@ from ai.table_presentation import (
 from ai.repo_meta.category import resolve_repo_content_category_scope
 from ai.structured_skill_summary import summarize_structured_skill_summary_with_remote
 from ai.decision_result import (
+    DecisionResult,
     build_comparison_generation_config, build_comparison_prose_fallback,
     parse_decision_result, render_decision_result,
 )
@@ -1382,6 +1385,34 @@ def run_chat_loop(
                     if comparison_source_files:
                         answer_text = "本轮未生成可可靠呈现的比较结果，请重试。"
                         generation_result_valid = False
+            if generation_result_valid and not structured_enumeration_requested:
+                # Review exactly the evidence delivered to generation, after the
+                # local-first exits and format checks, before any answer state.
+                review = review_generated_evidence_scope(
+                    answer_text=(output_validation.text if comparison_source_files else answer_text),
+                    question=redact_sensitive_text(generation_question),
+                    source_candidates=tuple(
+                        replace(item, text=redact_sensitive_text(item.text), path=redact_sensitive_text(item.path))
+                        for item in (materials.get("context_source_candidates") or ())
+                    ),
+                    client=client, model_id=model_id, logger=logger,
+                )
+                logger.info(f"🛡️ [事实关系审核] status={review.status} | error={review.error}")
+                if review.error:
+                    answer_text = "本轮事实关系审核未完成，暂不展示未经核验的回答，请重试。"
+                    generation_result_valid = False
+                elif not review.verified:
+                    answer_text = render_unverified_evidence(review)
+                    generated_result_provenance = None
+                    was_decision = decision_result is not None
+                    # Reuse the existing source/selection state contract, also
+                    # when a factual followup disproves a previous selection.
+                    decision_result = DecisionResult(
+                        comparison_requested=True, comparison=answer_text,
+                        source_files=review.source_files,
+                    )
+                    if was_decision:
+                        answer_text = render_decision_result(decision_result)
             print_answer(answer_text, start_qa)
             append_memory(memory_buffer, question, answer_text)
             if not generation_result_valid:

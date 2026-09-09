@@ -35,6 +35,16 @@ from docmind_recruitment_plugin import PLUGIN_ID, RecruitmentJDPlugin
 from retrieval.repo_index_types import RepoState
 
 
+@pytest.fixture(autouse=True)
+def _isolate_relation_review(monkeypatch):
+    # This module tests existing routing/presentation with a controlled model.
+    # The separate relation-review contracts exercise the real review boundary.
+    from ai.evidence_scope_review import EvidenceScopeReview
+    from app.chat_loop_parts import runner
+
+    monkeypatch.setattr(runner, "review_generated_evidence_scope", lambda **_: EvidenceScopeReview("VERIFIED"))
+
+
 class _LoggerStub:
     def debug(self, *_args, **_kwargs):
         return None
@@ -456,7 +466,10 @@ def _run_turns(
     repo_chunks: list[str] | None = None,
     domain_dispatch_port=None,
     client=None,
+    evidence_reviewer=None,
 ):
+    from ai.evidence_scope_review import EvidenceScopeReview
+
     inputs = iter([*questions, "q"])
     allowed_paths: list[object] = []
     query_result_sets: list[object] = []
@@ -464,6 +477,12 @@ def _run_turns(
     real_query = chat_runner.build_search_query
     client = client or _ClientStub()
     logger = _LoggerStub()
+    # These tests isolate routing/presentation. Relation-review contracts inject
+    # the real reviewer explicitly and exercise its separate model response.
+    monkeypatch.setattr(
+        chat_runner, "review_generated_evidence_scope",
+        evidence_reviewer or (lambda **_: EvidenceScopeReview("VERIFIED")),
+    )
 
     monkeypatch.setattr(chat_runtime, "_read_user_question", lambda **_kwargs: next(inputs))
     monkeypatch.setattr(chat_runtime, "_flush_pending_tty_input_unix", lambda: False)
