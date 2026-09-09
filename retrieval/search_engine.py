@@ -7,6 +7,10 @@ from pathlib import Path
 
 import numpy as np
 
+from retrieval.attribute_evidence import (
+    select_entity_attribute_evidence_indices,
+    select_scoped_file_attribute_evidence_indices,
+)
 from retrieval.query_utils import (
     EXTENSION_TERMS,
     extract_query_terms,
@@ -49,6 +53,8 @@ def perform_retrieval(
     task_mode: str | None = None,
     content_target: str | None = None,
     ensure_allowed_path_coverage: bool = False,
+    answer_entity_items: list[str] | None = None,
+    requested_attribute: str | None = None,
 ):
     chunk_texts = list(getattr(repo_state, "chunk_texts", []) or [])
     chunk_paths = list(getattr(repo_state, "chunk_paths", []) or [])
@@ -270,7 +276,14 @@ def perform_retrieval(
         logger.debug(f"   [命中日志限流] 已省略 {suppressed_match_logs} 条命中明细")
     shift_keywords = ["其他", "别的", "所有", "全局", "抛开", "除了", "另外", "换个", "不说", "那"]
     ignored_file = None
-    if any(k in question for k in shift_keywords) or len(question) < 4:
+    single_path_scope_keeps_focus = bool(
+        allowed_path_set is not None
+        and len(allowed_path_set) == 1
+        and current_focus_file in allowed_path_set
+    )
+    if (
+        any(k in question for k in shift_keywords) or len(question) < 4
+    ) and not single_path_scope_keeps_focus:
         ignored_file = current_focus_file
         current_focus_file = None
         if ignored_file:
@@ -340,7 +353,10 @@ def perform_retrieval(
         question,
         search_terms,
         has_bounded_scope=allowed_path_set is not None,
-        has_content_enumeration_intent=bool(structured_target_terms),
+        has_content_enumeration_intent=bool(
+            task_mode == "synthesis_request"
+            and str(content_target or "").strip()
+        ),
     )
     fallback_threshold = 0.24 if is_entity_lookup else 0.30
 
@@ -446,6 +462,7 @@ def perform_retrieval(
                     f"   ⚖️ [比较题补证据] 追加 {appended_compare} 个正文命中片段用于对照"
                 )
 
+    leading_coverage_indices: list[int] = []
     if ensure_allowed_path_coverage and allowed_path_set:
         repo_path_order = [
             str(path or "").strip()
@@ -456,17 +473,36 @@ def perform_retrieval(
             if path not in repo_path_order:
                 repo_path_order.append(path)
 
+        first_index_by_path: dict[str, int] = {}
+        for idx in candidate_indices:
+            path = str(chunk_paths[idx] or "").strip()
+            if path in allowed_path_set and path not in first_index_by_path:
+                first_index_by_path[path] = idx
+
         best_index_by_path: dict[str, int] = {}
         for idx in ranked_candidate_indices:
             path = str(chunk_paths[idx] or "").strip()
             if path in allowed_path_set and path not in best_index_by_path:
                 best_index_by_path[path] = idx
 
-        coverage_indices = [
+        leading_coverage_indices = [
+            first_index_by_path[path]
+            for path in repo_path_order
+            if path in first_index_by_path
+        ]
+        semantic_coverage_candidates = [
             best_index_by_path[path]
             for path in repo_path_order
-            if path in best_index_by_path
+            if (
+                path in best_index_by_path
+                and best_index_by_path[path] != first_index_by_path.get(path)
+            )
         ]
+        semantic_coverage_budget = max(0, top_k - len(leading_coverage_indices))
+        semantic_coverage_indices = semantic_coverage_candidates[
+            :semantic_coverage_budget
+        ]
+        coverage_indices = leading_coverage_indices + semantic_coverage_indices
         if coverage_indices:
             coverage_set = set(coverage_indices)
             relevant_indices = coverage_indices + [
@@ -475,10 +511,68 @@ def perform_retrieval(
             top_k = max(top_k, len(coverage_indices))
             logger.info(
                 "   📚 [结果集内容覆盖] "
-                f"为 {len(coverage_indices)}/{len(allowed_path_set)} 个活动文件保留证据片段"
+                f"为 {len(leading_coverage_indices)}/{len(allowed_path_set)} 个活动文件"
+                f"保留起始主题锚点，并补充 {len(semantic_coverage_indices)} 个语义片段"
             )
+
+    file_attribute_evidence_indices = select_scoped_file_attribute_evidence_indices(
+        question=(requested_attribute or "") if not answer_entity_items else "",
+        allowed_paths=list(allowed_paths or ()),
+        candidate_indices=candidate_indices,
+        chunk_paths=chunk_paths,
+        chunk_texts=chunk_texts,
+        chunk_embeddings=chunk_embeddings,
+        model_emb=model_emb,
+    )
+    attribute_evidence_indices = select_entity_attribute_evidence_indices(
+        question=requested_attribute or "",
+        entity_items=answer_entity_items,
+        candidate_indices=candidate_indices,
+        chunk_texts=chunk_texts,
+        chunk_embeddings=chunk_embeddings,
+        model_emb=model_emb,
+    )
+    if file_attribute_evidence_indices:
+        file_attribute_set = set(file_attribute_evidence_indices)
+        relevant_indices = file_attribute_evidence_indices + [
+            idx for idx in relevant_indices if idx not in file_attribute_set
+        ]
+        top_k = max(top_k, len(file_attribute_evidence_indices))
+        logger.info(
+            "   🧭 [文件集合属性证据] "
+            f"为 {len(file_attribute_evidence_indices)}/{len(allowed_path_set or ())} 个活动文件"
+            "保留属性相关片段"
+        )
+    if attribute_evidence_indices:
+        attribute_evidence_paths = {
+            str(chunk_paths[idx] or "").strip()
+            for idx in attribute_evidence_indices
+        }
+        uncovered_path_anchors = [
+            idx
+            for idx in leading_coverage_indices
+            if str(chunk_paths[idx] or "").strip() not in attribute_evidence_paths
+        ]
+        priority_indices = attribute_evidence_indices + uncovered_path_anchors
+        priority_set = set(priority_indices)
+        relevant_indices = priority_indices + [
+            idx for idx in relevant_indices if idx not in priority_set
+        ]
+        top_k = max(top_k, len(priority_indices))
+        logger.info(
+            "   🧩 [实体属性联合证据] "
+            f"优先保留 {len(attribute_evidence_indices)} 个受限证据片段，"
+            f"并补齐 {len(uncovered_path_anchors)} 个未覆盖文件锚点"
+        )
 
     relevant_indices = relevant_indices[:top_k]
     logger.info(f"   🔍 [溯源完毕] 本轮检索候选片段数量: {len(relevant_indices)}")
 
-    return {"relevant_indices": relevant_indices, "scores": scores, "current_focus_file": current_focus_file, }
+    return {
+        "relevant_indices": relevant_indices,
+        "scores": scores,
+        "current_focus_file": current_focus_file,
+        "attribute_evidence_indices": (
+            file_attribute_evidence_indices or attribute_evidence_indices
+        ),
+    }

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +16,7 @@ from ai.repo_meta.classifier import (
     extract_topic_from_list_request,
     parse_file_list_request,
 )
+from ai.table_presentation import StructuredTable
 from app import chat_loop as chat_runtime
 import app.chat_loop_parts.runner as chat_runner
 import app.dialog.result_set as result_set_operations
@@ -537,6 +540,82 @@ def test_runner_binds_collection_elaboration_to_the_previous_answer_file_set(
     assert all(path in client.models.calls[0] for path in paths)
 
 
+@pytest.mark.parametrize(
+    ("question", "expected_index"),
+    [
+        ("第二份到底算有效的还是不算？", 0),
+        ("那第一个包含了啥？", 2),
+    ],
+)
+def test_runner_binds_natural_ordinal_target_scope_evidence_and_prompt_after_view_sort(
+    monkeypatch,
+    tmp_path,
+    question,
+    expected_index,
+):
+    paths = ["合成采购资料.md", "合成合同记录.md", "合成课程说明.md"]
+    state = _selectable_file_state(paths)
+    state.last_content_user_question = "这些材料的状态如何？"
+    state.last_effective_search_query = "合成材料状态"
+    state.last_result_set_focus_file = paths[1]
+    state.current_presentation_table = StructuredTable(
+        columns=("文件", "状态"),
+        rows=(
+            (paths[2], "待确认"),
+            (paths[0], "已确认"),
+            (paths[1], "已确认"),
+        ),
+        row_identities=(paths[2], paths[0], paths[1]),
+    )
+
+    allowed, query_sets, client = _run_turns(
+        monkeypatch,
+        tmp_path,
+        questions=[question],
+        repo_paths=paths,
+        state=state,
+    )
+
+    assert state.current_presentation_table.rows[1][0] == paths[0]
+    assert state.last_result_set_items[1] == paths[1]
+    expected_target = paths[expected_index]
+    assert allowed == [{expected_target}]
+    assert query_sets == [[expected_target]]
+    assert len(client.models.calls) == 1
+    prompt = client.models.calls[0]
+    evidence = prompt.split("【参考片段】:", 1)[1].split("【用户最新提问】", 1)[0]
+    assert expected_target in evidence
+    assert all(path not in evidence for path in paths if path != expected_target)
+    assert f"文件《{expected_target}》" in prompt
+
+
+def test_runner_rejects_unbound_current_presentation_without_hidden_order_fallback(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    paths = ["合成采购资料.md", "合成合同记录.md", "合成课程说明.md"]
+    state = _selectable_file_state(paths)
+    state.current_presentation_table = StructuredTable(
+        columns=("对象", "状态"),
+        rows=(("对象丙", "待确认"), ("对象甲", "已确认"), ("对象乙", "已确认")),
+    )
+
+    allowed, query_sets, client = _run_turns(
+        monkeypatch,
+        tmp_path,
+        questions=["第二份怎么样？"],
+        repo_paths=paths,
+        state=state,
+    )
+
+    assert "无法可靠确定这个序号对应哪个文件或对象" in capsys.readouterr().out
+    assert allowed == []
+    assert query_sets == []
+    assert client.models.calls == []
+    assert state.last_result_set_items == paths
+
+
 def _run_filename_sort_acceptance(
     monkeypatch,
     tmp_path,
@@ -554,6 +633,8 @@ def _run_filename_sort_acceptance(
         "rewrites": [],
         "materials": [],
     }
+    material_scopes = []
+    query_result_sets = []
     logger = _LoggerStub()
     client = _ClientStub()
     real_signals = chat_runner.analyze_question_signals
@@ -576,13 +657,18 @@ def _run_filename_sort_acceptance(
     def capture_route(question, *_args, **_kwargs):
         calls["routes"].append(question)
         return {
-            "route": "repo_meta" if question == "当前知识库有哪些文件？" else "normal_retrieval",
+            "route": (
+                "repo_meta"
+                if parse_file_list_request(question) is not None
+                else "normal_retrieval"
+            ),
             "smalltalk_reply": "",
             "route_question_input": question,
         }
 
     def capture_query(**kwargs):
         calls["queries"].append(kwargs["question"])
+        query_result_sets.append(kwargs["last_result_set_items"])
         return real_query(**kwargs)
 
     def capture_rewrite(question, *_args, **_kwargs):
@@ -591,6 +677,7 @@ def _run_filename_sort_acceptance(
 
     def capture_materials(**kwargs):
         calls["materials"].append(kwargs["question"])
+        material_scopes.append(kwargs["allowed_paths"])
         return real_materials(**kwargs)
 
     monkeypatch.setattr(chat_runner, "analyze_question_signals", capture_signals)
@@ -611,7 +698,13 @@ def _run_filename_sort_acceptance(
         change_log_file=tmp_path / "changes.db",
         domain_dispatch_port=EmptyDomainHost(),
     )
-    return SimpleNamespace(calls=calls, client=client, state=chat_runtime.conversation_state)
+    return SimpleNamespace(
+        calls=calls,
+        client=client,
+        material_scopes=material_scopes,
+        query_result_sets=query_result_sets,
+        state=chat_runtime.conversation_state,
+    )
 
 
 def test_runner_sorts_active_file_result_set_before_routing_or_retrieval(
@@ -655,6 +748,47 @@ def test_runner_sorts_active_file_result_set_before_routing_or_retrieval(
     assert result.state.last_local_topic == "list_files"
 
 
+def test_runner_natural_existing_column_sort_skips_retrieval_and_provider(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    state = ConversationState(
+        last_route="normal_retrieval",
+        last_content_route="normal_retrieval",
+        last_content_user_question="整理已有合成记录。",
+        last_effective_search_query="合成记录",
+        last_answer_text="已有结构化事实回答。",
+        last_answer_preview="已有结构化事实回答。",
+        current_presentation_table=StructuredTable(
+            columns=("条目", "责任方", "等级"),
+            rows=(
+                ("条目10", "组织甲", "高"),
+                ("条目2", "组织乙", "低"),
+            ),
+        ),
+    )
+
+    result = _run_filename_sort_acceptance(
+        monkeypatch,
+        tmp_path,
+        questions=["按条目名称排列"],
+        repo_paths=["合成资料甲.md", "合成资料乙.md"],
+        state=state,
+    )
+
+    output = capsys.readouterr().out
+    assert output.index("条目2") < output.index("条目10")
+    assert result.calls["signals"] == ["按条目名称排列"]
+    assert result.calls["events"] == ["按条目名称排列"]
+    assert result.calls["routes"] == []
+    assert result.calls["queries"] == []
+    assert result.calls["rewrites"] == []
+    assert result.calls["materials"] == []
+    assert result.client.models.calls == []
+    assert result.state.current_presentation_table.rows[0][0] == "条目2"
+
+
 def test_real_two_turn_file_list_then_filename_sort_stays_local(
     monkeypatch,
     tmp_path,
@@ -694,6 +828,36 @@ def test_real_two_turn_file_list_then_filename_sort_stays_local(
     assert selection.paths == ("02_记录.txt",)
 
 
+def test_real_two_turn_file_list_then_subjectless_content_keeps_active_scope(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    paths = ["合成招聘说明.md", "合成合同条款.md", "合成采购记录.md"]
+
+    result = _run_filename_sort_acceptance(
+        monkeypatch,
+        tmp_path,
+        questions=["有哪些文档？", "讲的啥？"],
+        repo_paths=paths,
+        state=ConversationState(),
+    )
+
+    output = capsys.readouterr().out
+    assert all(path in output for path in paths)
+    assert result.calls["routes"] == ["有哪些文档？", "讲的什么？"]
+    assert result.calls["events"] == ["有哪些文档？", "讲的什么？"]
+    assert result.calls["queries"] == ["讲的什么？"]
+    assert result.calls["materials"] == ["讲的什么？"]
+    assert result.material_scopes == [set(paths)]
+    assert result.query_result_sets == [paths]
+    assert len(result.client.models.calls) == 1
+    assert "【文件结果集内容操作约束】" in result.client.models.calls[0]
+    assert all(path in result.client.models.calls[0] for path in paths)
+    assert result.state.last_result_set_items == paths
+    assert result.state.last_result_set_entity_type == "文件"
+
+
 class _RecordingEmptyDomainHost(EmptyDomainHost):
     def __init__(self):
         self.calls = []
@@ -701,6 +865,15 @@ class _RecordingEmptyDomainHost(EmptyDomainHost):
     def dispatch(self, request):
         self.calls.append(request)
         return None
+
+
+def _canonical_source_id_from_prompt(prompt: str, path: str) -> str:
+    match = re.search(
+        rf"证据【([^】]+)】文件【{re.escape(path)}】",
+        prompt,
+    )
+    assert match is not None
+    return match.group(1)
 
 
 class _GeneratedProvenanceModelsStub(_ModelsStub):
@@ -712,22 +885,69 @@ class _GeneratedProvenanceModelsStub(_ModelsStub):
         self.calls.append(contents)
         self.configs.append(config)
         if len(self.calls) == 1:
-            return SimpleNamespace(
-                text=(
-                    '{"items":['
-                    '{"display_name":"岗位甲","source_paths":["B.md"],'
-                    '"evidence_text":"标题：岗位甲"},'
-                    '{"display_name":"岗位乙","source_paths":["C.md"],'
-                    '"evidence_text":"标题：岗位乙"}'
-                    ']}'
-                )
-            )
+            return SimpleNamespace(text=json.dumps(
+                {
+                    "items": [
+                        {
+                            "display_name": "岗位甲",
+                            "source_ids": [
+                                _canonical_source_id_from_prompt(contents, "B.md")
+                            ],
+                            "evidence_text": "标题：岗位甲",
+                        },
+                        {
+                            "display_name": "岗位乙",
+                            "source_ids": [
+                                _canonical_source_id_from_prompt(contents, "C.md")
+                            ],
+                            "evidence_text": "标题：岗位乙",
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ))
         return SimpleNamespace(text="根据当前唯一文件完成合成说明。")
 
 
 class _GeneratedProvenanceClientStub:
     def __init__(self):
         self.models = _GeneratedProvenanceModelsStub()
+
+
+class _RecruitmentEnumerationModelsStub(_ModelsStub):
+    def __init__(self):
+        super().__init__()
+        self.configs = []
+
+    def generate_content(self, *, model, contents, config=None):
+        self.calls.append(contents)
+        self.configs.append(config)
+        return SimpleNamespace(text=json.dumps(
+            {
+                "items": [
+                    {
+                        "display_name": "合成服务开发工程师",
+                        "source_ids": [
+                            _canonical_source_id_from_prompt(contents, "合成资料甲.md")
+                        ],
+                        "evidence_text": "岗位：合成服务开发工程师",
+                    },
+                    {
+                        "display_name": "合成测试工程师",
+                        "source_ids": [
+                            _canonical_source_id_from_prompt(contents, "合成资料乙.md")
+                        ],
+                        "evidence_text": "岗位：合成测试工程师",
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ))
+
+
+class _RecruitmentEnumerationClientStub:
+    def __init__(self):
+        self.models = _RecruitmentEnumerationModelsStub()
 
 
 def test_runner_generated_ordinal_uses_provenance_backing_and_keeps_focus(
@@ -769,7 +989,7 @@ def test_runner_generated_ordinal_uses_provenance_backing_and_keeps_focus(
     )
 
     assert returned_client is client
-    assert allowed == [None, {"B.md"}, {"B.md"}]
+    assert allowed == [set(paths), {"B.md"}, {"B.md"}]
     assert query_sets == [paths, ["岗位甲"], ["岗位甲", "岗位乙"]]
     assert chat_runtime.conversation_state.last_generated_result_items == [
         "岗位甲",
@@ -788,18 +1008,29 @@ def test_runner_generated_ordinal_uses_provenance_backing_and_keeps_focus(
     assert chat_runtime.conversation_state.last_selected_source_files == ["B.md"]
     assert client.models.configs[0].response_mime_type == "application/json"
     assert client.models.configs[0].response_json_schema["required"] == ["items"]
+    allowed_source_ids = client.models.configs[0].response_json_schema["properties"][
+        "items"
+    ]["items"]["properties"]["source_ids"]["items"]["enum"]
+    assert allowed_source_ids
+    assert all(source_id in client.models.calls[0] for source_id in allowed_source_ids)
     assert "【结构化枚举输出契约】" in client.models.calls[0]
     assert "对象《岗位甲》怎么样？" in client.models.calls[1]
     assert len(client.models.calls) == 3
 
 
-def test_runner_local_visible_enumeration_materializes_the_same_provenance_contract(
+@pytest.mark.parametrize("question", ["涉及哪些岗位？", "讲了哪些岗位？"])
+def test_runner_collection_open_enumeration_skips_direct_evidence_shortcut(
     monkeypatch,
     tmp_path,
+    question,
 ):
     paths = ["A.md", "B.md", "C.md"]
-    chunks = ["合成背景甲。", "分期付款", "验收后付款"]
-    local_answer = "1. 分期付款\n   来源：B.md"
+    chunks = [
+        "这里只记录合成背景。",
+        "标题：岗位甲\n要求：合成能力甲。",
+        "标题：岗位乙\n要求：合成能力乙。",
+    ]
+    local_answer = "1. 错误的直接证据片段\n   来源：A.md"
     monkeypatch.setattr(
         chat_runner,
         "maybe_build_direct_lookup_answer",
@@ -817,20 +1048,29 @@ def test_runner_local_visible_enumeration_materializes_the_same_provenance_contr
     state.last_answer_preview = state.last_answer_text
     state.last_answer_type = None
 
-    allowed, _query_sets, client = _run_turns(
+    allowed, query_sets, client = _run_turns(
         monkeypatch,
         tmp_path,
-        questions=["有哪些付款安排？", "第1个怎么样？"],
+        questions=[question],
         repo_paths=paths,
         repo_chunks=chunks,
         state=state,
+        client=_GeneratedProvenanceClientStub(),
     )
 
-    assert allowed == [None, {"B.md"}]
-    assert chat_runtime.conversation_state.last_generated_result_items == ["分期付款"]
-    assert chat_runtime.conversation_state.last_generated_result_source_hits == [["B.md"]]
-    assert chat_runtime.conversation_state.last_result_set_focus_file == "B.md"
+    assert allowed == [set(paths)]
+    assert query_sets == [paths]
+    assert chat_runtime.conversation_state.last_generated_result_items == [
+        "岗位甲",
+        "岗位乙",
+    ]
+    assert chat_runtime.conversation_state.last_generated_result_source_hits == [
+        ["B.md"],
+        ["C.md"],
+    ]
     assert len(client.models.calls) == 1
+    assert "【结构化枚举输出契约】" in client.models.calls[0]
+    assert local_answer not in chat_runtime.conversation_state.last_answer_text
 
 
 @pytest.mark.parametrize(
@@ -846,7 +1086,7 @@ def test_runner_local_visible_enumeration_materializes_the_same_provenance_contr
         ),
     ),
 )
-def test_runner_recruitment_term_adapter_reuses_core_local_listing(
+def test_runner_recruitment_term_adapter_reuses_core_structured_collection_enumeration(
     monkeypatch,
     tmp_path,
     capsys,
@@ -866,7 +1106,8 @@ def test_runner_recruitment_term_adapter_reuses_core_local_listing(
     state.last_answer_preview = state.last_answer_text
     state.last_answer_type = None
 
-    _allowed, _query_sets, client = _run_turns(
+    client = _RecruitmentEnumerationClientStub()
+    allowed, query_sets, client = _run_turns(
         monkeypatch,
         tmp_path,
         questions=[question],
@@ -874,12 +1115,16 @@ def test_runner_recruitment_term_adapter_reuses_core_local_listing(
         repo_chunks=chunks,
         state=state,
         domain_dispatch_port=domain_host,
+        client=client,
     )
 
     output = capsys.readouterr().out
     assert "合成服务开发工程师" in output
     assert "合成测试工程师" in output
-    assert client.models.calls == []
+    assert allowed == [set(paths)]
+    assert query_sets == [paths]
+    assert len(client.models.calls) == 1
+    assert "【结构化枚举输出契约】" in client.models.calls[0]
 
 
 def test_runner_rejects_unmapped_generated_ordinal_before_domain_retrieval_or_model(
@@ -921,6 +1166,162 @@ def test_runner_rejects_unmapped_generated_ordinal_before_domain_retrieval_or_mo
     assert domain_host.calls == []
     assert chat_runtime.conversation_state.last_result_set_items == old_files
     assert chat_runtime.conversation_state.last_result_set_selectable is False
+
+
+def test_runner_unbound_answer_entity_property_followup_uses_semantic_scope(
+    monkeypatch,
+    tmp_path,
+):
+    paths = ["合成合同资料甲.md", "合成合同资料乙.md", "合成背景资料.md"]
+    items = ["合成交付事项", "合成验收事项"]
+    state = ConversationState(
+        last_route="normal_retrieval",
+        last_content_route="normal_retrieval",
+        last_content_user_question="有哪些合同事项？",
+        last_effective_search_query="合同事项",
+        last_answer_text="1. 合成交付事项\n2. 合成验收事项",
+        last_answer_preview="1. 合成交付事项\n2. 合成验收事项",
+        last_answer_type=None,
+        last_result_set_items=list(paths),
+        last_result_set_entity_type="文件",
+        last_result_set_selectable=False,
+        last_generated_result_items=list(items),
+        last_generated_result_entity_type="合同事项",
+        last_generated_result_source_candidates=list(paths),
+        last_generated_result_source_hits=[[], []],
+    )
+
+    def fail_if_direct_lookup_runs(**_kwargs):
+        raise AssertionError("answer entity property follow-up must not use direct evidence")
+
+    monkeypatch.setattr(
+        chat_runner,
+        "maybe_build_direct_lookup_answer",
+        fail_if_direct_lookup_runs,
+    )
+    allowed, query_sets, client = _run_turns(
+        monkeypatch,
+        tmp_path,
+        questions=["有时间限制吗？"],
+        repo_paths=paths,
+        repo_chunks=[
+            "合成交付事项的期限为三十日。",
+            "合成验收事项应在交付后十日内完成。",
+            "这里只记录无关合成背景。",
+        ],
+        state=state,
+    )
+
+    assert allowed == [set(paths)]
+    assert query_sets == [items]
+    assert len(client.models.calls) == 1
+    prompt = client.models.calls[0]
+    assert "【上一轮回答实体集合】" in prompt
+    assert "实体类型：合同事项" in prompt
+    assert "不代表可以按序号安全定位来源" in prompt
+    assert all(item in prompt for item in items)
+    assert chat_runtime.conversation_state.last_result_set_items == paths
+    assert chat_runtime.conversation_state.last_result_set_entity_type == "文件"
+    assert chat_runtime.conversation_state.last_result_set_selectable is False
+    assert chat_runtime.conversation_state.last_generated_result_items == items
+    assert chat_runtime.conversation_state.last_generated_result_entity_type == "合同事项"
+
+
+class _AbsenceClaimModelsStub(_ModelsStub):
+    def generate_content(self, *, model, contents, config=None):
+        self.calls.append(contents)
+        return SimpleNamespace(text="资料未提及合成事项甲的时间限制。")
+
+
+class _AbsenceClaimClientStub:
+    def __init__(self):
+        self.models = _AbsenceClaimModelsStub()
+
+
+def test_runner_bounds_source_absence_claim_for_answer_entity_followup(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    paths = ["合成合同资料甲.md", "合成合同资料乙.md"]
+    items = ["合成交付事项", "合成验收事项"]
+    state = ConversationState(
+        last_route="normal_retrieval",
+        last_content_route="normal_retrieval",
+        last_content_user_question="有哪些合同事项？",
+        last_effective_search_query="合同事项",
+        last_answer_text="1. 合成交付事项\n2. 合成验收事项",
+        last_answer_preview="1. 合成交付事项\n2. 合成验收事项",
+        last_result_set_items=list(paths),
+        last_result_set_entity_type="文件",
+        last_result_set_selectable=False,
+        last_generated_result_items=list(items),
+        last_generated_result_entity_type="合同事项",
+        last_generated_result_source_candidates=list(paths),
+        last_generated_result_source_hits=[[], []],
+    )
+
+    _run_turns(
+        monkeypatch,
+        tmp_path,
+        questions=["有时间限制吗？"],
+        repo_paths=paths,
+        state=state,
+        client=_AbsenceClaimClientStub(),
+    )
+
+    output = capsys.readouterr().out
+    assert "资料未提及" not in output
+    assert "当前检索到的资料证据中暂未找到明确说明" in output
+
+
+class _InferredExclusionModelsStub(_ModelsStub):
+    def generate_content(self, *, model, contents, config=None):
+        self.calls.append(contents)
+        return SimpleNamespace(
+            text="该事项常见于长期安排，因此不适用于短期安排。"
+        )
+
+
+class _InferredExclusionClientStub:
+    def __init__(self):
+        self.models = _InferredExclusionModelsStub()
+
+
+def test_runner_bounds_inferred_exclusion_for_answer_entity_followup(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    paths = ["合成事项资料.md"]
+    state = ConversationState(
+        last_route="normal_retrieval",
+        last_content_route="normal_retrieval",
+        last_content_user_question="有哪些事项？",
+        last_effective_search_query="事项",
+        last_answer_text="1. 合成事项甲",
+        last_answer_preview="1. 合成事项甲",
+        last_result_set_items=list(paths),
+        last_result_set_entity_type="文件",
+        last_result_set_selectable=False,
+        last_generated_result_items=["合成事项甲"],
+        last_generated_result_entity_type="事项",
+        last_generated_result_source_candidates=list(paths),
+        last_generated_result_source_hits=[[]],
+    )
+
+    _run_turns(
+        monkeypatch,
+        tmp_path,
+        questions=["适用于短期安排吗？"],
+        repo_paths=paths,
+        state=state,
+        client=_InferredExclusionClientStub(),
+    )
+
+    output = capsys.readouterr().out
+    assert "因此不适用于短期安排" not in output
+    assert "当前检索到的证据不足以确认对短期安排不适用" in output
 
 
 class _AcceptanceModelsStub(_ModelsStub):

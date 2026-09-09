@@ -707,12 +707,14 @@ def test_empty_host_and_unrelated_sources_do_not_enable_jd_alias():
     ) is None
 
 
-def test_zero_hit_scoped_followup_preserves_parent_file_result_set():
+def test_zero_hit_open_enumeration_preserves_parent_scope_but_disables_ordinal():
     paths = ["合成合同.md", "合成采购记录.md"]
     state = _file_result_state(paths)
     question = "这些文件里有哪些未出现字段？"
     event = detect_dialog_event(question, state, _CaptureLogger())
     signals, decision = _scope_facts(question, state, event.name)
+
+    assert event.name == "synthesis_request"
 
     update_state_after_retrieval_answer(
         state,
@@ -728,7 +730,7 @@ def test_zero_hit_scoped_followup_preserves_parent_file_result_set():
     assert state.last_answer_type is None
     assert state.last_result_set_items == paths
     assert state.last_result_set_entity_type == "文件"
-    assert state.last_result_set_selectable is True
+    assert state.last_result_set_selectable is False
 
     next_question = "这些文件里有哪些履约条款？"
     next_event = detect_dialog_event(next_question, state, _CaptureLogger())

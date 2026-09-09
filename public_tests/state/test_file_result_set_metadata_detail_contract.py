@@ -272,6 +272,122 @@ def test_metadata_detail_preserves_unmapped_or_deleted_item_as_unknown(tmp_path)
 
 
 @pytest.mark.parametrize(
+    "question",
+    [
+        "是什么格式的？",
+        "都是什么格式？",
+        "这些是什么格式？",
+        "什么格式？",
+        "文件格式呢？",
+        "格式呢？",
+        "扩展名呢？",
+        "后缀呢？",
+        "分别是什么格式？",
+    ],
+)
+def test_active_file_set_recognizes_subject_light_format_followups(question, tmp_path):
+    items = ["合同说明.pdf", "采购记录.pdf"]
+
+    answer = result_set_operations.build_file_result_set_metadata_detail(
+        question,
+        items,
+        entity_type="文件",
+        selectable=True,
+        repo_state=_repo_state(tmp_path / "notes", items),
+        notes_dir=tmp_path / "notes",
+    )
+
+    assert answer == "这 2 个文件都是 PDF 格式。"
+
+
+def test_active_file_set_format_followup_preserves_mixed_order_and_excludes_other_files(
+    tmp_path,
+):
+    notes_dir = tmp_path / "notes"
+    active_items = ["岗位说明.pdf", "采购清单.txt", "合同条款.docx"]
+    excluded_item = "未纳入结果集.html"
+    repo_paths = [*active_items, excluded_item]
+
+    answer = result_set_operations.build_file_result_set_metadata_detail(
+        "这些是什么格式？",
+        active_items,
+        entity_type="文件",
+        selectable=True,
+        repo_state=_repo_state(notes_dir, repo_paths),
+        notes_dir=notes_dir,
+    )
+
+    assert answer == (
+        "当前文件结果集的格式如下：\n"
+        "1. 岗位说明.pdf：PDF\n"
+        "2. 采购清单.txt：TXT\n"
+        "3. 合同条款.docx：DOCX"
+    )
+    assert excluded_item not in answer
+
+
+@pytest.mark.parametrize(
+    ("question", "heading"),
+    [
+        ("这些多大？", "当前文件结果集的大小如下："),
+        ("文件大小呢？", "当前文件结果集的大小如下："),
+        ("什么时候修改的？", "当前文件结果集的修改时间如下："),
+        ("修改时间呢？", "当前文件结果集的修改时间如下："),
+    ],
+)
+def test_existing_file_metadata_attributes_accept_natural_result_set_followups(
+    question,
+    heading,
+    tmp_path,
+):
+    notes_dir = tmp_path / "notes"
+    items = ["通用资料.md"]
+    timestamp = datetime(2026, 9, 1, 8, 30, 0)
+    repo_state = _repo_state(
+        notes_dir,
+        items,
+        sizes={items[0]: 1536},
+        times={items[0]: timestamp},
+    )
+
+    answer = result_set_operations.build_file_result_set_metadata_detail(
+        question,
+        items,
+        entity_type="文件",
+        selectable=True,
+        repo_state=repo_state,
+        notes_dir=notes_dir,
+    )
+
+    assert answer is not None
+    assert answer.startswith(heading)
+    assert "通用资料.md" in answer
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "这个文档的内容是什么格式组织的？",
+        "给我按表格格式整理",
+        "输出成 JSON 格式",
+        "PDF 里面日期是什么格式？",
+    ],
+)
+def test_file_metadata_followup_does_not_take_over_content_or_presentation_requests(
+    question,
+    tmp_path,
+):
+    assert result_set_operations.build_file_result_set_metadata_detail(
+        question,
+        ["合成资料.pdf"],
+        entity_type="文件",
+        selectable=True,
+        repo_state=SimpleNamespace(paths=[]),
+        notes_dir=tmp_path / "notes",
+    ) is None
+
+
+@pytest.mark.parametrize(
     ("items", "entity_type", "selectable", "question"),
     [
         (None, "文件", True, "显示详情"),
@@ -407,6 +523,49 @@ def test_runner_details_active_set_before_all_routing_and_preserves_state(
         result.state.last_content_user_question,
         result.state.last_content_topic,
     ) == content_anchor
+
+
+def test_runner_format_followup_stays_local_when_intent_model_is_unavailable(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    items = ["采购说明.pdf", "合同说明.pdf", "岗位说明.pdf"]
+    state = _active_state(items)
+
+    result = _run_local_detail_turns(
+        monkeypatch,
+        tmp_path,
+        questions=["是什么格式的？"],
+        items=items,
+        state=state,
+    )
+
+    output = capsys.readouterr().out
+    assert "这 3 个文件都是 PDF 格式。" in output
+    assert result.calls == {
+        "query_router": 0,
+        "query_rewrite": 0,
+        "retrieval": 0,
+        "local_model": 0,
+        "remote_model": 0,
+        "document_body_reader": 0,
+    }
+    assert result.state.last_result_set_items == items
+    assert result.state.last_result_set_entity_type == "文件"
+    assert result.state.last_result_set_selectable is True
+    assert result.state.last_answer_type == "enumeration_file"
+
+
+def test_format_followup_without_active_file_set_does_not_invent_scope(tmp_path):
+    assert result_set_operations.build_file_result_set_metadata_detail(
+        "是什么格式的？",
+        None,
+        entity_type=None,
+        selectable=None,
+        repo_state=SimpleNamespace(paths=[]),
+        notes_dir=tmp_path / "notes",
+    ) is None
 
 
 @pytest.mark.parametrize("local_topic", ["list_files", None])

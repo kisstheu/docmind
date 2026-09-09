@@ -21,6 +21,10 @@ from app.retrieval_flow.query_followup import (
     should_reuse_previous_results,
     filter_reused_indices_for_question,
 )
+from retrieval.attribute_evidence import (
+    build_requested_attribute_query,
+    classify_requested_attribute_kind,
+)
 
 
 def _merge_query_terms(*parts: str) -> str:
@@ -52,6 +56,7 @@ def build_search_query(
     last_selected_candidate: str | None = None,
     last_selected_source_files: list[str] | None = None,
     last_relevant_indices=None,
+    answer_entity_followup: bool = False,
     logger,
     ollama_api_url: str,
     ollama_model: str,
@@ -77,6 +82,7 @@ def build_search_query(
     normalized_question = normalize_question_for_retrieval(question)
     context_anchor = ""
     structured_uses_result_set = False
+    answer_entity_scope_followup = False
 
     if event_name == "selected_candidate_followup" and last_selected_candidate:
         source_text = "；".join(last_selected_source_files or [])
@@ -89,6 +95,16 @@ def build_search_query(
     elif event_name == "entity_lookup_followup" and getattr(event, "merged_query", None):
         base_query = normalize_question_for_retrieval(event.merged_query) or normalized_question or question
         logger.info(f"🔎 [内容目标检索] {base_query}")
+    elif (
+        event_name == "result_set_followup"
+        and last_result_set_items
+        and last_result_set_entity_type == "文件"
+        and classify_requested_attribute_kind(question) is not None
+    ):
+        search_query = build_requested_attribute_query(question)
+        search_query = search_query or normalized_question or question
+        logger.info("🎯 [集合属性检索] 查询词与活动文件范围分离，仅使用本轮属性")
+        return search_query, context_anchor
     elif event_name in {"result_set_followup", "result_set_expansion_followup", "synthesis_request"} and last_result_set_items:
         from app.dialog.state_machine import build_result_set_followup_query
 
@@ -100,6 +116,24 @@ def build_search_query(
             last_result_set_entity_type=last_result_set_entity_type,
         )
         logger.info(f"🔆 [结果集追问拼接] {base_query}")
+    elif (
+        answer_entity_followup
+        and event_name == "content_followup"
+        and last_result_set_items
+        and last_result_set_entity_type
+        and last_result_set_entity_type != "文件"
+    ):
+        from app.dialog.state_machine import build_result_set_followup_query
+
+        base_query = build_result_set_followup_query(
+            question=normalized_question or question,
+            last_user_question=last_user_question,
+            last_answer_type=last_answer_type,
+            last_result_set_items=last_result_set_items,
+            last_result_set_entity_type=last_result_set_entity_type,
+        )
+        answer_entity_scope_followup = True
+        logger.info(f"🔆 [回答实体范围追问] {base_query}")
     elif event_name in {"structured_request", "structured_skill_summary"} and last_result_set_items and last_result_set_entity_type:
         from app.dialog.state_machine import build_result_set_followup_query
 
@@ -143,7 +177,7 @@ def build_search_query(
     selector_anchors = _extract_selector_anchors(base_query)
     combined_anchors = list(dict.fromkeys([*explicit_file_anchors, *selector_anchors]))
 
-    if event_name in {"result_set_followup", "result_set_expansion_followup", "synthesis_request", "selected_candidate_followup"} or structured_uses_result_set:
+    if event_name in {"result_set_followup", "result_set_expansion_followup", "synthesis_request", "selected_candidate_followup"} or structured_uses_result_set or answer_entity_scope_followup:
         search_query = _force_append_anchor_terms(base_query.strip(), combined_anchors, logger=logger)
         if event_name == "selected_candidate_followup":
             logger.info("🎯 [选择焦点追问] 跳过 rewrite，保留已选对象与来源文件")
@@ -151,6 +185,8 @@ def build_search_query(
             logger.info("🛝 [集合归纳] 跳过 rewrite，保留完整候选范围")
         elif structured_uses_result_set:
             logger.info("🛝 [结构化结果集] 跳过 rewrite 与新增词过滤，直接使用候选集合查询")
+        elif answer_entity_scope_followup:
+            logger.info("🛝 [回答实体范围] 跳过 rewrite 与新增词过滤，保留实体与属性语义")
         else:
             logger.info("🛝 [结果集追问] 跳过 rewrite 与新增词过滤，直接使用候选集合查询")
         logger.info(f"🛝 [强词保底后]：{search_query}")

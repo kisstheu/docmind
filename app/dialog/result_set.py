@@ -14,6 +14,10 @@ from pathlib import Path, PurePosixPath
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
+from retrieval.search_context import (
+    CanonicalSourceCandidate,
+    canonical_source_candidate_id,
+)
 
 
 def extract_result_set_from_answer(answer: str, entity_type: str = "文件") -> tuple[list[str], str]:
@@ -127,18 +131,19 @@ RESULT_SET_GROUP_REF_TERMS = [
 
 _CN_ORDINAL_DIGITS = dict(zip("零一二两三四五六七八九", (0, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9)))
 _ORDINAL_TOKEN = r"[0-9一二两三四五六七八九十]+"
+_BARE_RESULT_CLASSIFIER = r"(?:个|份|篇|项|条)?"
 _FILE_ITEM_TARGET = r"(?:(?:个|份|篇)?(?:文件|文档|资料|记录)|(?:项|条))"
 _SINGLE_FILE_REFERENCE = rf"第(?P<index>{_ORDINAL_TOKEN}){_FILE_ITEM_TARGET}"
 _BARE_SINGLE_RESULT_REFERENCE = (
     rf"^(?:(?:那|那么|就|那就))?第(?P<index>{_ORDINAL_TOKEN})"
-    r"(?:个)?(?:呢|怎么样|如何)?$"
+    rf"{_BARE_RESULT_CLASSIFIER}(?:呢|怎么样|如何)?$"
 )
 _BARE_SINGLE_RESULT_QUESTION_REFERENCE = (
-    rf"^(?:(?:那|那么|就|那就))?第(?P<index>{_ORDINAL_TOKEN})(?:个)?"
-    r"(?:的)?(?=.{1,24}$)(?=.{0,20}(?:什么|多少|几|怎么|如何|是否|哪|吗|呢)).+$"
+    rf"^(?:(?:那|那么|就|那就))?第(?P<index>{_ORDINAL_TOKEN}){_BARE_RESULT_CLASSIFIER}"
+    r"(?:的)?(?=.{1,24}$)(?=.{0,20}(?:什么|啥|多少|几|怎么|如何|是否|哪|吗|呢|还是)).+$"
 )
 _BARE_SINGLE_RESULT_DETAIL_REFERENCE = (
-    rf"^(?:(?:那|那么|就|那就))?第(?P<index>{_ORDINAL_TOKEN})(?:个)?"
+    rf"^(?:(?:那|那么|就|那就))?第(?P<index>{_ORDINAL_TOKEN}){_BARE_RESULT_CLASSIFIER}"
     r"(?:再)?(?:详细|具体|展开|深入)?(?:介绍|说明|讲讲|说说|分析)(?:一下|下)?$"
 )
 _SELECTION_HELP = (
@@ -172,15 +177,23 @@ class GeneratedResultSetProvenance:
     display_items: tuple[str, ...] = ()
     source_candidates: tuple[str, ...] = ()
     source_hits: tuple[tuple[str, ...], ...] = ()
+    source_id_hits: tuple[tuple[str, ...], ...] = ()
+    evidence_hits: tuple[tuple[str, ...], ...] = ()
     opaque_focuses: tuple[str, ...] = ()
     entity_type: str | None = None
     enumeration_attempted: bool = False
     reliable: bool = False
     failure_reason: str | None = None
+    binding_failures: tuple[str, ...] = ()
 
 
-def structured_generated_enumeration_schema() -> dict[str, object]:
+def structured_generated_enumeration_schema(
+    source_ids: tuple[str, ...] | list[str] | None = None,
+) -> dict[str, object]:
     """Return the model contract used for a Core-owned generated listing."""
+    source_id_schema: dict[str, object] = {"type": "string"}
+    if source_ids:
+        source_id_schema["enum"] = list(dict.fromkeys(source_ids))
     return {
         "type": "object",
         "properties": {
@@ -190,15 +203,15 @@ def structured_generated_enumeration_schema() -> dict[str, object]:
                     "type": "object",
                     "properties": {
                         "display_name": {"type": "string"},
-                        "source_paths": {
+                        "source_ids": {
                             "type": "array",
-                            "items": {"type": "string"},
+                            "items": source_id_schema,
                         },
                         "evidence_text": {"type": "string"},
                     },
                     "required": [
                         "display_name",
-                        "source_paths",
+                        "source_ids",
                         "evidence_text",
                     ],
                     "additionalProperties": False,
@@ -222,9 +235,15 @@ def build_structured_generated_enumeration_prompt(
         f"本轮要从参考片段列举“{target}”。只返回符合响应 Schema 的 JSON。\n"
         "items 的顺序就是最终展示顺序；不要输出解释性正文。\n"
         "每个 item 的 display_name 必须是材料中可逐字核对的稳定名称。\n"
-        "source_paths 必须使用参考片段中 `文件【...】` 给出的完整路径，"
-        "不得猜测、缩写或改写。\n"
+        "source_ids 必须逐字复制参考片段中 `证据【...】` 给出的 canonical ID，"
+        "不得猜测、缩写、改写或使用文件路径代替。\n"
         "evidence_text 必须逐字摘录能证明 display_name 与来源绑定的最小原文。\n"
+        "evidence_text 必须原样包含 display_name；如果材料里的名称写法不同，"
+        "应使用材料原文作为 display_name，不得自行规范化或补全。\n"
+        "先逐一核对各候选来源，不得让单一来源的高密度附带列表挤掉其他来源。\n"
+        f"只列“{target}”实体本身，不要把它的属性、条件、原因或措施当作独立对象。\n"
+        "如果用户要求总结或归纳，优先提取各来源的核心主题；附录、示例或统计长表中的"
+        "附带提及只有在确属该来源核心主题时才列入。\n"
         "无法可靠绑定的对象不要列入；没有可靠对象时返回空 items。"
     )
 
@@ -270,6 +289,7 @@ def materialize_structured_generated_result_set(
     entity_type: str,
     candidate_paths: list[str] | tuple[str, ...] | None,
     repo_state,
+    source_candidates: tuple[CanonicalSourceCandidate, ...] | None = None,
 ) -> GeneratedResultSetProvenance:
     """Validate structured model output against bounded repository evidence."""
     target = str(entity_type or "").strip()
@@ -328,73 +348,199 @@ def materialize_structured_generated_result_set(
             failure_reason="missing_source_candidates",
         )
 
+    canonical_candidates_by_id: dict[str, CanonicalSourceCandidate] | None = None
+    if source_candidates is not None:
+        chunk_paths = list(getattr(repo_state, "chunk_paths", []) or [])
+        chunk_texts = list(getattr(repo_state, "chunk_texts", []) or [])
+        chunk_meta = list(getattr(repo_state, "chunk_meta", []) or [])
+        canonical_candidates_by_id = {}
+        for candidate in source_candidates:
+            if not isinstance(candidate, CanonicalSourceCandidate):
+                canonical_candidates_by_id = None
+                break
+            index = candidate.repo_index
+            if not (
+                0 <= index < len(chunk_paths)
+                and index < len(chunk_texts)
+                and index < len(chunk_meta)
+            ):
+                canonical_candidates_by_id = None
+                break
+            meta = chunk_meta[index]
+            try:
+                repo_chunk_id = int(meta["chunk_id"])
+                repo_start = int(meta["start"])
+                repo_end = int(meta["end"])
+            except (KeyError, TypeError, ValueError):
+                canonical_candidates_by_id = None
+                break
+            repo_path = str(chunk_paths[index])
+            repo_text = str(chunk_texts[index])
+            expected_id = canonical_source_candidate_id(
+                path=repo_path,
+                chunk_id=repo_chunk_id,
+                start=repo_start,
+                end=repo_end,
+                text=repo_text,
+            )
+            if (
+                candidate.source_id != expected_id
+                or candidate.path != repo_path
+                or candidate.chunk_id != repo_chunk_id
+                or candidate.start != repo_start
+                or candidate.end != repo_end
+                or candidate.text != repo_text
+                or candidate.path not in allowed_sources
+                or candidate.source_id in canonical_candidates_by_id
+            ):
+                canonical_candidates_by_id = None
+                break
+            canonical_candidates_by_id[candidate.source_id] = candidate
+        if not canonical_candidates_by_id:
+            return GeneratedResultSetProvenance(
+                source_candidates=bounded_candidates,
+                entity_type=target,
+                enumeration_attempted=True,
+                failure_reason="invalid_source_candidates",
+            )
+
     display_items: list[str] = []
     source_hits: list[tuple[str, ...]] = []
+    source_id_hits: list[tuple[str, ...]] = []
+    evidence_hits: list[tuple[str, ...]] = []
     opaque_focuses: list[str] = []
+    binding_failures: list[str] = []
     all_items_reliable = True
     seen_focuses: set[str] = set()
+    seen_displays: set[str] = set()
 
     for raw_item in raw_items:
         if not isinstance(raw_item, Mapping):
             all_items_reliable = False
+            binding_failures.append("invalid_item")
             continue
         display_name = str(raw_item.get("display_name") or "").strip()
         evidence_text = str(raw_item.get("evidence_text") or "").strip()
-        raw_sources = raw_item.get("source_paths")
+        raw_source_field = (
+            raw_item.get("source_ids")
+            if canonical_candidates_by_id is not None
+            else raw_item.get("source_paths")
+        )
         declared_sources = (
             tuple(
                 dict.fromkeys(
                     str(path or "").strip()
-                    for path in raw_sources
+                    for path in raw_source_field
                     if str(path or "").strip()
                 )
             )
-            if isinstance(raw_sources, list)
+            if isinstance(raw_source_field, list)
             else ()
         )
-        valid_sources = tuple(
-            path for path in declared_sources if path in allowed_sources
+        bound_candidates = (
+            tuple(
+                canonical_candidates_by_id[source_id]
+                for source_id in declared_sources
+                if source_id in canonical_candidates_by_id
+            )
+            if canonical_candidates_by_id is not None
+            else ()
+        )
+        valid_sources = (
+            tuple(dict.fromkeys(candidate.path for candidate in bound_candidates))
+            if canonical_candidates_by_id is not None
+            else tuple(path for path in declared_sources if path in allowed_sources)
         )
 
-        item_reliable = bool(
-            display_name
-            and evidence_text
-            and declared_sources
-            and valid_sources == declared_sources
-        )
+        item_failure = ""
+        if not display_name:
+            item_failure = "missing_display_name"
+        elif not evidence_text:
+            item_failure = "missing_evidence_text"
+        elif not declared_sources:
+            item_failure = (
+                "missing_source_ids"
+                if canonical_candidates_by_id is not None
+                else "missing_source_paths"
+            )
+        elif canonical_candidates_by_id is not None and len(bound_candidates) != len(
+            declared_sources
+        ):
+            item_failure = "source_id_not_found"
+        elif canonical_candidates_by_id is None and valid_sources != declared_sources:
+            item_failure = "source_outside_scope"
+        item_reliable = not item_failure
         normalized_display = _normalize_generated_evidence(display_name)
         normalized_evidence = _normalize_generated_evidence(evidence_text)
         display_is_proven = False
         if item_reliable and normalized_display and normalized_evidence:
-            for source_path in valid_sources:
-                document = repo_documents[source_path]
-                normalized_document = _normalize_generated_evidence(document)
-                if normalized_evidence not in normalized_document:
+            if canonical_candidates_by_id is not None:
+                if normalized_display not in normalized_evidence:
                     item_reliable = False
-                    break
-                if normalized_display in normalized_evidence:
+                    item_failure = "display_not_in_evidence"
+                elif any(
+                    normalized_display
+                    not in _normalize_generated_evidence(candidate.text)
+                    for candidate in bound_candidates
+                ):
+                    item_reliable = False
+                    item_failure = "display_not_in_source"
+                else:
                     display_is_proven = True
+            else:
+                for source_path in valid_sources:
+                    document = repo_documents[source_path]
+                    normalized_document = _normalize_generated_evidence(document)
+                    if normalized_evidence not in normalized_document:
+                        item_reliable = False
+                        item_failure = "evidence_not_exact"
+                        break
+                    if normalized_display in normalized_evidence:
+                        display_is_proven = True
         else:
             item_reliable = False
-        item_reliable = item_reliable and display_is_proven
+        if item_reliable and not display_is_proven:
+            item_reliable = False
+            item_failure = "display_not_in_evidence"
+
+        if item_reliable and normalized_display in seen_displays:
+            item_reliable = False
+            item_failure = "duplicate_binding"
 
         display_items.append(display_name)
         source_hits.append(valid_sources if item_reliable else ())
+        source_id_hits.append(
+            declared_sources
+            if item_reliable and canonical_candidates_by_id is not None
+            else ()
+        )
+        evidence_hits.append(
+            tuple(candidate.text for candidate in bound_candidates)
+            if item_reliable and canonical_candidates_by_id is not None
+            else ()
+        )
         if item_reliable:
             focus = _stable_generated_focus(target, display_name, valid_sources)
             if focus in seen_focuses:
                 item_reliable = False
+                item_failure = "duplicate_binding"
                 source_hits[-1] = ()
+                source_id_hits[-1] = ()
+                evidence_hits[-1] = ()
             else:
                 seen_focuses.add(focus)
+                seen_displays.add(normalized_display)
                 opaque_focuses.append(focus)
         if not item_reliable:
             all_items_reliable = False
+        binding_failures.append(item_failure)
 
     reliable = bool(
         all_items_reliable
         and len(display_items) == len(raw_items)
         and len(source_hits) == len(display_items)
+        and len(source_id_hits) == len(display_items)
+        and len(evidence_hits) == len(display_items)
         and len(opaque_focuses) == len(display_items)
         and all(display_items)
     )
@@ -402,17 +548,22 @@ def materialize_structured_generated_result_set(
         display_items=tuple(display_items),
         source_candidates=bounded_candidates,
         source_hits=tuple(source_hits),
+        source_id_hits=tuple(source_id_hits),
+        evidence_hits=tuple(evidence_hits),
         opaque_focuses=tuple(opaque_focuses) if reliable else (),
         entity_type=target,
         enumeration_attempted=True,
         reliable=reliable,
         failure_reason=None if reliable else "unreliable_item_binding",
+        binding_failures=tuple(binding_failures),
     )
 
 
 def render_structured_generated_result_set(
     provenance: GeneratedResultSetProvenance,
 ) -> str:
+    if not provenance.reliable:
+        return "本轮未生成可可靠引用的枚举结果，请重试。"
     if not provenance.display_items:
         return "没有识别出可可靠列举的对象。"
     lines: list[str] = []
@@ -641,6 +792,124 @@ def format_file_result_set_size(num_bytes: int) -> str:
     raise AssertionError("unreachable")
 
 
+_FILE_RESULT_SET_METADATA_ATTRIBUTE_ALIASES = {
+    "type": (
+        "文件格式",
+        "文件类型",
+        "扩展名",
+        "后缀名",
+        "格式",
+        "类型",
+        "后缀",
+    ),
+    "size": (
+        "文件大小",
+        "占用空间",
+        "多少字节",
+        "字节数",
+        "大小",
+        "多大",
+    ),
+    "modified_time": (
+        "最后修改时间",
+        "最后修改日期",
+        "什么时候修改",
+        "修改于什么时候",
+        "什么时候更新",
+        "修改时间",
+        "修改日期",
+        "更新时间",
+        "何时修改",
+        "何时更新",
+    ),
+}
+
+_FILE_RESULT_SET_METADATA_SCAFFOLD_TERMS = (
+    "麻烦告诉我",
+    "麻烦看下",
+    "帮我看下",
+    "告诉我",
+    "分别",
+    "各自",
+    "这些文件",
+    "这些文档",
+    "这些资料",
+    "上述文件",
+    "上述文档",
+    "上述资料",
+    "当前文件",
+    "当前文档",
+    "当前资料",
+    "刚才的文件",
+    "刚才的文档",
+    "刚才的资料",
+    "前面的文件",
+    "前面的文档",
+    "前面的资料",
+    "上面的文件",
+    "上面的文档",
+    "上面的资料",
+    "请问",
+    "麻烦",
+    "帮我",
+    "看下",
+    "查下",
+    "这些",
+    "上述",
+    "当前",
+    "刚才的",
+    "前面的",
+    "上面的",
+    "它们",
+    "文件",
+    "文档",
+    "资料",
+    "什么",
+    "哪种",
+    "何种",
+    "一下",
+    "那么",
+    "所以",
+    "都是",
+    "都",
+    "是",
+    "为",
+    "有",
+    "的",
+    "呢",
+    "呀",
+    "啊",
+    "吗",
+)
+
+
+def classify_file_result_set_metadata_request(question: str) -> str | None:
+    """Classify a subject-light filesystem metadata request for an active file set."""
+    compact = re.sub(r"[\s。！？!?，,；;：:]+", "", str(question or "").strip()).lower()
+    if not compact:
+        return None
+    if compact == "显示详情":
+        return "detail"
+
+    for attribute, aliases in _FILE_RESULT_SET_METADATA_ATTRIBUTE_ALIASES.items():
+        matched_aliases = [alias for alias in aliases if alias in compact]
+        if not matched_aliases:
+            continue
+        residual = compact
+        for alias in sorted(matched_aliases, key=len, reverse=True):
+            residual = residual.replace(alias, "")
+        residual = re.sub(
+            r"这[一二两三四五六七八九十百\d]+(?:个|份|篇|项|条)?",
+            "",
+            residual,
+        )
+        for term in _FILE_RESULT_SET_METADATA_SCAFFOLD_TERMS:
+            residual = residual.replace(term, "")
+        if not residual:
+            return attribute
+    return None
+
+
 def _normalize_file_result_set_identity(path: object) -> str:
     normalized = str(path or "").strip().replace("\\", "/")
     normalized = re.sub(r"/+", "/", normalized)
@@ -790,13 +1059,9 @@ def build_file_result_set_metadata_detail(
     notes_dir: Path,
 ) -> str | None:
     """Render metadata for the active file result set without changing its order."""
-    normalized_question = re.sub(
-        r"[。！？!?]+$",
-        "",
-        str(question or "").strip(),
-    ).strip()
+    metadata_attribute = classify_file_result_set_metadata_request(question)
     if (
-        normalized_question != "显示详情"
+        metadata_attribute is None
         or not items
         or entity_type != "文件"
         or selectable is not True
@@ -816,18 +1081,8 @@ def build_file_result_set_metadata_detail(
         name = file_result_set_display_name(item).casefold()
         display_name_counts[name] = display_name_counts.get(name, 0) + 1
 
-    table = Table(
-        box=None,
-        collapse_padding=True,
-        padding=(0, 1),
-        show_edge=False,
-    )
-    table.add_column("#", no_wrap=True)
-    table.add_column("类型", no_wrap=True)
-    table.add_column("大小", no_wrap=True)
-    table.add_column("修改时间", no_wrap=True)
-    table.add_column("文件")
-    for index, item in enumerate(ordered_items, 1):
+    rows: list[tuple[str, str, str, str]] = []
+    for item in ordered_items:
         display_name = file_result_set_display_name(item) or "未知"
         _repo_index, size, modified_time, relative_path = _result_set_metadata_for_item(
             item,
@@ -852,6 +1107,51 @@ def build_file_result_set_metadata_detail(
             )
         )
         file_text = relative_path if show_relative_path else display_name
+        rows.append((extension, size_text, time_text, file_text))
+
+    if metadata_attribute == "type":
+        format_names = [
+            extension.removeprefix(".").upper() if extension != "未知" else "未知"
+            for extension, _size, _time, _file in rows
+        ]
+        if format_names and format_names[0] != "未知" and len(set(format_names)) == 1:
+            return f"这 {len(format_names)} 个文件都是 {format_names[0]} 格式。"
+        lines = ["当前文件结果集的格式如下："]
+        lines.extend(
+            f"{index}. {file_text}：{format_name}"
+            for index, (format_name, (_extension, _size, _time, file_text))
+            in enumerate(zip(format_names, rows), 1)
+        )
+        return "\n".join(lines)
+
+    if metadata_attribute == "size":
+        lines = ["当前文件结果集的大小如下："]
+        lines.extend(
+            f"{index}. {file_text}：{size_text}"
+            for index, (_extension, size_text, _time, file_text) in enumerate(rows, 1)
+        )
+        return "\n".join(lines)
+
+    if metadata_attribute == "modified_time":
+        lines = ["当前文件结果集的修改时间如下："]
+        lines.extend(
+            f"{index}. {file_text}：{time_text}"
+            for index, (_extension, _size, time_text, file_text) in enumerate(rows, 1)
+        )
+        return "\n".join(lines)
+
+    table = Table(
+        box=None,
+        collapse_padding=True,
+        padding=(0, 1),
+        show_edge=False,
+    )
+    table.add_column("#", no_wrap=True)
+    table.add_column("类型", no_wrap=True)
+    table.add_column("大小", no_wrap=True)
+    table.add_column("修改时间", no_wrap=True)
+    table.add_column("文件")
+    for index, (extension, size_text, time_text, file_text) in enumerate(rows, 1):
         table.add_row(str(index), extension, size_text, time_text, Text(file_text))
 
     output = StringIO()
@@ -902,6 +1202,55 @@ def render_file_result_set_filename_sort(items: list[str] | tuple[str, ...]) -> 
     return "\n".join(lines)
 
 
+def enforce_file_result_set_attribute_coverage(
+    answer_text: str,
+    items: list[str] | tuple[str, ...],
+    *,
+    repository_paths: list[str] | tuple[str, ...] | None = None,
+    attribute_kind: str = "source",
+) -> tuple[str, bool]:
+    """Reject a generated collection-attribute answer that omits or escapes scope."""
+    scoped_items = list(dict.fromkeys(str(item or "").strip() for item in items if str(item or "").strip()))
+    if not scoped_items:
+        return answer_text, True
+
+    answer_identity = _normalize_for_name_match(answer_text)
+    scoped_identities = {
+        _normalize_for_name_match(file_result_set_display_name(item) or item)
+        for item in scoped_items
+    }
+    missing_members = [identity for identity in scoped_identities if identity not in answer_identity]
+
+    scoped_paths = set(scoped_items)
+    outside_members = []
+    for path in repository_paths or ():
+        normalized_path = str(path or "").strip()
+        if not normalized_path or normalized_path in scoped_paths:
+            continue
+        identity = _normalize_for_name_match(
+            file_result_set_display_name(normalized_path) or normalized_path
+        )
+        if identity and identity in answer_identity:
+            outside_members.append(normalized_path)
+
+    if not missing_members and not outside_members:
+        return answer_text, True
+
+    lines = [
+        "当前生成结果未能可靠覆盖整个活动文件集合，因此不采用局部结论。",
+        (
+            "基于当前可用证据，以下文件的材料性质暂时都按无法确认处理："
+            if attribute_kind == "document_property"
+            else "基于当前可用证据，以下文件的来源属性暂时都按无法确认处理："
+        ),
+    ]
+    lines.extend(
+        f"{index}. {file_result_set_display_name(item) or item}：无法从当前证据确认"
+        for index, item in enumerate(scoped_items, 1)
+    )
+    return "\n".join(lines), False
+
+
 def materialize_single_file_result_set_question(
     question: str,
     selected_file_path: str,
@@ -922,7 +1271,7 @@ def materialize_single_file_result_set_question(
     if count:
         return materialized
 
-    bare_reference = rf"(?:(?:那|那么)\s*)?第\s*{_ORDINAL_TOKEN}\s*(?:个)?"
+    bare_reference = rf"(?:(?:那|那么)\s*)?第\s*{_ORDINAL_TOKEN}\s*{_BARE_RESULT_CLASSIFIER}"
     return re.sub(bare_reference, replacement, question, count=1)
 
 
@@ -944,7 +1293,7 @@ def materialize_generated_result_set_item_question(
     materialized, count = re.subn(full_reference, replacement, question, count=1)
     if count:
         return materialized
-    bare_reference = rf"(?:(?:那|那么)\s*)?第\s*{_ORDINAL_TOKEN}\s*(?:个)?"
+    bare_reference = rf"(?:(?:那|那么)\s*)?第\s*{_ORDINAL_TOKEN}\s*{_BARE_RESULT_CLASSIFIER}"
     return re.sub(bare_reference, replacement, question, count=1)
 
 
@@ -1111,6 +1460,41 @@ def resolve_file_result_set_selection(
     return None
 
 
+def resolve_presentation_file_result_set_selection(
+    question: str,
+    row_identities: list[str] | tuple[str, ...] | None,
+    active_paths: list[str] | tuple[str, ...],
+    *,
+    focus_file: str | None = None,
+) -> FileResultSetSelection | None:
+    """Resolve an ordinal from current row order or reject an unsafe presentation."""
+    if not has_explicit_single_file_result_reference(question):
+        return None
+
+    canonical_paths = tuple(
+        str(path or "").strip() for path in active_paths if str(path or "").strip()
+    )
+    visible_identities = tuple(
+        str(identity or "").strip()
+        for identity in (row_identities or ())
+        if str(identity or "").strip()
+    )
+    if (
+        not canonical_paths
+        or len(visible_identities) != len(canonical_paths)
+        or len(set(visible_identities)) != len(visible_identities)
+        or set(visible_identities) != set(canonical_paths)
+    ):
+        return FileResultSetSelection(rejection=_UNMAPPED_ORDINAL_HELP)
+
+    selection = resolve_file_result_set_selection(
+        question,
+        visible_identities,
+        focus_file=focus_file,
+    )
+    return selection or FileResultSetSelection(rejection=_UNMAPPED_ORDINAL_HELP)
+
+
 def looks_like_result_set_followup(question: str) -> bool:
     q = (question or "").strip()
     if not q:
@@ -1120,6 +1504,30 @@ def looks_like_result_set_followup(question: str) -> bool:
         any(re.search(p, q) for p in RESULT_SET_FOLLOWUP_PATTERNS)
         or any(re.search(p, q) for p in RESULT_SET_CONTINUATION_PATTERNS)
     )
+
+
+def looks_like_result_set_predicate_followup(question: str) -> bool:
+    """Identify a whole-set predicate whose subject comes from dialog context.
+
+    This deliberately classifies only the discourse shape. The requested
+    predicate (source, date, type, or another attribute) is interpreted later.
+    """
+    q = re.sub(r"[，。！？、,.!?；;：:\s]+", "", (question or "").strip().lower())
+    if not q:
+        return False
+
+    group_prefix = (
+        "这些", "那些", "上述", "它们", "这批", "该批", "这组", "这一组",
+        "分别", "各自", "全部", "都", "每个", "每项", "每条",
+    )
+    if q.startswith(group_prefix):
+        return not any(term in q for term in ("哪些", "哪个", "哪几个", "哪几份"))
+
+    if re.fullmatch(r"(?:是否|是不是|是).{1,16}(?:吗|呢|的)?", q):
+        return True
+    if re.fullmatch(r"谁.{1,12}(?:的|呢|吗)?", q):
+        return True
+    return bool(re.fullmatch(r".{1,8}(?:呢|是什么|是谁)", q))
 
 
 def has_selectable_result_set(

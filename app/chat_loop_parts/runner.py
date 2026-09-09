@@ -12,6 +12,23 @@ from docmind_domain_sdk import (
     with_question_intent,
 )
 
+from ai.generation_output import (
+    GeneratedOutputValidation,
+    enforce_bounded_absence_claims,
+    validate_generated_output,
+)
+from ai.prompt_builder import (
+    build_answer_presentation_prompt,
+    build_table_presentation_prompt,
+)
+from ai.table_presentation import (
+    TablePresentationValidation,
+    TableRenderOptions,
+    build_table_generation_config,
+    parse_table_presentation,
+    refine_structured_table,
+    render_structured_table,
+)
 from ai.repo_meta.category import resolve_repo_content_category_scope
 from ai.structured_skill_summary import summarize_structured_skill_summary_with_remote
 from ai.decision_result import parse_decision_result, render_decision_result
@@ -20,10 +37,12 @@ from app.dialog.question_scope import (
     analyze_question_signals,
     decide_file_result_set_scope,
 )
+from app.dialog.task_semantics import is_table_presentation_request
 from app.dialog.result_set import (
     build_file_result_set_metadata_detail,
     build_structured_generated_enumeration_prompt,
     build_corrected_result_set_request,
+    enforce_file_result_set_attribute_coverage,
     file_result_set_display_name,
     materialize_generated_result_set_provenance,
     materialize_generated_result_set_item_question,
@@ -55,18 +74,137 @@ from app.chat_loop_handlers.guards import (
 from app.chat_state_helpers import (
     append_memory,
     print_answer,
+    update_state_after_answer_presentation,
     update_state_after_local_answer,
     update_state_after_local_file_result_set_answer,
     update_state_after_retrieval_answer,
 )
-from app.chat_text.core import normalize_colloquial_question
+from app.chat_text.core import normalize_colloquial_question, redact_sensitive_text
 from app.chat_text.file_lookup import maybe_build_file_location_answer
+from retrieval.attribute_evidence import classify_requested_attribute_kind
 from app.chat_text.lookup_answer_main import maybe_build_direct_lookup_answer
 from app.chat_text.related_records import maybe_build_related_records_answer
 from app.file_actions.loop import handle_file_action_turn
 from infra.file_change_store import FileChangeStore
 from retrieval.search_engine import determine_query_flags
 import app.chat_loop_handlers as _loop_handlers
+
+
+_INVALID_GENERATION_REPLY = "本次生成返回了异常内容，已停止展示，请重试。"
+_INVALID_PRESENTATION_REPLY = (
+    "本次格式转换未生成有效内容，已停止展示；上一轮回答仍保留，可重试。"
+)
+
+
+def _log_generation_metrics(
+    logger,
+    *,
+    stage: str,
+    call_elapsed: float,
+    validation: GeneratedOutputValidation,
+) -> None:
+    logger.info(
+        "⏱️ [远程生成指标] "
+        f"stage={stage} | call_elapsed={call_elapsed:.3f}s | "
+        f"raw_chars={validation.raw_length} | "
+        f"stripped_chars={validation.stripped_length} | "
+        f"whitespace_ratio={validation.whitespace_ratio:.4f} | "
+        f"validation={'pass' if validation.valid else validation.reason}"
+    )
+
+
+def _generate_answer_presentation(
+    *,
+    question: str,
+    previous_answer: str,
+    client,
+    model_id: str,
+    generation_config,
+    logger,
+) -> GeneratedOutputValidation:
+    prompt = build_answer_presentation_prompt(
+        redact_sensitive_text(previous_answer),
+        redact_sensitive_text(question),
+    )
+    logger.info(
+        "🛰️ [远程模型生成] 上一回答展示转换；"
+        "输入仅为 previous_answer，跳过 source corpus 与 retrieval"
+    )
+    started = time.perf_counter()
+    try:
+        response = client.models.generate_content(
+            model=model_id,
+            contents=prompt,
+            config=generation_config,
+        )
+        raw_text = getattr(response, "text", None)
+    except Exception as exc:
+        logger.warning(f"⚠️ [上一回答展示转换] 远程生成失败，不自动重试: {exc}")
+        raw_text = None
+    validation = validate_generated_output(raw_text)
+    _log_generation_metrics(
+        logger,
+        stage="answer_presentation",
+        call_elapsed=time.perf_counter() - started,
+        validation=validation,
+    )
+    return validation
+
+
+def _generate_table_presentation(
+    *,
+    question: str,
+    previous_answer: str,
+    client,
+    model_id: str,
+    generation_config,
+    logger,
+) -> TablePresentationValidation:
+    safe_previous_answer = redact_sensitive_text(previous_answer)
+    prompt = build_table_presentation_prompt(
+        safe_previous_answer,
+        redact_sensitive_text(question),
+    )
+    logger.info(
+        "🛰️ [远程模型生成] 上一回答结构化表格转换；"
+        "输入仅为 previous_answer，跳过 source corpus 与 retrieval"
+    )
+    started = time.perf_counter()
+    try:
+        response = client.models.generate_content(
+            model=model_id,
+            contents=prompt,
+            config=build_table_generation_config(generation_config),
+        )
+        raw_text = getattr(response, "text", None)
+    except Exception as exc:
+        logger.warning(f"⚠️ [上一回答结构化表格转换] 远程生成失败，不自动重试: {exc}")
+        response = None
+        raw_text = None
+    output_validation = validate_generated_output(raw_text)
+    _log_generation_metrics(
+        logger,
+        stage="answer_table_structure",
+        call_elapsed=time.perf_counter() - started,
+        validation=output_validation,
+    )
+    if not output_validation.valid:
+        return TablePresentationValidation(
+            table=None,
+            valid=False,
+            reason=f"generation_{output_validation.reason}",
+        )
+    validation = parse_table_presentation(
+        output_validation.text,
+        parsed=getattr(response, "parsed", None),
+        previous_answer=safe_previous_answer,
+    )
+    if not validation.valid:
+        logger.info(
+            "🛡️ [结构化表格守门] "
+            f"schema_validation={validation.reason}，不进入本地 renderer"
+        )
+    return validation
 
 
 def _minimal_handled_domain_answer(domain_result) -> str | None:
@@ -124,11 +262,14 @@ def _materialize_visible_result_provenance(answer_text, scope_decision, repo_sta
     )
 
 
-def _structured_generated_enumeration_config(chat_config):
+def _structured_generated_enumeration_config(chat_config, source_candidates):
+    source_ids = tuple(
+        candidate.source_id for candidate in source_candidates or ()
+    )
     return chat_config.model_copy(
         update={
             "response_mime_type": "application/json",
-            "response_json_schema": structured_generated_enumeration_schema(),
+            "response_json_schema": structured_generated_enumeration_schema(source_ids),
         }
     )
 
@@ -311,12 +452,106 @@ def run_chat_loop(
                 logger,
                 focused_file=current_focus_file,
             )
+            if event.name == "answer_presentation_followup":
+                previous_answer = (
+                    runtime.conversation_state.last_answer_text
+                    or runtime.conversation_state.last_answer_preview
+                    or ""
+                )
+                current_table = runtime.conversation_state.current_presentation_table
+                current_options = runtime.conversation_state.current_presentation_options
+                table_refinement = refine_structured_table(
+                    current_table,
+                    question,
+                    options=current_options,
+                )
+                presentation_table = None
+                presentation_options = None
+                if table_refinement.valid:
+                    presentation_table = table_refinement.table
+                    presentation_options = table_refinement.options
+                    presentation_valid = True
+                    answer_text = render_structured_table(
+                        presentation_table,
+                        presentation_options,
+                    )
+                    logger.info(
+                        "🧭 [本地展示调整] 复用已验证 structured table；"
+                        "跳过 source corpus、retrieval 与远程生成"
+                    )
+                elif current_table is not None and is_table_presentation_request(question):
+                    presentation_table = current_table
+                    presentation_options = current_options or TableRenderOptions()
+                    presentation_valid = True
+                    answer_text = render_structured_table(
+                        presentation_table,
+                        presentation_options,
+                    )
+                    logger.info(
+                        "🧭 [本地展示调整] 复用当前 structured table；"
+                        "跳过 source corpus、retrieval 与远程生成"
+                    )
+                elif is_table_presentation_request(question):
+                    table_validation = _generate_table_presentation(
+                        question=question,
+                        previous_answer=previous_answer,
+                        client=client,
+                        model_id=model_id,
+                        generation_config=chat_config,
+                        logger=logger,
+                    )
+                    presentation_valid = table_validation.valid
+                    presentation_table = table_validation.table
+                    presentation_options = (
+                        TableRenderOptions()
+                        if table_validation.table is not None
+                        else None
+                    )
+                    answer_text = (
+                        render_structured_table(
+                            table_validation.table,
+                            presentation_options,
+                        )
+                        if table_validation.table is not None
+                        else _INVALID_PRESENTATION_REPLY
+                    )
+                else:
+                    validation = _generate_answer_presentation(
+                        question=question,
+                        previous_answer=previous_answer,
+                        client=client,
+                        model_id=model_id,
+                        generation_config=chat_config,
+                        logger=logger,
+                    )
+                    presentation_valid = validation.valid
+                    answer_text = (
+                        validation.text
+                        if validation.valid
+                        else _INVALID_PRESENTATION_REPLY
+                    )
+                print_answer(answer_text, start_qa)
+                if presentation_valid:
+                    append_memory(memory_buffer, question, answer_text)
+                    runtime.conversation_state = update_state_after_answer_presentation(
+                        runtime.conversation_state,
+                        question,
+                        answer_text,
+                        table=presentation_table,
+                        options=presentation_options,
+                    )
+                else:
+                    logger.info(
+                        "🛡️ [展示转换守门] 保留上一轮回答与对话记忆，不写入异常转换结果"
+                    )
+                continue
             scope_decision = decide_file_result_set_scope(
                 question,
                 signals=question_signals,
                 state=runtime.conversation_state,
                 current_focus_file=current_focus_file,
                 event_name=event.name,
+                corpus_paths=getattr(repo_state, "chunk_paths", None),
             )
             if scope_decision.clear_current_focus:
                 current_focus_file = None
@@ -382,7 +617,21 @@ def run_chat_loop(
             route = route_info["route"]
             prefetched_smalltalk_answer = route_info.get("smalltalk_reply", "")
             route_question_input = route_info.get("route_question_input", question)
-            # 1) system capability
+            # 1) Core product identity
+            local_answer = runtime.try_handle_assistant_identity(route, question)
+            if local_answer is not None:
+                print_answer(local_answer, start_qa)
+                append_memory(memory_buffer, question, local_answer)
+                runtime.conversation_state = update_state_after_local_answer(
+                    runtime.conversation_state,
+                    question=question,
+                    answer=local_answer,
+                    route="assistant_identity",
+                    local_topic=None,
+                    is_content_answer=False,
+                )
+                continue
+            # 2) system capability
             local_answer = runtime.try_handle_system_capability(route, question)
             if local_answer is not None:
                 print_answer(local_answer, start_qa)
@@ -396,7 +645,7 @@ def run_chat_loop(
                     is_content_answer=False,
                 )
                 continue
-            # 2) repo meta
+            # 3) repo meta
             local_answer, local_topic = runtime.try_handle_repo_meta(
                 route,
                 question,
@@ -421,9 +670,10 @@ def run_chat_loop(
                     route="repo_meta",
                     local_topic=local_topic,
                     is_content_answer=True,
+                    canonical_file_paths=repo_state.paths,
                 )
                 continue
-            # 3) smalltalk
+            # 4) smalltalk
             local_answer = runtime.try_handle_smalltalk(
                 route=route,
                 question=question,
@@ -445,7 +695,7 @@ def run_chat_loop(
                     is_content_answer=False,
                 )
                 continue
-            # 4) out_of_scope
+            # 5) out_of_scope
             local_answer = runtime.try_handle_out_of_scope(
                 route=route,
                 question=question,
@@ -480,7 +730,7 @@ def run_chat_loop(
                 current_focus_file = None
                 last_relevant_indices = []
                 continue
-            # 5) normal retrieval
+            # 6) normal retrieval
             runtime.conversation_state.mode = "content"
             runtime.conversation_state.last_user_question = question
             runtime.conversation_state.last_route = "normal_retrieval"
@@ -535,12 +785,14 @@ def run_chat_loop(
                 and (
                     question_signals.all_items_file_set_content_question
                     or question_signals.bare_content_question
+                    or classify_requested_attribute_kind(question) is not None
                 )
             )
             analytic_retrieval = (
                 scoped_content_lookup
                 or file_result_set_content_operation
                 or scope_decision.requires_result_set_generation
+                or scope_decision.answer_entity_followup
                 or _loop_handlers.looks_like_analytic_retrieval_question(
                     question,
                     has_collection_context=(
@@ -583,6 +835,7 @@ def run_chat_loop(
                 last_selected_candidate=runtime.conversation_state.last_selected_candidate,
                 last_selected_source_files=runtime.conversation_state.last_selected_source_files,
                 last_relevant_indices=last_relevant_indices,
+                answer_entity_followup=scope_decision.answer_entity_followup,
                 logger=logger,
                 ollama_api_url=ollama_api_url,
                 ollama_model=ollama_model,
@@ -619,6 +872,17 @@ def run_chat_loop(
                     )
                     search_query = adapted_search_query
                     retrieval_content_target = adapted_search_query
+            structured_enumeration_requested = bool(
+                retrieval_content_target
+                and scope_decision.query_result_set_entity == "文件"
+                and scope_decision.query_result_set_items
+                and len(scope_decision.query_result_set_items) > 1
+                and (
+                    scope_decision.result_scope_paths is None
+                    or len(scope_decision.result_scope_paths) > 1
+                )
+                and not scope_decision.requires_result_set_generation
+            )
             focus_before_retrieval = current_focus_file
             materials = build_retrieval_materials(
                 question=question,
@@ -635,6 +899,13 @@ def run_chat_loop(
                 scope_label=category_scope_label,
                 selected_source_files=runtime.conversation_state.last_selected_source_files,
                 content_target=retrieval_content_target,
+                answer_entity_followup=scope_decision.answer_entity_followup,
+                answer_entity_items=(
+                    list(scope_decision.query_result_set_items)
+                    if scope_decision.query_result_set_items is not None
+                    else None
+                ),
+                include_source_ids=structured_enumeration_requested,
             )
             current_focus_file = materials["current_focus_file"]
             if (
@@ -885,6 +1156,7 @@ def run_chat_loop(
                         focused_file_content_followup
                         or scoped_content_lookup
                         or elaboration_after_direct_answer
+                        or scope_decision.answer_entity_followup
                     ),
                 )
             if fallback_local_answer:
@@ -961,19 +1233,10 @@ def run_chat_loop(
                 question=generation_question,
                 event_name=event.name,
                 result_set_items=generation_result_set_items,
+                result_set_entity_type=scope_decision.query_result_set_entity,
+                answer_entity_followup=scope_decision.answer_entity_followup,
                 selected_candidate=runtime.conversation_state.last_selected_candidate,
                 selected_source_files=runtime.conversation_state.last_selected_source_files,
-            )
-            structured_enumeration_requested = bool(
-                retrieval_content_target
-                and scope_decision.query_result_set_entity == "文件"
-                and scope_decision.query_result_set_items
-                and len(scope_decision.query_result_set_items) > 1
-                and (
-                    scope_decision.result_scope_paths is None
-                    or len(scope_decision.result_scope_paths) > 1
-                )
-                and not scope_decision.requires_result_set_generation
             )
             generation_config = chat_config
             if structured_enumeration_requested:
@@ -982,43 +1245,99 @@ def run_chat_loop(
                     entity_type=retrieval_content_target,
                 )
                 generation_config = _structured_generated_enumeration_config(
-                    chat_config
+                    chat_config,
+                    materials.get("context_source_candidates") or (),
                 )
                 logger.info(
                     "🧭 [结构化枚举生成] "
                     f"entity={retrieval_content_target} | "
-                    f"source_candidates={len(scope_decision.query_result_set_items)}"
+                    f"source_candidates={len(materials.get('context_source_candidates') or ())}"
                 )
             logger.info("🛰️ [远程模型生成] 进入生成阶段，开始调用远程大模型")
-            response = client.models.generate_content(
-                model=model_id,
-                contents=final_prompt,
-                config=generation_config,
+            generation_started = time.perf_counter()
+            try:
+                response = client.models.generate_content(
+                    model=model_id,
+                    contents=final_prompt,
+                    config=generation_config,
+                )
+                raw_response_text = getattr(response, "text", None)
+            except Exception as exc:
+                logger.warning(f"⚠️ [远程模型生成] 调用失败，不自动重试: {exc}")
+                response = None
+                raw_response_text = None
+            output_validation = validate_generated_output(raw_response_text)
+            _log_generation_metrics(
+                logger,
+                stage="retrieval_answer",
+                call_elapsed=time.perf_counter() - generation_started,
+                validation=output_validation,
             )
+            generation_result_valid = True
             if structured_enumeration_requested:
                 generated_result_provenance = (
                     materialize_structured_generated_result_set(
-                        _structured_response_payload(response),
+                        _structured_response_payload(response)
+                        if output_validation.valid else None,
                         entity_type=retrieval_content_target,
                         candidate_paths=list(
                             scope_decision.query_result_set_items or ()
                         ),
                         repo_state=repo_state,
+                        source_candidates=tuple(
+                            materials.get("context_source_candidates") or ()
+                        ),
                     )
                 )
                 if generated_result_provenance.failure_reason == "invalid_payload":
                     answer_text = "本轮未生成可可靠引用的枚举结果，请重试。"
+                    generation_result_valid = False
                 else:
                     answer_text = render_structured_generated_result_set(
                         generated_result_provenance
                     )
             else:
-                answer_text = response.text or "这次我没有生成有效回答。"
-                generated_result_provenance = _materialize_visible_result_provenance(
-                    answer_text,
-                    scope_decision,
-                    repo_state,
+                generation_result_valid = output_validation.valid
+                answer_text = (
+                    output_validation.text
+                    if output_validation.valid
+                    else _INVALID_GENERATION_REPLY
                 )
+                if output_validation.valid and scope_decision.answer_entity_followup:
+                    bounded_answer_text = enforce_bounded_absence_claims(answer_text)
+                    if bounded_answer_text != answer_text:
+                        logger.info(
+                            "🛡️ [有限检索否定守门] "
+                            "已将来源级缺失断言收缩为当前检索证据范围"
+                        )
+                    answer_text = bounded_answer_text
+                generated_result_provenance = (
+                    _materialize_visible_result_provenance(
+                        answer_text,
+                        scope_decision,
+                        repo_state,
+                    )
+                    if output_validation.valid
+                    else None
+                )
+            requested_attribute_kind = classify_requested_attribute_kind(question)
+            if (
+                output_validation.valid
+                and requested_attribute_kind is not None
+                and scope_decision.result_scope_paths
+            ):
+                answer_text, complete_coverage = (
+                    enforce_file_result_set_attribute_coverage(
+                        answer_text,
+                        scope_decision.result_scope_paths,
+                        repository_paths=list(getattr(repo_state, "paths", []) or []),
+                        attribute_kind=requested_attribute_kind,
+                    )
+                )
+                if not complete_coverage:
+                    logger.warning(
+                        "🛡️ [文件集合属性覆盖守门] 生成结果漏项或越界，已回退为全成员未知回答"
+                    )
             decision_result = None
             if event.name == "decision_request":
                 decision_result = parse_decision_result(answer_text, user_question=question)
@@ -1033,6 +1352,9 @@ def run_chat_loop(
                     logger.warning("⚠️ [结构化决策结果] 远程回答缺少可解析字段，不写入选择状态")
             print_answer(answer_text, start_qa)
             append_memory(memory_buffer, question, answer_text)
+            if not generation_result_valid:
+                logger.info("🛡️ [生成输出守门] 保留上一轮回答状态，不写入异常生成结果")
+                continue
             runtime.conversation_state = update_state_after_retrieval_answer(
                 runtime.conversation_state,
                 question,

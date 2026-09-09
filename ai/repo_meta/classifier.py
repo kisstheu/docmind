@@ -9,6 +9,7 @@ from ai.capability_common import (
     CATEGORY_KEYWORDS,
     CATEGORY_SUMMARY_KEYWORDS,
     LIST_FILE_KEYWORDS,
+    REPOSITORY_FILE_OBJECT_TERMS,
     TOTAL_SIZE_KEYWORDS,
     clean_text,
     contains_any,
@@ -33,7 +34,9 @@ LIST_DETAIL_MODIFIERS = (
 )
 
 _FILE_LIST_TOPIC_META_TERMS = {"类型", "格式", "类别", "分类", "方面", "方向", "数量", "大小", "体积", "容量"}
-_FILE_LIST_OBJECT_TERMS = ("文件名", "文档名", "资料名", "文件", "文档", "资料")
+_FILE_LIST_OBJECT_TERMS = (
+    "文件名", "文档名", "资料名", "笔记名", *REPOSITORY_FILE_OBJECT_TERMS,
+)
 _FILE_LIST_QUESTION_INTENT_TERMS = ("有些什么", "有哪一些", "有哪些", "有什么", "有哪")
 _FILE_LIST_COMMAND_TERMS = ("列出来", "列一下", "列一个", "列出", "列下", "罗列", "清单")
 _FILE_LIST_OBJECT_PATTERN = rf"(?:{'|'.join(_FILE_LIST_OBJECT_TERMS)})"
@@ -252,7 +255,7 @@ def is_list_files_request(question: str) -> bool:
         return True
 
     q = normalize_meta_question(clean_text(question))
-    has_doc_word = any(x in q for x in ("文件", "文档", "资料"))
+    has_doc_word = any(x in q for x in REPOSITORY_FILE_OBJECT_TERMS)
     has_list_intent = any(x in q for x in LIST_INTENT_KEYWORDS)
     return (has_doc_word and has_list_intent) or _looks_like_doc_inventory_listing_request(q)
 
@@ -263,9 +266,9 @@ def _looks_like_doc_inventory_listing_request(q: str) -> bool:
         return False
 
     patterns = (
-        r"(?:当前|目前|现在).{0,4}存(?:的是?|是|有)?(?:哪些|什么)(?:文件|文档|资料)",
-        r"^(?:有哪|有哪些|都有哪些)(?:文件|文档|资料)[？?]?$",
-        r"^(?:文件|文档|资料)(?:有哪|有哪些)[？?]?$",
+        r"(?:当前|目前|现在).{0,4}存(?:的是?|是|有)?(?:哪些|什么)(?:文件|文档|资料|笔记)",
+        r"^(?:有哪|有哪些|都有哪些)(?:文件|文档|资料|笔记)[？?]?$",
+        r"^(?:文件|文档|资料|笔记)(?:有哪|有哪些)[？?]?$",
     )
     return any(re.search(pattern, normalized) for pattern in patterns)
 

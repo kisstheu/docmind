@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from ai.capability_common import REPOSITORY_FILE_OBJECT_TERMS
+from ai.capability_identity import is_assistant_identity_request
 from ai.query_rewriter import is_local_smalltalk_intent
 from app.context_anchor import is_context_dependent_question
 
@@ -14,7 +16,6 @@ def _normalize(q: str) -> str:
 
 def _is_capability(q: str) -> bool:
     patterns = [
-        "你是谁", "你是啥",
         "你能做", "你可以做",
         "能做啥", "干啥", "做啥",
         "怎么用", "功能", "help",
@@ -46,9 +47,9 @@ def _looks_like_doc_inventory_listing_request(q: str) -> bool:
         return False
 
     patterns = (
-        r"(?:当前|目前|现在).{0,4}存(?:的是?|是|有)?(?:哪些|什么)(?:文件|文档|资料)",
-        r"^(?:有哪|有哪些|都有哪些)(?:文件|文档|资料)[？?]?$",
-        r"^(?:文件|文档|资料)(?:有哪|有哪些)[？?]?$",
+        r"(?:当前|目前|现在).{0,4}存(?:的是?|是|有)?(?:哪些|什么)(?:文件|文档|资料|笔记)",
+        r"^(?:有哪|有哪些|都有哪些)(?:文件|文档|资料|笔记)[？?]?$",
+        r"^(?:文件|文档|资料|笔记)(?:有哪|有哪些)[？?]?$",
     )
     return any(re.search(pattern, normalized) for pattern in patterns)
 
@@ -57,7 +58,7 @@ def _should_try_local_inventory_route(question: str, q: str) -> bool:
     if not q:
         return False
 
-    has_doc_word = any(x in q for x in ("文件", "文档", "资料"))
+    has_doc_word = any(x in q for x in REPOSITORY_FILE_OBJECT_TERMS)
     has_list_hint = any(x in q for x in ("哪些", "有哪", "清单", "列出", "什么"))
     if not (has_doc_word and has_list_hint):
         return False
@@ -80,7 +81,7 @@ def _passes_inventory_route_guard(q: str) -> bool:
 
 
 def _is_entity_lookup(q: str) -> bool:
-    has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
+    has_doc_word = any(x in q for x in REPOSITORY_FILE_OBJECT_TERMS)
     if has_doc_word:
         return False
 
@@ -113,7 +114,7 @@ def _is_name_content_mismatch(q: str) -> bool:
 
 
 def _is_list_doc_query(q: str) -> bool:
-    has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
+    has_doc_word = any(x in q for x in REPOSITORY_FILE_OBJECT_TERMS)
     has_list_word = any(x in q for x in ["列出", "列一下", "列下", "列出来", "清单", "罗列", "展开"])
     return (has_doc_word and has_list_word) or _looks_like_doc_inventory_listing_request(q)
 
@@ -124,7 +125,7 @@ def _is_repo_meta(q: str) -> bool:
 
     has_name_content_mismatch = _is_name_content_mismatch(q)
     has_list_doc_query = _is_list_doc_query(q)
-    has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
+    has_doc_word = any(x in q for x in REPOSITORY_FILE_OBJECT_TERMS)
     has_meta_word = any(x in q for x in [
         "多少", "数量", "格式", "分类", "清单",
         "最新", "最早", "最晚", "最近更新", "最近修改",
@@ -146,6 +147,9 @@ def _has_explicit_repo_meta_signal(question: str, q: str) -> bool:
 
 def _is_definitely_out_of_scope(q: str) -> bool:
     if not q:
+        return False
+
+    if is_assistant_identity_request(q):
         return False
 
     in_scope_markers = (

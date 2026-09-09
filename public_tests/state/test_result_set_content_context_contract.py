@@ -95,13 +95,80 @@ def test_content_followup_binds_the_complete_active_file_set(question):
     assert scope.query_result_set_entity == "文件"
 
 
-@pytest.mark.parametrize("question", ["讲了什么？", "讲了啥？"])
+@pytest.mark.parametrize(
+    "question",
+    [
+        "是关于什么的？",
+        "是关于啥的？",
+        "都是讲什么的？",
+        "都讲啥？",
+        "这些是干什么的？",
+        "这些主要说什么？",
+    ],
+)
+def test_natural_topic_paraphrases_bind_the_complete_enumerated_file_set(question):
+    paths = ["合成资料甲.md", "合成资料乙.md", "合成资料丙.md"]
+    _signals, event, scope = _event_and_scope(question, _file_result_set(paths))
+
+    assert event.name == "result_set_followup"
+    assert scope.result_scope_paths == tuple(paths)
+    assert scope.query_result_set_items == tuple(paths)
+    assert scope.query_result_set_entity == "文件"
+
+
+@pytest.mark.parametrize(
+    ("question", "paths"),
+    [
+        ("是关于啥的？", ["合成岗位说明甲.md", "合成面试记录乙.md"]),
+        ("都是讲什么的？", ["合成合同条款甲.md", "合成履约说明乙.md"]),
+        ("这些是干什么的？", ["合成采购需求甲.md", "合成验收记录乙.md"]),
+    ],
+)
+def test_topic_paraphrase_behavior_is_domain_neutral(question, paths):
+    _signals, event, scope = _event_and_scope(question, _file_result_set(paths))
+
+    assert event.name == "result_set_followup"
+    assert scope.result_scope_paths == tuple(paths)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "合成条款是关于什么的？",
+        "你是干什么的？",
+        "这个术语主要说什么？",
+    ],
+)
+def test_explicit_adjacent_subjects_do_not_bind_to_the_active_file_set(question):
+    paths = ["合成资料甲.md", "合成资料乙.md", "合成资料丙.md"]
+    _signals, event, scope = _event_and_scope(question, _file_result_set(paths))
+
+    assert event.name != "result_set_followup"
+    assert scope.result_scope_paths != tuple(paths)
+
+
+def test_explicit_single_file_topic_paraphrase_keeps_single_item_scope():
+    paths = ["合成资料甲.md", "合成资料乙.md", "合成资料丙.md"]
+    _signals, event, scope = _event_and_scope(
+        "第二个文件是关于啥的？",
+        _file_result_set(paths),
+    )
+
+    assert event.name == "result_set_followup"
+    assert scope.result_scope_paths == (paths[1],)
+    assert scope.query_result_set_items == (paths[1],)
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["讲了什么？", "讲了啥？", "讲的什么？", "讲的啥？", "内容是什么？"],
+)
 def test_bare_content_followup_binds_the_complete_active_file_set(question):
     paths = ["合成岗位资料.md", "合成合同说明.md", "合成采购记录.md"]
     normalized = normalize_colloquial_question(question)
     signals, event, scope = _event_and_scope(question, _file_result_set(paths))
 
-    assert normalized == "讲了什么？"
+    assert "啥" not in normalized
     assert looks_like_bare_content_question(normalized) is True
     assert signals.bare_content_question is True
     assert signals.all_items_file_set_content_question is False
@@ -109,6 +176,44 @@ def test_bare_content_followup_binds_the_complete_active_file_set(question):
     assert scope.result_scope_paths == tuple(paths)
     assert scope.query_result_set_items == tuple(paths)
     assert scope.query_result_set_entity == "文件"
+
+
+@pytest.mark.parametrize(
+    ("question", "paths"),
+    [
+        ("讲的啥？", ["合成岗位说明甲.md", "合成面试记录乙.md"]),
+        ("写的什么？", ["合成合同条款甲.md", "合成履约说明乙.md"]),
+        ("内容是什么？", ["合成采购需求甲.md", "合成验收记录乙.md"]),
+    ],
+)
+def test_bare_collection_content_followup_generalizes_across_public_domains(
+    question,
+    paths,
+):
+    signals, event, scope = _event_and_scope(question, _file_result_set(paths))
+
+    assert signals.bare_content_question is True
+    assert event.name == "result_set_followup"
+    assert event.route_hint == "normal_retrieval"
+    assert scope.result_scope_paths == tuple(paths)
+    assert scope.query_result_set_items == tuple(paths)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "新的合同主题讲的什么？",
+        "采购方案写的什么？",
+        "所有文档讲的什么？",
+    ],
+)
+def test_subjectful_content_questions_do_not_inherit_the_active_collection(question):
+    paths = ["旧资料甲.md", "旧资料乙.md"]
+    signals, event, scope = _event_and_scope(question, _file_result_set(paths))
+
+    assert signals.bare_content_question is False
+    assert event.name != "result_set_followup"
+    assert scope.result_scope_paths != tuple(paths)
 
 
 @pytest.mark.parametrize(

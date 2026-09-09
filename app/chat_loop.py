@@ -23,6 +23,10 @@ def try_handle_contextless_followup(*args, **kwargs):
     return _loop_handlers.try_handle_contextless_followup(*args, **kwargs)
 
 
+def try_handle_assistant_identity(*args, **kwargs):
+    return _loop_handlers.try_handle_assistant_identity(*args, **kwargs)
+
+
 def try_handle_system_capability(*args, **kwargs):
     return _loop_handlers.try_handle_system_capability(*args, **kwargs)
 

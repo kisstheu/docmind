@@ -13,8 +13,9 @@ _COLLOQUIAL_REPLACEMENTS = (
     (re.compile(r"\b银\b"), "人"),
 )
 _CONTENT_COLLOQUIAL_PATTERN = re.compile(
-    r"((?:\u8bb2|\u5199|\u8bf4|\u8bb0\u5f55|\u4ecb\u7ecd)(?:\u4e86)?"
-    r"|\u5185\u5bb9(?:\u662f|\u6709)?)(?:\u5565)(?=[\uff1f?\u3002\uff01!\s]*$)"
+    r"((?:\u8bb2|\u5199|\u8bf4|\u8bb0\u5f55|\u4ecb\u7ecd)(?:\u4e86|\u7684)?"
+    r"|\u5185\u5bb9(?:\u662f|\u6709)?|\u5173\u4e8e)(?:\u5565)"
+    r"(?=(?:\u7684)?[\uff1f?\u3002\uff01!\s]*$)"
 )
 _SENSITIVE_REDACTIONS = (
     (re.compile(r"\b\d{17}[\dXx]\b"), "[身份证号已脱敏]"),

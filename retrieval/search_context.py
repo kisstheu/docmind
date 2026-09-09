@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from dataclasses import dataclass
 from typing import List
 
 from retrieval.chunking import (
@@ -9,7 +12,98 @@ from retrieval.chunking import (
 from retrieval.query_utils import classify_org_candidate, extract_company_candidates
 
 
-def build_context_text(relevant_indices: List[int], repo_state, logger) -> str:
+@dataclass(frozen=True)
+class CanonicalSourceCandidate:
+    """Immutable identity for one exact retrieval context chunk."""
+
+    source_id: str
+    repo_index: int
+    path: str
+    chunk_id: int
+    start: int
+    end: int
+    text: str
+
+
+def canonical_source_candidate_id(
+    *,
+    path: str,
+    chunk_id: int,
+    start: int,
+    end: int,
+    text: str,
+) -> str:
+    authority = json.dumps(
+        {
+            "path": path,
+            "chunk_id": chunk_id,
+            "start": start,
+            "end": end,
+            "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(authority.encode("utf-8")).hexdigest()[:24]
+    return f"retrieval-source:v1:{digest}"
+
+
+def build_context_source_candidates(
+    relevant_indices: List[int],
+    repo_state,
+    *,
+    per_file_limit: int = 3,
+    total_limit: int | None = None,
+) -> tuple[CanonicalSourceCandidate, ...]:
+    if not relevant_indices:
+        return ()
+
+    filtered_indices = select_seed_and_neighbor_chunks(
+        seed_indices=relevant_indices,
+        chunk_paths=repo_state.chunk_paths,
+        chunk_meta=repo_state.chunk_meta,
+        neighbor=1,
+        per_file_limit=per_file_limit,
+        total_limit=total_limit,
+    )
+    candidates: list[CanonicalSourceCandidate] = []
+    for index in filtered_indices:
+        meta = repo_state.chunk_meta[index]
+        path = str(repo_state.chunk_paths[index])
+        text = str(repo_state.chunk_texts[index])
+        chunk_id = int(meta["chunk_id"])
+        start = int(meta["start"])
+        end = int(meta["end"])
+        candidates.append(
+            CanonicalSourceCandidate(
+                source_id=canonical_source_candidate_id(
+                    path=path,
+                    chunk_id=chunk_id,
+                    start=start,
+                    end=end,
+                    text=text,
+                ),
+                repo_index=index,
+                path=path,
+                chunk_id=chunk_id,
+                start=start,
+                end=end,
+                text=text,
+            )
+        )
+    return tuple(candidates)
+
+
+def build_context_text(
+    relevant_indices: List[int],
+    repo_state,
+    logger,
+    *,
+    per_file_limit: int = 3,
+    total_limit: int | None = None,
+    include_source_ids: bool = False,
+) -> str:
     if not relevant_indices:
         return ""
 
@@ -19,13 +113,13 @@ def build_context_text(relevant_indices: List[int], repo_state, logger) -> str:
         chunk_meta=repo_state.chunk_meta,
         neighbor=1,
     )
-    filtered_indices = select_seed_and_neighbor_chunks(
-        seed_indices=relevant_indices,
-        chunk_paths=repo_state.chunk_paths,
-        chunk_meta=repo_state.chunk_meta,
-        neighbor=1,
-        per_file_limit=3,
+    source_candidates = build_context_source_candidates(
+        relevant_indices,
+        repo_state,
+        per_file_limit=per_file_limit,
+        total_limit=total_limit,
     )
+    filtered_indices = [candidate.repo_index for candidate in source_candidates]
 
     def describe_indices(indices):
         return [
@@ -45,10 +139,14 @@ def build_context_text(relevant_indices: List[int], repo_state, logger) -> str:
     logger.debug(f"上下文每文件预算后: {describe_indices(filtered_indices)}")
 
     context_blocks = []
-    for idx in filtered_indices:
-        meta = repo_state.chunk_meta[idx]
+    for candidate in source_candidates:
+        source_prefix = (
+            f"证据【{candidate.source_id}】" if include_source_ids else ""
+        )
         context_blocks.append(
-            f"文件【{repo_state.chunk_paths[idx]}】（chunk #{meta['chunk_id']}，位置 {meta['start']}-{meta['end']}）：\n{repo_state.chunk_texts[idx]}"
+            f"{source_prefix}文件【{candidate.path}】"
+            f"（chunk #{candidate.chunk_id}，位置 {candidate.start}-{candidate.end}）：\n"
+            f"{candidate.text}"
         )
 
     logger.debug(

@@ -206,6 +206,7 @@ def maybe_build_direct_lookup_answer(
             return "\n".join(lines)
 
     items = _build_direct_lookup_evidence_items(
+        question=question,
         terms=terms,
         focus_terms=focus_terms,
         relevant_indices=relevant_indices,

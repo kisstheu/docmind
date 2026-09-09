@@ -4,6 +4,10 @@ import re
 
 from app.chat_text.lookup_common import *
 from app.chat_text.lookup_predicates import *
+from app.chat_text.lookup_fact_candidates import (
+    _match_quantity_attribute_propositions,
+    _quantity_attribute_slots,
+)
 
 def _looks_like_direct_lookup_question(question: str) -> bool:
     q = _normalize_lookup_token(question)
@@ -86,6 +90,41 @@ def _extract_direct_lookup_focus_terms(question: str) -> list[str]:
     return terms
 
 
+def _is_quantity_lookup_question(question: str) -> bool:
+    return bool(re.search(r"多少[？?]?\s*$", question or ""))
+
+
+def _direct_lookup_fact_terms(question: str, terms: list[str]) -> list[str] | None:
+    """Separate a factual lookup's subject from its source reference."""
+    target = re.sub(r"^\s*(?:根据|按照|按|依据)[^，,。？?]+[，,]", "", question or "")
+    if not (_is_quantity_lookup_question(target) or re.search(r"是否|有没有|有无|能否|可否|需不需要", target)):
+        return None
+    target_norm = _normalize_lookup_token(target)
+    return [
+        term for term in terms
+        if (norm := _normalize_lookup_token(term)) in target_norm
+        and not norm.isdigit()
+        and norm not in DIRECT_LOOKUP_STOP_TERMS
+        and norm not in {"根据", "按照", "依据", "是否", "有没有", "有无", "能否", "可否", "需不需要"}
+    ]
+
+
+def _is_factual_lookup_statement(
+    line: str, matched_terms: list[str], *, require_quantity: bool = False,
+) -> bool:
+    # A topical heading is not a factual answer. Keep the complete source
+    # paragraph so that its negation and dependent conditions stay together.
+    if not re.search(r"[。.!！；;][\"'”’）)]?$", line):
+        return False
+    body = re.sub(r"^\s*[（(]?[一二三四五六七八九十\d]+[)）.、]\s*", "", line)
+    if require_quantity and not re.search(r"\d", body):
+        return False
+    remainder = _normalize_lookup_token(body)
+    for term in sorted(matched_terms, key=len, reverse=True):
+        remainder = remainder.replace(term, "")
+    return len(remainder) >= 3
+
+
 def _build_direct_lookup_evidence_items(
     *,
     terms: list[str],
@@ -93,7 +132,15 @@ def _build_direct_lookup_evidence_items(
     relevant_indices,
     repo_state,
     max_items: int,
+    question: str = "",
 ) -> list[dict]:
+    fact_terms = _direct_lookup_fact_terms(question, terms)
+    factual_lookup = fact_terms is not None
+    quantity_lookup = _is_quantity_lookup_question(question)
+    attribute_topic, attribute_slots = _quantity_attribute_slots(question) if quantity_lookup else ("", [])
+    if factual_lookup:
+        terms = fact_terms
+        focus_terms = fact_terms
     term_norms = [_normalize_lookup_token(t) for t in terms if _normalize_lookup_token(t)]
     if not term_norms:
         return []
@@ -112,6 +159,7 @@ def _build_direct_lookup_evidence_items(
 
     ranked: list[dict] = []
     seen_lines: set[tuple[str, str]] = set()
+    factual_coverage: dict[tuple[str, str], frozenset[str]] = {}
 
     for idx in relevant_indices or []:
         try:
@@ -125,7 +173,7 @@ def _build_direct_lookup_evidence_items(
             raw_line = (line or "").strip()
             if not raw_line:
                 continue
-            if len(raw_line) > 160:
+            if not factual_lookup and len(raw_line) > 160:
                 continue
 
             raw_line_lower = raw_line.lower()
@@ -136,15 +184,33 @@ def _build_direct_lookup_evidence_items(
             hits = 0
             score = 0.0
             matched_focus = False
+            matched_terms: list[str] = []
             for t in term_norms:
                 if _term_matches_line(t, raw_line_lower, line_norm):
+                    matched_terms.append(t)
                     hits += 1
                     weight = weighted_terms.get(t, 1.0)
                     score += (0.8 + min(len(t), 10) * 0.08) * weight
                     if t in focus_norms:
                         matched_focus = True
+            nonliteral_matches = {}
+            if hits == 0 and attribute_slots:
+                nonliteral_matches = _match_quantity_attribute_propositions(
+                    raw_line, text, attribute_topic, attribute_slots,
+                )
+                for label in nonliteral_matches:
+                    matched_terms.append(label)
+                    hits += 1
+                    score += (0.8 + min(len(label), 10) * 0.08) * 2.0
+                    matched_focus = True
             if hits <= 0:
                 continue
+            if factual_lookup and not _is_factual_lookup_statement(
+                raw_line, matched_terms, require_quantity=quantity_lookup,
+            ):
+                continue
+            if factual_lookup:
+                factual_coverage[(str(path), raw_line)] = frozenset(matched_terms)
 
             if hits >= 2:
                 score += 0.35
@@ -209,6 +275,14 @@ def _build_direct_lookup_evidence_items(
             )
 
     ranked.sort(key=lambda x: (-float(x["score"]), x["path"], x["line"]))
+    if factual_lookup:
+        # Source diversity must not reintroduce a paragraph that only covers
+        # a strict subset of the question terms covered by stronger evidence.
+        coverages = [factual_coverage[(x["path"], x["line"])] for x in ranked]
+        ranked = [
+            item for item, coverage in zip(ranked, coverages)
+            if not any(coverage < other for other in coverages)
+        ]
 
     def _select_diverse(items: list[dict]) -> list[dict]:
         selected: list[dict] = []
@@ -229,4 +303,3 @@ def _build_direct_lookup_evidence_items(
     if focus_norms and focus_ranked:
         return _select_diverse(focus_ranked)
     return _select_diverse(ranked)
-

@@ -3,6 +3,7 @@ from __future__ import annotations
 from google.genai import types
 
 from ai.capabilities import (
+    answer_assistant_identity_question,
     answer_repo_meta_question,
     answer_smalltalk,
     answer_system_capability_question,
@@ -51,7 +52,12 @@ def try_handle_contextless_followup(
     has_focused_document_reference: bool = False,
 ) -> str | None:
     route_hint = getattr(event, "route_hint", None)
-    if route_hint in {"repo_meta", "smalltalk", "system_capability"}:
+    if route_hint in {
+        "assistant_identity",
+        "repo_meta",
+        "smalltalk",
+        "system_capability",
+    }:
         return None
 
     if not _looks_like_contextless_followup_question(question):
@@ -65,6 +71,12 @@ def try_handle_contextless_followup(
 
     logger.info("🛝 [本地短路] 命中无主语追问，跳过检索和远程模型调用")
     return CONTEXTLESS_FOLLOWUP_REPLY
+
+
+def try_handle_assistant_identity(route: str, question: str) -> str | None:
+    if route != "assistant_identity":
+        return None
+    return answer_assistant_identity_question(question)
 
 
 def try_handle_system_capability(route: str, question: str) -> str | None:

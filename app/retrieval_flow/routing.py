@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import requests
 
+from ai.generation_output import validate_generated_output
+
 
 def _call_local_ollama(prompt: str, logger, ollama_api_url: str, ollama_model: str) -> str:
     logger.info("   🤖 正在使用本地模型做大方面概括...")
@@ -12,7 +14,10 @@ def _call_local_ollama(prompt: str, logger, ollama_api_url: str, ollama_model: s
     }
     response = requests.post(ollama_api_url, json=payload, timeout=180)
     response.raise_for_status()
-    text = response.json().get("response", "").strip()
+    validation = validate_generated_output(response.json().get("response"))
+    if not validation.valid:
+        raise RuntimeError(f"本地模型返回无效: {validation.reason}")
+    text = validation.text
     logger.info(f"      ✨ 本地模型概括输出：[{text[:120]}]")
     return text
 
@@ -35,9 +40,10 @@ def build_remote_topic_summarizer(logger, client, model_id: str):
             raise RuntimeError("远程模型客户端不可用")
         logger.info("   🛰️ 正在使用远程模型做大方面概括...")
         response = client.models.generate_content(model=model_id, contents=prompt)
-        text = str(getattr(response, "text", "") or "").strip()
-        if not text:
-            raise RuntimeError("远程模型返回为空")
+        validation = validate_generated_output(getattr(response, "text", None))
+        if not validation.valid:
+            raise RuntimeError(f"远程模型返回无效: {validation.reason}")
+        text = validation.text
         logger.info(f"      ✨ 远程模型概括输出：[{text[:120]}]")
         return text
 

@@ -47,9 +47,6 @@ def answer_smalltalk(question: str, dialog_state=None) -> str | None:
     if contains_any(q, JUDGMENT_LIKE_KEYWORDS):
         return None
 
-    if contains_any(q, ("你叫什么", "你叫啥", "你叫啥名", "你叫啥名字", "你的名字", "你的姓名", "what is your name")):
-        return "你可以叫我 DocMind。"
-
     if contains_any(q, ("你多大", "你几岁", "你多少岁", "你今年多大", "你的年龄", "你的年纪", "how old are you")):
         return "我是 AI 助手，没有真实年龄。"
 

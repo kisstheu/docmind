@@ -4,6 +4,7 @@ import json
 import os
 import requests
 
+from ai.capability_identity import is_assistant_identity_request
 from ai.capability_smalltalk import answer_smalltalk
 from ai.query_rewriter import is_local_smalltalk_intent, rewrite_search_query
 from ai.query_router_rules import (
@@ -140,6 +141,10 @@ def route_question(
     last_answer_preview_hint = str(state_hint.get("last_answer_preview") or "").strip()
     last_effective_search_query_hint = str(state_hint.get("last_effective_search_query") or "").strip()
 
+    if is_assistant_identity_request(question):
+        logger.info(f"🧭 [Core 规则命中] assistant_identity -> {question}")
+        return {"route": "assistant_identity"}
+
     if _is_capability(q):
         logger.info(f"🧭 [规则命中] capability -> {question}")
         return {"route": "system_capability"}
@@ -147,6 +152,16 @@ def route_question(
     if is_rule_smalltalk:
         logger.info(f"🧭 [规则命中] smalltalk -> {question}")
         return {"route": "smalltalk"}
+
+    try:
+        from ai.repo_meta.classifier import parse_file_list_request
+
+        deterministic_inventory = parse_file_list_request(question) == ""
+    except Exception:
+        deterministic_inventory = False
+    if deterministic_inventory:
+        logger.info(f"🧭 [规则命中] repo_meta(local inventory) -> {question}")
+        return {"route": "repo_meta"}
 
     inventory_action = _is_repo_meta_inventory_by_local_model(
         question,

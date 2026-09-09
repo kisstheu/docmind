@@ -3,7 +3,12 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from ai.capability_common import CATEGORY_COUNT_KEYWORDS, CATEGORY_KEYWORDS, normalize_meta_question
+from ai.capability_common import (
+    CATEGORY_COUNT_KEYWORDS,
+    CATEGORY_KEYWORDS,
+    REPOSITORY_FILE_OBJECT_TERMS,
+    normalize_meta_question,
+)
 from ai.repo_meta.classifier import parse_file_list_request
 from ai.repo_meta.classifier_predicates import is_file_result_topic, looks_like_time_request
 
@@ -26,7 +31,7 @@ def is_structured_output_request(question: str) -> bool:
 def is_system_capability_request(question: str) -> bool:
     q = (question or "").strip()
     patterns = [
-        "你是谁", "介绍一下",
+        "介绍一下",
         "能干啥", "你能做什么", "能做什么", "可以做什么",
         "你可以做什么", "你的功能", "有什么功能", "有啥功能", "怎么用",
         "你能做啥", "能做啥", "做啥", "干啥",
@@ -48,7 +53,7 @@ def is_repo_meta_request(question: str) -> bool:
     if _is_file_locator_query(q):
         return False
 
-    has_doc_word = any(x in q for x in ["文件", "文档", "资料"])
+    has_doc_word = any(x in q for x in REPOSITORY_FILE_OBJECT_TERMS)
     has_list_intent = any(x in q for x in ["列出", "列下", "列一下", "列出来", "罗列", "展开一下", "展开列一下"])
     has_topic_overview_intent = any(
         x in q
@@ -113,10 +118,10 @@ def _looks_like_doc_inventory_listing_request(q: str) -> bool:
         return False
 
     patterns = (
-        r"(?:当前|目前|现在).{0,4}存(?:的是?|是|有)?(?:哪些|什么)(?:文件|文档|资料)",
-        r"^(?:当前|目前|现在)(?:有哪|有哪些|都有哪些)(?:文件|文档|资料)[？?]?$",
-        r"^(?:有哪|有哪些|都有哪些)(?:文件|文档|资料)[？?]?$",
-        r"^(?:文件|文档|资料)(?:有哪|有哪些)[？?]?$",
+        r"(?:当前|目前|现在).{0,4}存(?:的是?|是|有)?(?:哪些|什么)(?:文件|文档|资料|笔记)",
+        r"^(?:当前|目前|现在)(?:有哪|有哪些|都有哪些)(?:文件|文档|资料|笔记)[？?]?$",
+        r"^(?:有哪|有哪些|都有哪些)(?:文件|文档|资料|笔记)[？?]?$",
+        r"^(?:文件|文档|资料|笔记)(?:有哪|有哪些)[？?]?$",
     )
     return any(re.search(pattern, normalized) for pattern in patterns)
 
@@ -145,8 +150,33 @@ _CONTENT_LOOKUP_TARGET_PATTERNS = (
     r"(.+?)(?:有)?(?:哪些|哪几个|哪几家|哪几位|哪几条|哪几项)$",
 )
 
+_COLLECTION_RELATION_SLOT = (
+    "涉及", "包含", "包括", "提到", "提及", "讲到", "说到", "说", "涵盖", "出现",
+)
+_ENUMERATION_INTERROGATIVE_SLOT = (
+    r"(?:有)?(?:哪些|哪几(?:个|位|家|条|项|种|类)?|什么|啥|多少(?:个|位|家|条|项|种|类)?)"
+)
+_OPEN_LISTING_INTERROGATIVE_SLOT = (
+    r"(?:有哪些|有哪几(?:个|位|家|条|项|种|类)?|有什么|有啥|哪些|哪几(?:个|位|家|条|项|种|类)?)"
+)
+_CONTEXTUAL_ENUMERATION_PREFIX = re.compile(
+    r"^(?:"
+    r"(?:归纳|汇总|总结|概括|综合)(?:一下|下)?"
+    r"|(?:这些|那些|上述|前述)(?:文件|文档|资料|材料|记录|内容)?(?:里|中|里面)?"
+    r"|(?:这|那)(?:批|组|几份|几个)(?:文件|文档|资料|材料|记录)?(?:里|中|里面)?"
+    r"|它们|其中|这里面|那里面|当前范围(?:里|中)?|上述范围(?:里|中)?"
+    r")$"
+)
+_EXPLICIT_CORPUS_SCOPE_REFERENCE = re.compile(
+    r"(?:整个(?:知识库|库)|全库|(?:所有|全部)(?:文件|文档|资料|材料|记录))"
+    r"(?:里|中|内|里面)?"
+)
+_COMPLETED_PREDICATE_PREFIX = re.compile(
+    r"^(?P<subject>.*?)(?P<predicate>[\u3400-\u9fff]{1,2})(?:到|出)?(?:了|过)$"
+)
+
 _BARE_LOOKUP_TARGETS = {
-    "", "还", "还有", "都", "分别", "具体", "其他", "其它", "别", "别的", "更多",
+    "", "还", "还有", "都", "分别", "具体", "其他", "其它", "别", "别的", "更多", "用",
     "这", "那", "这个", "那个", "这些", "那些", "其中", "里面", "这里面",
 }
 
@@ -166,11 +196,73 @@ def _is_repo_meta_lookup_target(target: str) -> bool:
     )
 
 
+def _parse_content_enumeration_slots(question: str) -> tuple[str, str] | None:
+    """Parse subject/relation/interrogative/target slots from an open listing."""
+    q = normalize_meta_question(question)
+    if not q:
+        return None
+
+    # “哪些文件提到了 X”以文件为待定位主语，属于证据定位；不能把
+    # “文件提到了 X”误抽成开放枚举的目标槽位。
+    if re.match(
+        r"^(?:哪些|哪几(?:个|份|篇|条)?)(?:文件|文档|资料|材料|记录)(?:里|中|里面)?",
+        q,
+    ):
+        return None
+
+    relation = "|".join(
+        sorted((re.escape(item) for item in _COLLECTION_RELATION_SLOT), key=len, reverse=True)
+    )
+    patterns = (
+        rf"^(?P<prefix>.*?)(?:{relation})(?:到|了|到过|过)?"
+        rf"(?:都|还|也)?{_ENUMERATION_INTERROGATIVE_SLOT}(?P<target>.+)$",
+        rf"^(?P<prefix>.*?){_OPEN_LISTING_INTERROGATIVE_SLOT}(?P<target>.+)$",
+    )
+    for pattern in patterns:
+        match = re.fullmatch(pattern, q)
+        if not match:
+            continue
+        target = re.sub(r"(?:呢|吗|啊|呀|吧)$", "", match.group("target").strip())
+        if target and not _is_repo_meta_lookup_target(target):
+            return match.group("prefix").strip(), target
+    return None
+
+
+def _is_contextual_enumeration_prefix(prefix: str) -> bool:
+    compact = re.sub(r"^(?:请问|请|帮我|麻烦(?:你)?|再问一下)", "", prefix or "")
+    compact = re.sub(r"^(?:一共|总共|总体)", "", compact)
+    compact = re.sub(r"^(?:都|还|也|分别|各自)", "", compact)
+    compact = re.sub(r"(?:都|还|也|分别|各自)$", "", compact)
+    if not compact or _CONTEXTUAL_ENUMERATION_PREFIX.fullmatch(compact):
+        return True
+
+    completed_predicate = _COMPLETED_PREDICATE_PREFIX.fullmatch(compact)
+    return bool(completed_predicate and not completed_predicate.group("subject"))
+
+
+def is_explicit_corpus_content_enumeration_request(question: str) -> bool:
+    """Identify an open content listing that explicitly selects the whole corpus."""
+    if is_repo_meta_request(question):
+        return False
+    parsed = _parse_content_enumeration_slots(question)
+    if parsed and re.match(r"^(?:是|为|属于)", parsed[1]):
+        return False
+    return bool(
+        parsed
+        and parsed[1]
+        and _EXPLICIT_CORPUS_SCOPE_REFERENCE.search(parsed[0])
+    )
+
+
 def extract_content_lookup_target(question: str) -> str:
     """从内容枚举问句中提取开放目标；仓库元数据目标返回空串。"""
     q = normalize_meta_question(question)
     if not q or is_repo_meta_request(question):
         return ""
+
+    parsed = _parse_content_enumeration_slots(question)
+    if parsed is not None:
+        return parsed[1]
 
     for pattern in _CONTENT_LOOKUP_TARGET_PATTERNS:
         match = re.search(pattern, q)
@@ -186,6 +278,26 @@ def extract_content_lookup_target(question: str) -> str:
     ):
         return "谁"
     return ""
+
+
+def is_collection_context_open_enumeration_request(
+    question: str,
+    *,
+    has_collection_context: bool,
+) -> bool:
+    """Identify an open entity listing whose omitted subject is the active collection."""
+    if not has_collection_context or is_repo_meta_request(question):
+        return False
+    parsed = _parse_content_enumeration_slots(question)
+    return bool(parsed and _is_contextual_enumeration_prefix(parsed[0]))
+
+
+def has_explicit_content_enumeration_subject(question: str) -> bool:
+    """Return whether an open listing names a subject outside contextual scope."""
+    if is_repo_meta_request(question):
+        return False
+    parsed = _parse_content_enumeration_slots(question)
+    return bool(parsed and not _is_contextual_enumeration_prefix(parsed[0]))
 
 
 def is_content_lookup_request(question: str) -> bool:

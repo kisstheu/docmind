@@ -4,6 +4,9 @@ import re
 from collections import Counter
 from typing import Callable, Iterable, Sequence
 
+
+REPOSITORY_FILE_OBJECT_TERMS = ("文件", "文档", "资料", "笔记")
+
 BAD_TAGS = {
     "项目", "文件", "文档", "内容", "记录", "笔记",
     "开发", "系统", "设计", "方案", "总结",

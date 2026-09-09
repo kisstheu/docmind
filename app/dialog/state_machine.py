@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from ai.capability_identity import is_assistant_identity_request
+from ai.table_presentation import StructuredTable, TableRenderOptions
 from app.context_anchor import is_context_dependent_question
 from app.chat_text.file_lookup import (
     has_explicit_focus_reference,
@@ -15,6 +17,9 @@ from app.chat_text.file_lookup import (
 from app.chat_text.core import is_answer_depth_followup
 from app.dialog.repo_meta_rules import (
     extract_content_lookup_target,
+    has_explicit_content_enumeration_subject,
+    is_collection_context_open_enumeration_request,
+    is_explicit_corpus_content_enumeration_request,
     is_list_format_modifier,
     is_repo_meta_request,
     is_structured_output_request,
@@ -33,9 +38,11 @@ from app.dialog.result_set import (
     looks_like_result_set_continuation_followup,
     looks_like_result_set_comparison_followup,
     looks_like_result_set_followup,
+    looks_like_result_set_predicate_followup,
 )
 from app.dialog.task_semantics import (
     classify_answer_mode,
+    is_answer_presentation_followup,
     is_selected_candidate_detail_request,
 )
 from app.dialog_utils import (
@@ -163,6 +170,56 @@ def _looks_like_collection_elaboration_followup(
     return not looks_like_result_set_comparison_followup(question)
 
 
+def _active_collection_paths(state: "ConversationState") -> tuple[str, ...]:
+    if state.last_result_set_entity_type == "文件" and state.last_result_set_items:
+        return tuple(state.last_result_set_items)
+    if (
+        state.last_generated_result_items
+        and state.last_generated_result_source_candidates
+        and not state.last_selected_candidate
+    ):
+        return tuple(dict.fromkeys(state.last_generated_result_source_candidates))
+    return ()
+
+
+def _looks_like_active_file_result_set_predicate_followup(
+    question: str,
+    state: "ConversationState",
+) -> bool:
+    """Resolve collection continuity without classifying the requested attribute."""
+    if state.last_result_set_entity_type != "文件" or not state.last_result_set_items:
+        return False
+    if (
+        state.last_generated_result_items
+        and state.last_generated_result_entity_type
+        and state.last_generated_result_entity_type != "文件"
+    ):
+        return False
+    if (
+        is_repo_meta_request(question)
+        or looks_like_repo_time_question(question, state)
+        or looks_like_repo_topic_question(question, state)
+        or looks_like_repo_size_consistency_followup(
+            question,
+            state.last_content_user_question,
+        )
+        or is_system_capability_request(question)
+        or is_smalltalk_message(question)
+        or is_action_request(question)
+        or is_relationship_analysis_request(question)
+    ):
+        return False
+    if (
+        has_explicit_content_enumeration_subject(question)
+        and not has_explicit_focus_reference(question)
+        and not has_explicit_single_file_result_reference(question)
+    ):
+        return False
+    if not is_context_dependent_question(question, state.last_effective_search_query):
+        return False
+    return looks_like_result_set_predicate_followup(question)
+
+
 @dataclass
 class ConversationState:
     mode: str = "idle"
@@ -178,6 +235,9 @@ class ConversationState:
 
     last_effective_search_query: str | None = None
     last_answer_text: str | None = None
+    last_factual_answer_text: str | None = None
+    current_presentation_table: StructuredTable | None = None
+    current_presentation_options: TableRenderOptions | None = None
     last_answer_type: str | None = None
     last_answer_strategy: str | None = None
     last_answer_source_files: list[str] | None = None
@@ -189,6 +249,7 @@ class ConversationState:
     last_result_set_selectable: bool | None = None
     last_result_set_focus_file: str | None = None
     last_generated_result_items: list[str] | None = None
+    last_generated_result_entity_type: str | None = None
     last_generated_result_source_candidates: list[str] | None = None
     last_generated_result_source_hits: list[list[str]] | None = None
     last_generated_result_focuses: list[str] | None = None
@@ -236,10 +297,29 @@ def detect_dialog_event(
         f"enum_like={enum_like} | "
         f"last_answer_type={last_answer_type}"
     )
+    if is_assistant_identity_request(question):
+        return DialogEvent(
+            name="assistant_identity",
+            route_hint="assistant_identity",
+        )
+
     prev_q = state.last_content_user_question
     prev_route = state.last_content_route
     last_topic = state.last_local_topic
     content_lookup_target = extract_content_lookup_target(question)
+    active_collection_paths = _active_collection_paths(state)
+    collection_open_enumeration = is_collection_context_open_enumeration_request(
+        question,
+        has_collection_context=bool(active_collection_paths),
+    )
+    explicit_new_subject_enumeration = bool(
+        has_explicit_content_enumeration_subject(question)
+        and not has_explicit_single_file_result_reference(question)
+        and not has_explicit_focus_reference(question)
+    )
+    explicit_corpus_enumeration = is_explicit_corpus_content_enumeration_request(
+        question
+    )
 
     selected_candidate_is_active = bool(state.last_selected_candidate)
     file_focus_overrides_selection = False
@@ -256,9 +336,20 @@ def detect_dialog_event(
 
     answer_mode = classify_answer_mode(
         question,
-        has_collection_context=bool(state.last_result_set_items),
+        has_collection_context=(
+            bool(state.last_result_set_items)
+            and not explicit_new_subject_enumeration
+        ),
+        has_collection_open_enumeration=collection_open_enumeration,
         has_selected_candidate=selected_candidate_is_active,
     )
+
+    if is_answer_presentation_followup(
+        question,
+        has_previous_answer=has_last_answer,
+        current_table=state.current_presentation_table,
+    ):
+        return DialogEvent(name="answer_presentation_followup")
 
     if file_focus_overrides_selection and is_selected_candidate_detail_request(
         question,
@@ -271,17 +362,57 @@ def detect_dialog_event(
         )
 
     current_result_set_focus_file = focused_file or state.last_result_set_focus_file
-    is_standalone_general_question = looks_like_standalone_general_question(question)
+    is_standalone_general_question = bool(
+        looks_like_standalone_general_question(question)
+        or explicit_new_subject_enumeration
+    )
     if answer_mode == "selected_detail":
         return DialogEvent(name="selected_candidate_followup", route_hint="normal_retrieval")
     if answer_mode == "decision":
         return DialogEvent(name="decision_request", route_hint="normal_retrieval")
+    if explicit_corpus_enumeration:
+        return DialogEvent(
+            name="synthesis_request",
+            route_hint="normal_retrieval",
+            content_target=content_lookup_target or None,
+        )
+
+    if (
+        active_collection_paths
+        and state.last_result_set_entity_type == "文件"
+        and not current_result_set_focus_file
+        and looks_like_bare_content_question(question)
+    ):
+        return DialogEvent(
+            name="result_set_followup",
+            route_hint="normal_retrieval",
+        )
 
     if _looks_like_collection_elaboration_followup(question, state):
-        return DialogEvent(name="synthesis_request", route_hint="normal_retrieval")
+        return DialogEvent(
+            name="synthesis_request",
+            route_hint="normal_retrieval",
+            content_target=content_lookup_target or None,
+        )
+
+    if (
+        active_collection_paths
+        and state.last_result_set_entity_type == "文件"
+        and not current_result_set_focus_file
+        and answer_mode != "synthesis"
+        and _looks_like_active_file_result_set_predicate_followup(question, state)
+    ):
+        return DialogEvent(
+            name="result_set_followup",
+            route_hint="normal_retrieval",
+        )
 
     if file_topic_result_set_followup:
-        return DialogEvent(name="result_set_followup", route_hint="normal_retrieval")
+        return DialogEvent(
+            name="result_set_followup",
+            route_hint="normal_retrieval",
+            content_target=content_lookup_target or None,
+        )
 
     if (
         current_result_set_focus_file
@@ -361,12 +492,15 @@ def detect_dialog_event(
 
     if (
         answer_mode == "synthesis"
-        and state.last_result_set_entity_type == "文件"
-        and bool(state.last_result_set_items)
+        and bool(active_collection_paths)
         and not is_summary_followup_request(question)
         and not current_result_set_focus_file
     ):
-        return DialogEvent(name="synthesis_request", route_hint="normal_retrieval")
+        return DialogEvent(
+            name="synthesis_request",
+            route_hint="normal_retrieval",
+            content_target=content_lookup_target or None,
+        )
 
     if (
         current_result_set_focus_file
@@ -520,6 +654,9 @@ def apply_event_to_state(state: ConversationState, event: DialogEvent) -> Conver
 
         last_effective_search_query=state.last_effective_search_query,
         last_answer_text=state.last_answer_text,
+        last_factual_answer_text=state.last_factual_answer_text,
+        current_presentation_table=state.current_presentation_table,
+        current_presentation_options=state.current_presentation_options,
         last_answer_type=state.last_answer_type,
         last_answer_strategy=state.last_answer_strategy,
         last_answer_source_files=state.last_answer_source_files,
@@ -532,6 +669,7 @@ def apply_event_to_state(state: ConversationState, event: DialogEvent) -> Conver
         last_result_set_selectable=state.last_result_set_selectable,
         last_result_set_focus_file=state.last_result_set_focus_file,
         last_generated_result_items=state.last_generated_result_items,
+        last_generated_result_entity_type=state.last_generated_result_entity_type,
         last_generated_result_source_candidates=state.last_generated_result_source_candidates,
         last_generated_result_source_hits=state.last_generated_result_source_hits,
         last_generated_result_focuses=state.last_generated_result_focuses,
@@ -550,6 +688,8 @@ def apply_event_to_state(state: ConversationState, event: DialogEvent) -> Conver
         new_state.mode = "repo_meta"
     elif event.route_hint == "normal_retrieval":
         new_state.mode = "content"
+    elif event.name == "assistant_identity":
+        new_state.mode = "assistant_identity"
     elif event.name == "smalltalk":
         new_state.mode = "smalltalk"
 

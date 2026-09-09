@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from ai.generation_output import validate_generated_output
+
 
 def looks_like_structured_skill_summary_request(question: str) -> bool:
     text = str(question or "").strip()
@@ -82,10 +84,14 @@ def summarize_structured_skill_summary_with_remote(
         logger.warning(f"⚠️ [结构化能力归纳] 远程归纳失败，回退本地证据包 ({exc})")
         return materials_markdown
 
-    text = str(getattr(response, "text", "") or "").strip()
-    if not text:
+    validation = validate_generated_output(getattr(response, "text", None))
+    if not validation.valid:
+        logger.warning(
+            "⚠️ [结构化能力归纳] 远程输出无效，回退本地证据包 "
+            f"(reason={validation.reason}, raw_chars={validation.raw_length})"
+        )
         return materials_markdown
-    return text
+    return validation.text
 
 
 def _collect_records(repo_state) -> list[tuple[str, str]]:

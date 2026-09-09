@@ -4,6 +4,11 @@ import re
 import warnings
 
 from ai.decision_result import parse_decision_result
+from ai.table_presentation import (
+    StructuredTable,
+    TableRenderOptions,
+    bind_structured_table_row_identities,
+)
 from app.chat_state_answer_parsing import (
     EXPANSION_MARKERS,
     _contains_no_new_signal,
@@ -25,7 +30,7 @@ from app.dialog.question_scope import (
     analyze_question_signals,
     decide_file_result_set_scope,
 )
-from app.dialog.result_set import has_selectable_result_set
+from app.dialog.result_set import file_result_set_display_name, has_selectable_result_set
 
 FOLLOWUP_EVENT_NAMES = {
     "entity_lookup_followup",
@@ -125,6 +130,47 @@ def print_answer(answer_text: str, start_qa: float) -> None:
     print(f"⏱️ 耗时: {time.time() - start_qa:.2f}s")
 
 
+def update_state_after_answer_presentation(
+    state,
+    question: str,
+    answer: str,
+    *,
+    table: StructuredTable | None = None,
+    options: TableRenderOptions | None = None,
+):
+    """Replace the current view while preserving its factual authority."""
+    if not getattr(state, "last_factual_answer_text", None):
+        state.last_factual_answer_text = (
+            state.last_answer_text or state.last_answer_preview or ""
+        )
+    state.last_user_question = question
+    state.last_answer_text = answer
+    state.last_answer_preview = answer[:200]
+    state.last_answer_strategy = "last_answer_transform"
+    if (
+        table is not None
+        and state.last_result_set_entity_type == "文件"
+        and state.last_result_set_items
+        and state.last_result_set_selectable is True
+    ):
+        display_name_counts: dict[str, int] = {}
+        for item in state.last_result_set_items:
+            display_name = file_result_set_display_name(item)
+            display_name_counts[display_name] = display_name_counts.get(display_name, 0) + 1
+        identity_aliases = {
+            item: (
+                (item, file_result_set_display_name(item))
+                if display_name_counts[file_result_set_display_name(item)] == 1
+                else (item,)
+            )
+            for item in state.last_result_set_items
+        }
+        table = bind_structured_table_row_identities(table, identity_aliases)
+    state.current_presentation_table = table
+    state.current_presentation_options = options if table is not None else None
+    return state
+
+
 def _merge_result_set_items(prev_items: list[str] | None, new_items: list[str] | None, limit: int = 20) -> list[str]:
     merged: list[str] = []
     seen: set[str] = set()
@@ -170,6 +216,7 @@ def _looks_like_short_file_result_set_retry(question: str) -> bool:
 
 def _clear_generated_result_state(state) -> None:
     state.last_generated_result_items = None
+    state.last_generated_result_entity_type = None
     state.last_generated_result_source_candidates = None
     state.last_generated_result_source_hits = None
     state.last_generated_result_focuses = None
@@ -182,12 +229,17 @@ def update_state_after_local_answer(
     route: str,
     local_topic: str | None,
     is_content_answer: bool,
+    *,
+    canonical_file_paths: list[str] | tuple[str, ...] | None = None,
 ):
     state.last_user_question = question
     state.last_route = route
     state.last_local_topic = local_topic
     state.last_answer_preview = answer[:200]
     state.last_answer_text = answer
+    state.last_factual_answer_text = answer
+    state.current_presentation_table = None
+    state.current_presentation_options = None
     state.last_answer_strategy = "local"
     state.last_answer_source_files = None
     if local_topic in {"category_summary", "category_count_breakdown", "category_overview"}:
@@ -202,12 +254,28 @@ def update_state_after_local_answer(
     state.last_answer_type = local_answer_type
 
     if local_answer_type == "enumeration_file" or local_topic in {"list_files", "list_files_by_topic"}:
-        file_items = extract_file_items(answer)
+        if canonical_file_paths is not None and local_topic in {"list_files", "list_files_by_topic"}:
+            # Local inventories render complete paths. Bind each visible row to
+            # the existing identity; filename parsing must not create authority.
+            canonical_by_path = {path: path for path in canonical_file_paths}
+            visible_items = extract_numbered_items(answer)
+            selectable = bool(visible_items) and all(
+                item in canonical_by_path for item in visible_items
+            ) and len(set(visible_items)) == len(visible_items)
+            file_items = (
+                [canonical_by_path[item] for item in visible_items]
+                if selectable else visible_items
+            )
+            # Unmapped rows retain display context only, with ordinals disabled.
+            state.last_answer_type = "enumeration_file" if file_items else None
+        else:
+            file_items = extract_file_items(answer)
+            selectable = bool(file_items)
         state.last_result_set_items = file_items or None
         state.last_result_set_entity_type = "文件" if file_items else None
         state.last_result_set_summary_text = None
         state.last_result_set_summary_level = 0
-        state.last_result_set_selectable = bool(file_items)
+        state.last_result_set_selectable = selectable
         state.last_result_set_focus_file = None
         _clear_generated_result_state(state)
 
@@ -315,6 +383,9 @@ def update_state_after_retrieval_answer(
 
     state.last_answer_text = answer_text
     state.last_answer_preview = answer_text[:200]
+    state.last_factual_answer_text = answer_text
+    state.current_presentation_table = None
+    state.current_presentation_options = None
     state.last_answer_strategy = answer_strategy
     state.last_answer_source_files = (
         extract_file_items(answer_text)
@@ -413,6 +484,7 @@ def update_state_after_retrieval_answer(
             state.last_result_set_summary_text = None
             state.last_result_set_summary_level = 0
             state.last_generated_result_items = display_items
+            state.last_generated_result_entity_type = entity_type
             state.last_generated_result_source_candidates = source_candidates
             state.last_generated_result_source_hits = source_hits
             state.last_generated_result_focuses = opaque_focuses
@@ -429,6 +501,7 @@ def update_state_after_retrieval_answer(
             state.last_result_set_selectable = False
             state.last_result_set_focus_file = prev_result_set_focus_file
             state.last_generated_result_items = display_items or None
+            state.last_generated_result_entity_type = entity_type if display_items else None
             state.last_generated_result_source_candidates = source_candidates or (
                 list(prev_result_set_items or []) or None
             )
@@ -443,7 +516,8 @@ def update_state_after_retrieval_answer(
             logger.debug(
                 "🧭 [生成结果来源] "
                 f"display_items={state.last_generated_result_items} | "
-                f"source_hits={state.last_generated_result_source_hits}"
+                f"source_hits={state.last_generated_result_source_hits} | "
+                f"binding_failures={list(getattr(generated_result_provenance, 'binding_failures', ()) or ())}"
             )
     elif answer_type == "enumeration_company":
         _clear_generated_result_state(state)
@@ -502,9 +576,12 @@ def update_state_after_retrieval_answer(
             if file_items and is_followup_turn:
                 file_items = _merge_result_set_items(prev_result_set_items, file_items)
                 logger.debug("🧪 [候选集合提取] 追问场景合并文件候选集合")
-            elif not file_items and _contains_no_new_signal(answer_text):
+            elif not file_items and preserves_active_file_result_set:
                 file_items = prev_result_set_items
-                logger.debug("🧪 [候选集合提取] 本轮无新增文件，沿用上一轮文件候选集合")
+                logger.debug(
+                    "🧪 [候选集合提取] 本轮未形成有效新文件集合且无明确失效依据，"
+                    "沿用上一轮文件候选集合"
+                )
 
         state.last_result_set_items = file_items or None
         state.last_result_set_entity_type = "文件" if file_items else None
@@ -780,6 +857,7 @@ def update_state_after_retrieval_answer(
                 )
             ]
             state.last_generated_result_items = list(visible_items)
+            state.last_generated_result_entity_type = None
             state.last_generated_result_source_candidates = (
                 provenance_candidates or list(prev_result_set_items or [])
             )

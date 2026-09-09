@@ -104,11 +104,11 @@ def is_weak_query(
     if is_entity_lookup_query(q):
         return False
 
-    if not search_terms:
-        return True
-
     if has_bounded_scope and has_content_enumeration_intent:
         return False
+
+    if not search_terms:
+        return True
 
     joined = "".join(search_terms).strip()
     if len(search_terms) == 1 and len(joined) <= 2:

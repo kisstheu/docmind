@@ -6,7 +6,7 @@ from ai.capability_common import SYSTEM_CAPABILITY_KEYWORDS, clean_text, contain
 def answer_system_capability_question(question: str):
     q = clean_text(question)
 
-    if contains_any(q, ("你是谁", "介绍一下")):
+    if contains_any(q, ("介绍一下",)):
         return "我是你的 DocMind 随身助理，主要负责根据你的本地笔记和文档回答问题、整理线索，并做有限归纳。"
 
     if contains_any(q, SYSTEM_CAPABILITY_KEYWORDS):

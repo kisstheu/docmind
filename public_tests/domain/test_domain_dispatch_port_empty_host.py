@@ -17,6 +17,7 @@ import pytest
 import app.chat_loop as runtime
 import app.chat_loop_parts.runner as runner
 import ask_notes
+from ai.table_presentation import StructuredTable, TableRenderOptions
 from app.dialog_state_machine import ConversationState, DialogEvent
 from app.domain_dispatch_port import DomainDispatchPort, dispatch_domain_request
 from app.domain_host import EmptyDomainHost, StaticDomainHost
@@ -170,12 +171,13 @@ class _SpyPort:
 
 
 class _FakeModels:
-    def __init__(self):
+    def __init__(self, text="受控模型回答"):
         self.calls = []
+        self.text = text
 
     def generate_content(self, **kwargs):
         self.calls.append(kwargs)
-        return SimpleNamespace(text="受控模型回答")
+        return SimpleNamespace(text=self.text)
 
 
 def _state_snapshot(state: ConversationState):
@@ -200,6 +202,7 @@ def _run_turn(
     use_real_state_updates=False,
     material_indices=None,
     material_focus=_UNSET,
+    model_text="受控模型回答",
     domain_options=None,
     repo_state=None,
 ):
@@ -242,7 +245,7 @@ def _run_turn(
         "events": [],
         "route_inputs": [],
     }
-    fake_models = _FakeModels()
+    fake_models = _FakeModels(model_text)
 
     monkeypatch.setattr(runtime, "build_chat_config", lambda _repo: {"stable": True})
     monkeypatch.setattr(runtime, "_flush_pending_tty_input_unix", lambda: None)
@@ -293,6 +296,7 @@ def _run_turn(
             lambda **_kwargs: "守门回答" if gate == "contextless" else None,
         )
     route = gate if gate in {
+        "assistant_identity",
         "system_capability",
         "repo_meta",
         "smalltalk",
@@ -311,6 +315,11 @@ def _run_turn(
         }
 
     monkeypatch.setattr(runner, "resolve_route", fake_resolve_route)
+    monkeypatch.setattr(
+        runtime,
+        "try_handle_assistant_identity",
+        lambda *_args: "守门回答" if gate == "assistant_identity" else None,
+    )
     monkeypatch.setattr(
         runtime,
         "try_handle_system_capability",
@@ -460,6 +469,339 @@ def _assert_cli_file_failure(monkeypatch, capsys, path: Path, *secrets: str):
     assert "Traceback" not in output.err
     assert "ValidationError" not in output.err
     assert "repr(" not in output.err
+
+
+def test_previous_answer_presentation_transform_skips_retrieval_and_source_context(
+    monkeypatch,
+    tmp_path,
+):
+    plugin = _NeutralPlugin(lambda request: _domain_result(request, "abstain"))
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+    previous_answer = "岗位甲负责接口，岗位乙负责数据处理。"
+    state = ConversationState(
+        mode="content",
+        last_user_question="对比这两个岗位",
+        last_route="normal_retrieval",
+        last_content_user_question="对比这两个岗位",
+        last_content_route="normal_retrieval",
+        last_effective_search_query="合成岗位对比",
+        last_answer_text=previous_answer,
+        last_answer_preview=previous_answer,
+        last_answer_type="enumeration_generated",
+        last_result_set_items=["岗位甲", "岗位乙"],
+        last_result_set_entity_type="岗位",
+        last_generated_result_items=["岗位甲", "岗位乙"],
+        last_generated_result_entity_type="岗位",
+        last_generated_result_source_candidates=["资料甲.md", "资料乙.md"],
+        last_generated_result_source_hits=[["资料甲.md"], ["资料乙.md"]],
+        last_generated_result_focuses=["focus-a", "focus-b"],
+    )
+
+    updated, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=["给我个表格吧"],
+        initial_state=state,
+        initial_focus=None,
+        use_real_dialog_events=True,
+        use_real_state_updates=True,
+        generate=True,
+        model_text=(
+            '{"columns":["候选岗位","职责摘要"],'
+            '"rows":[["岗位甲","接口"],["岗位乙","数据处理"]]}'
+        ),
+    )
+
+    assert [event.name for event in captured["events"]] == [
+        "answer_presentation_followup"
+    ]
+    assert captured["route_inputs"] == []
+    assert captured["search"] == []
+    assert captured["materials"] == []
+    assert captured["prompts"] == []
+    assert len(fake_models.calls) == 1
+    assert previous_answer in fake_models.calls[0]["contents"]
+    assert "稳定上下文" not in fake_models.calls[0]["contents"]
+    table_answer = (
+        " 候选岗位  职责摘要 \n"
+        "────────────────────\n"
+        " 岗位甲    接口     \n"
+        " 岗位乙    数据处理"
+    )
+    assert captured["printed"] == [table_answer]
+    assert updated.last_answer_text == table_answer
+    assert updated.last_factual_answer_text == previous_answer
+    assert updated.current_presentation_table.columns == ("候选岗位", "职责摘要")
+    assert updated.current_presentation_table.rows == (
+        ("岗位甲", "接口"),
+        ("岗位乙", "数据处理"),
+    )
+    assert updated.last_answer_strategy == "last_answer_transform"
+    assert updated.last_effective_search_query == "合成岗位对比"
+    assert updated.last_generated_result_items == ["岗位甲", "岗位乙"]
+    assert updated.last_generated_result_source_candidates == ["资料甲.md", "资料乙.md"]
+    assert plugin.execute_requests == []
+    structured_config = fake_models.calls[0]["config"]
+    assert structured_config["response_mime_type"] == "application/json"
+    assert structured_config["response_schema"] is not None
+    assert structured_config["max_output_tokens"] == 8_192
+
+
+def test_existing_structured_table_is_refined_locally_without_a_second_model_call(
+    monkeypatch,
+    tmp_path,
+):
+    plugin = _NeutralPlugin(lambda request: _domain_result(request, "abstain"))
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+    previous_answer = "条款甲约定交付，条款乙约定验收。"
+    state = ConversationState(
+        mode="content",
+        last_user_question="概括合同条款",
+        last_route="normal_retrieval",
+        last_content_user_question="概括合同条款",
+        last_content_route="normal_retrieval",
+        last_effective_search_query="合成合同条款",
+        last_answer_text=previous_answer,
+        last_answer_preview=previous_answer,
+    )
+
+    updated, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=["给我个表格吧", "可以整齐一点吗？"],
+        initial_state=state,
+        initial_focus=None,
+        use_real_dialog_events=True,
+        use_real_state_updates=True,
+        generate=True,
+        model_text=(
+            '{"columns":["条款","约定"],'
+            '"rows":[["条款甲","交付"],["条款乙","验收"]]}'
+        ),
+    )
+
+    assert [event.name for event in captured["events"]] == [
+        "answer_presentation_followup",
+        "answer_presentation_followup",
+    ]
+    assert len(fake_models.calls) == 1
+    assert captured["route_inputs"] == []
+    assert captured["search"] == []
+    assert captured["materials"] == []
+    assert captured["prompts"] == []
+    assert len(captured["printed"]) == 2
+    assert all("条款甲" in answer and "条款乙" in answer for answer in captured["printed"])
+    assert updated.last_factual_answer_text == previous_answer
+    assert updated.current_presentation_table.columns == ("条款", "约定")
+    assert updated.current_presentation_options.balanced is True
+    assert plugin.execute_requests == []
+
+
+@pytest.mark.parametrize(
+    ("columns", "rows", "question", "expected_rows"),
+    [
+        (
+            ("候选人", "文件名"),
+            (("候选人X", "10_简历.pdf"), ("候选人Y", "2_简历.pdf")),
+            "按文件名排一下",
+            (("候选人Y", "2_简历.pdf"), ("候选人X", "10_简历.pdf")),
+        ),
+        (
+            ("条款", "版本"),
+            (("条款甲", "第12版"), ("条款乙", "第3版")),
+            "按版本排",
+            (("条款乙", "第3版"), ("条款甲", "第12版")),
+        ),
+        (
+            ("采购项", "批次"),
+            (("采购项甲", "批次2"), ("采购项乙", "批次11")),
+            "按批次倒序排吧",
+            (("采购项乙", "批次11"), ("采购项甲", "批次2")),
+        ),
+    ],
+)
+def test_existing_table_column_sort_is_local_and_keeps_factual_authority(
+    monkeypatch,
+    tmp_path,
+    columns,
+    rows,
+    question,
+    expected_rows,
+):
+    plugin = _NeutralPlugin(lambda request: _domain_result(request, "abstain"))
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+    factual_answer = "上一轮已有且经过验证的事实回答。"
+    state = ConversationState(
+        mode="content",
+        last_user_question="上一轮问题",
+        last_route="normal_retrieval",
+        last_content_user_question="上一轮问题",
+        last_content_route="normal_retrieval",
+        last_effective_search_query="既有事实检索锚点",
+        last_answer_text="上一轮表格视图",
+        last_answer_preview="上一轮表格视图",
+        last_factual_answer_text=factual_answer,
+        current_presentation_table=StructuredTable(columns=columns, rows=rows),
+        current_presentation_options=TableRenderOptions(compact=True),
+    )
+
+    updated, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=[question],
+        initial_state=state,
+        initial_focus=None,
+        use_real_dialog_events=True,
+        use_real_state_updates=True,
+        generate=True,
+    )
+
+    assert [event.name for event in captured["events"]] == [
+        "answer_presentation_followup"
+    ]
+    assert captured["route_inputs"] == []
+    assert captured["search"] == []
+    assert captured["materials"] == []
+    assert captured["prompts"] == []
+    assert fake_models.calls == []
+    assert plugin.execute_requests == []
+    assert updated.current_presentation_table.columns == columns
+    assert updated.current_presentation_table.rows == expected_rows
+    assert updated.current_presentation_options.compact is True
+    assert updated.last_factual_answer_text == factual_answer
+    assert updated.last_effective_search_query == "既有事实检索锚点"
+
+
+def test_pathological_table_structure_is_rejected_before_schema_or_renderer(
+    monkeypatch,
+    tmp_path,
+):
+    plugin = _NeutralPlugin(lambda request: _domain_result(request, "abstain"))
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+    previous_answer = "合成项甲已有说明。"
+    state = ConversationState(
+        last_answer_text=previous_answer,
+        last_answer_preview=previous_answer,
+    )
+
+    updated, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=["给我个表格吧"],
+        initial_state=state,
+        initial_focus=None,
+        use_real_dialog_events=True,
+        model_text="有效开头" + " " * 100_000,
+    )
+
+    assert len(fake_models.calls) == 1
+    assert captured["search"] == captured["materials"] == []
+    assert captured["printed"] == [
+        "本次格式转换未生成有效内容，已停止展示；上一轮回答仍保留，可重试。"
+    ]
+    assert captured["memory_calls"] == []
+    assert updated.last_answer_text == previous_answer
+
+
+def test_malformed_table_structure_does_not_render_or_pollute_conversation(
+    monkeypatch,
+    tmp_path,
+):
+    plugin = _NeutralPlugin(lambda request: _domain_result(request, "abstain"))
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+    previous_answer = "合成项甲已有说明。"
+    state = ConversationState(
+        last_answer_text=previous_answer,
+        last_answer_preview=previous_answer,
+    )
+
+    def fail_renderer(_table):
+        raise AssertionError("invalid structured data must not reach renderer")
+
+    monkeypatch.setattr(runner, "render_structured_table", fail_renderer)
+    updated, captured, _fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=["给我个表格吧"],
+        initial_state=state,
+        initial_focus=None,
+        use_real_dialog_events=True,
+        model_text='{"columns":[],"rows":[["合成项甲"]]}',
+    )
+
+    assert captured["printed"] == [
+        "本次格式转换未生成有效内容，已停止展示；上一轮回答仍保留，可重试。"
+    ]
+    assert captured["memory_calls"] == []
+    assert updated.last_answer_text == previous_answer
+
+
+def test_invalid_presentation_generation_is_not_printed_and_preserves_previous_answer(
+    monkeypatch,
+    tmp_path,
+):
+    plugin = _NeutralPlugin(lambda request: _domain_result(request, "abstain"))
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+    previous_answer = "条款甲约定交付；条款乙约定验收。"
+    state = ConversationState(
+        last_route="normal_retrieval",
+        last_content_route="normal_retrieval",
+        last_content_user_question="概括合同条款",
+        last_effective_search_query="合成合同条款",
+        last_answer_text=previous_answer,
+        last_answer_preview=previous_answer,
+    )
+
+    updated, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        scripted_questions=["换成要点"],
+        initial_state=state,
+        initial_focus=None,
+        use_real_dialog_events=True,
+        model_text="有效开头" + " " * 100_000,
+    )
+
+    assert len(fake_models.calls) == 1
+    assert captured["search"] == captured["materials"] == []
+    assert captured["printed"] == [
+        "本次格式转换未生成有效内容，已停止展示；上一轮回答仍保留，可重试。"
+    ]
+    assert " " * 1_000 not in captured["printed"][0]
+    assert captured["memory_calls"] == []
+    assert updated.last_answer_text == previous_answer
+
+
+def test_invalid_retrieval_generation_is_replaced_before_cli_output(
+    monkeypatch,
+    tmp_path,
+):
+    plugin = _NeutralPlugin(lambda request: _domain_result(request, "abstain"))
+    host = create_domain_host(plugin=plugin, expected_plugin_id=_PLUGIN_ID)
+
+    _state, captured, fake_models = _run_turn(
+        monkeypatch,
+        tmp_path,
+        port=host,
+        initial_state=ConversationState(),
+        initial_focus=None,
+        generate=True,
+        model_text=" " * 50_000,
+    )
+
+    assert len(fake_models.calls) == 1
+    assert len(captured["materials"]) == 1
+    assert captured["printed"] == [
+        "本次生成返回了异常内容，已停止展示，请重试。"
+    ]
+    assert " " * 1_000 not in captured["printed"][0]
+    assert captured["state_updates"] == []
 
 
 def test_cli_without_domain_options_skips_preflight(monkeypatch):
@@ -1309,7 +1651,15 @@ def test_runner_preserves_corrected_result_set_query_with_options(
 
 @pytest.mark.parametrize(
     "gate",
-    ["file_action", "contextless", "system_capability", "repo_meta", "smalltalk", "out_of_scope"],
+    [
+        "file_action",
+        "contextless",
+        "assistant_identity",
+        "system_capability",
+        "repo_meta",
+        "smalltalk",
+        "out_of_scope",
+    ],
 )
 def test_common_guards_do_not_dispatch(monkeypatch, tmp_path, gate):
     state = ConversationState()

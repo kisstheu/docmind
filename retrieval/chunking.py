@@ -47,6 +47,7 @@ def select_seed_and_neighbor_chunks(
     *,
     neighbor: int = 1,
     per_file_limit: int = 3,
+    total_limit: int | None = None,
 ):
     if per_file_limit <= 0:
         return []
@@ -65,6 +66,8 @@ def select_seed_and_neighbor_chunks(
 
     # seed_indices 保留初始相关性顺序；先让 seed 占用每文件预算。
     for idx in unique_seed_indices:
+        if total_limit is not None and len(selected_indices) >= total_limit:
+            break
         path = chunk_paths[idx]
         if file_chunk_counts.get(path, 0) >= per_file_limit:
             continue
@@ -98,6 +101,8 @@ def select_seed_and_neighbor_chunks(
         neighbor_priority.items(),
         key=lambda item: item[1],
     ):
+        if total_limit is not None and len(selected_indices) >= total_limit:
+            break
         path = chunk_paths[candidate_idx]
         if file_chunk_counts.get(path, 0) >= per_file_limit:
             continue
