@@ -31,7 +31,10 @@ from ai.table_presentation import (
 )
 from ai.repo_meta.category import resolve_repo_content_category_scope
 from ai.structured_skill_summary import summarize_structured_skill_summary_with_remote
-from ai.decision_result import build_comparison_generation_config, parse_decision_result, render_decision_result
+from ai.decision_result import (
+    build_comparison_generation_config, build_comparison_prose_fallback,
+    parse_decision_result, render_decision_result,
+)
 from app.dialog_state_machine import ConversationState, apply_event_to_state, detect_dialog_event
 from app.dialog.question_scope import (
     analyze_question_signals,
@@ -1361,6 +1364,12 @@ def run_chat_loop(
                     answer_text, user_question=question,
                     comparison_source_files=comparison_source_files,
                 )
+                if decision_result is None and comparison_source_files:
+                    decision_result = build_comparison_prose_fallback(
+                        answer_text, comparison_source_files,
+                    )
+                    if decision_result is not None:
+                        logger.info("🧭 [比较正文回退] 保留有效正文与引用来源，不写入选择状态")
                 if decision_result is not None:
                     answer_text = render_decision_result(decision_result)
                     logger.info(

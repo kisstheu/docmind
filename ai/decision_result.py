@@ -5,6 +5,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from ai.generation_output import validate_generated_output
 from ai.table_presentation import MAX_TABLE_OUTPUT_TOKENS
 
 
@@ -81,16 +82,33 @@ def build_comparison_generation_config(generation_config, source_paths):
     return generation_config.model_copy(update=updates)
 
 
-def _comparison_sections(answer_text: str) -> dict[str, list[str]] | None:
+def _unique_comparison_fields(pairs):
+    payload = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError("duplicate comparison field")
+        payload[key] = value
+    return payload
+
+
+def _comparison_sections(
+    answer_text: str, *, allow_partial: bool = False,
+) -> dict[str, list[str]] | None:
     """JSON is authoritative when present; malformed objects must not become prose."""
     try:
-        payload = json.loads(answer_text)
+        payload = json.loads(answer_text, object_pairs_hook=_unique_comparison_fields)
     except (ValueError, TypeError):
         return None
-    if not isinstance(payload, dict) or set(payload) != set(_COMPARISON_FIELDS):
+    if not isinstance(payload, dict):
+        return None
+    if not set(payload) <= set(_COMPARISON_FIELDS):
+        return None
+    if not allow_partial and set(payload) != set(_COMPARISON_FIELDS):
         return None
     sections = {}
     for key, alias in _COMPARISON_FIELDS.items():
+        if key not in payload:
+            continue
         value = payload[key]
         if key.endswith("source_files"):
             if not isinstance(value, list) or not all(isinstance(path, str) for path in value):
@@ -296,6 +314,10 @@ def _referenced_context_files(text: str, source_paths) -> tuple[str, ...]:
 def parse_decision_result(
     answer_text: str, *, user_question: str = "", comparison_source_files=None,
 ) -> DecisionResult | None:
+    if comparison_source_files:
+        validation = validate_generated_output(answer_text)
+        if not validation.valid or validation.text.startswith(("[", "```")):
+            return None
     structured_comparison = bool(comparison_source_files) and (answer_text or "").lstrip().startswith("{")
     sections = (
         _comparison_sections(answer_text) if structured_comparison else
@@ -331,11 +353,14 @@ def parse_decision_result(
             missing, _section_text(sections, "next_actions"), _section_text(sections, "sources"),
             _section_text(sections, "selected_sources") if candidate else "",
         ))
+        sources = _referenced_context_files(evidence_text, comparison_source_files)
+        if not sources:
+            return None
         return DecisionResult(
             conclusion=conclusion,
             selected_candidate=candidate,
             reason=_section_text(sections, "reason"),
-            source_files=_referenced_context_files(evidence_text, comparison_source_files),
+            source_files=sources,
             comparison_requested=True,
             comparison=comparison,
             differences=differences,
@@ -363,6 +388,47 @@ def parse_decision_result(
         risks=_section_text(sections, "risks"),
         source_files=sources if candidate else (),
     )
+
+
+def build_comparison_prose_fallback(answer_text: str, source_paths) -> DecisionResult | None:
+    """Deliver validated comparison facts without creating selection authority.
+
+    A complete JSON object may omit schema fields; a broken object is never
+    salvaged by extracting strings or repairing its syntax. Reuse the existing
+    prose renderer and exact citation binding for the deliverable fields.
+    """
+    validation = validate_generated_output(answer_text)
+    if not validation.valid:
+        return None
+    text = validation.text
+    if text.startswith("```"):
+        fenced = re.fullmatch(r"```(?:json)?\s*\n(.*?)\n```", text, flags=re.DOTALL)
+        if not fenced:
+            return None
+        text = fenced.group(1).strip()
+        if not text.startswith("{"):
+            return None
+    if text.startswith("{"):
+        sections = _comparison_sections(text, allow_partial=True)
+        if not sections:
+            return None
+        fields = {
+            key: _section_text(sections, key)
+            for key in ("conclusion", "reason", "comparison", "differences",
+                        "missing_information", "next_actions")
+        }
+        if not any(not _is_empty_value(value) for value in fields.values()):
+            return None
+        evidence = "\n".join((*fields.values(), _section_text(sections, "sources")))
+    elif text.startswith("["):
+        return None
+    else:
+        fields = {"comparison": text}
+        evidence = text
+    sources = _referenced_context_files(evidence, source_paths)
+    if not sources:
+        return None
+    return DecisionResult(**fields, source_files=sources, comparison_requested=True)
 
 
 def render_decision_result(result: DecisionResult) -> str:
@@ -424,6 +490,7 @@ def render_decision_result(result: DecisionResult) -> str:
 
 __all__ = [
     "DecisionResult",
+    "build_comparison_prose_fallback",
     "build_comparison_generation_config",
     "extract_explicit_user_facts",
     "parse_decision_result",
