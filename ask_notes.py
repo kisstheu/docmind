@@ -229,7 +229,7 @@ def main():
     cache_file = _resolve_cache_file(notes_dir, logger)
     change_log_file = _resolve_change_log_file(cache_file, logger)
 
-    model_id = "gemini-2.5-flash"
+    model_id = os.getenv("DOCMIND_GENERATION_MODEL", "gemini-3.8-flash")
     ollama_api_url = "http://localhost:11434/api/generate"
     ollama_model = "qwen2.5"
 

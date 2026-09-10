@@ -6,7 +6,7 @@ import pytest
 from app.chat_text.lookup_answer_main import maybe_build_direct_lookup_answer
 
 
-DOMAINS = [('采购', '收货', '抽检'), ('合同', '签署', '复核'), ('课程', '开课', '预习')]
+DOMAINS = [('采购', '收货', '抽检'), ('合同', '签署', '复核'), ('课程', '开课', '预习'), ('设备', '启用', '校准')]
 
 
 def sample(domain, when, action):

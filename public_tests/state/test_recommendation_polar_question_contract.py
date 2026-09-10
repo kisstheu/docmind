@@ -24,6 +24,8 @@ def _isolate_relation_review(monkeypatch):
     from ai.evidence_scope_review import EvidenceScopeReview
     from app.chat_loop_parts import runner
 
+    # Isolate the retained text protocol; dependency runner contracts use structured proposals.
+    monkeypatch.setenv("DOCMIND_EVIDENCE_DELIVERY_STRATEGY", "legacy_review")
     monkeypatch.setattr(runner, "review_generated_evidence_scope", lambda **_: EvidenceScopeReview("VERIFIED"))
 
 

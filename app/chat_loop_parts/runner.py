@@ -19,6 +19,7 @@ from ai.generation_output import (
     validate_generated_output,
 )
 from ai.evidence_scope_review import review_generated_evidence_scope, render_unverified_evidence
+from ai import evidence_dependency
 from ai.prompt_builder import (
     build_answer_presentation_prompt,
     build_table_presentation_prompt,
@@ -799,6 +800,10 @@ def run_chat_loop(
             )
             analytic_retrieval = (
                 scoped_content_lookup
+                or (
+                    evidence_dependency.strategy() == "dependency"
+                    and evidence_dependency.needs_calculation(question)
+                )
                 or file_result_set_content_operation
                 or scope_decision.requires_result_set_generation
                 or scope_decision.answer_entity_followup
@@ -1146,6 +1151,11 @@ def run_chat_loop(
             if (
                 not scope_decision.requires_result_set_generation
                 and not file_result_set_content_operation
+                and not (
+                    evidence_dependency.strategy() == "dependency"
+                    and evidence_dependency.needs_calculation(question)
+                    and materials.get("context_source_candidates")
+                )
             ):
                 fallback_local_answer = runtime.try_handle_retrieval_force_local_or_empty_context(
                     route=route,
@@ -1236,6 +1246,15 @@ def run_chat_loop(
             decision_source_paths = list(dict.fromkeys(
                 item.path for item in (materials.get("context_source_candidates") or ())
             ))
+            dependency_strategy = evidence_dependency.strategy() == "dependency"
+            dependency_requested = (
+                dependency_strategy and not structured_enumeration_requested
+                and evidence_dependency.needs_dependencies(generation_question, event.name)
+            )
+            dependency_sources = tuple(
+                replace(item, text=redact_sensitive_text(item.text), path=redact_sensitive_text(item.path))
+                for item in (materials.get("context_source_candidates") or ())
+            )
             comparison_source_files = (
                 decision_source_paths
                 if event.name in {"decision_request", "action_request"}
@@ -1276,6 +1295,14 @@ def run_chat_loop(
                     f"entity={retrieval_content_target} | "
                     f"source_candidates={len(materials.get('context_source_candidates') or ())}"
                 )
+            if dependency_requested:
+                final_prompt = evidence_dependency.build_prompt(
+                    redact_sensitive_text(generation_question), dependency_sources,
+                )
+            if dependency_strategy:
+                generation_config = evidence_dependency.generation_config(
+                    generation_config, protected=dependency_requested, model_id=model_id,
+                )
             logger.info("🛰️ [远程模型生成] 进入生成阶段，开始调用远程大模型")
             generation_started = time.perf_counter()
             try:
@@ -1285,6 +1312,8 @@ def run_chat_loop(
                     config=generation_config,
                 )
                 raw_response_text = getattr(response, "text", None)
+                if dependency_requested and _structured_response_payload(response) is None:
+                    raw_response_text = None
             except Exception as exc:
                 logger.warning(f"⚠️ [远程模型生成] 调用失败，不自动重试: {exc}")
                 response = None
@@ -1346,6 +1375,7 @@ def run_chat_loop(
             requested_attribute_kind = classify_requested_attribute_kind(question)
             if (
                 output_validation.valid
+                and not dependency_requested
                 and requested_attribute_kind is not None
                 and scope_decision.result_scope_paths
             ):
@@ -1362,7 +1392,23 @@ def run_chat_loop(
                         "🛡️ [文件集合属性覆盖守门] 生成结果漏项或越界，已回退为全成员未知回答"
                     )
             decision_result = None
-            if output_validation.valid and (event.name == "decision_request" or comparison_source_files):
+            if dependency_requested and output_validation.valid:
+                try:
+                    decision_result, dependency_execution = evidence_dependency.execute_delivery(
+                        output_validation.text, dependency_sources,
+                        redact_sensitive_text(generation_question), logger=logger,
+                    )
+                    answer_text = render_decision_result(decision_result)
+                    generated_result_provenance = None
+                    logger.info(
+                        f"[证据依赖交付] checks={dependency_execution.diagnostics['check_count']} "
+                        f"strategy=dependency model={model_id} remote_generation=1 remote_review=0"
+                    )
+                except (ValueError, TypeError, KeyError) as exc:
+                    logger.warning(f"[证据依赖交付] 候选结构无效，不回退自由草稿: {type(exc).__name__}")
+                    answer_text = "本轮证据依赖结构未能可靠解析，请重试。"
+                    generation_result_valid = False
+            elif output_validation.valid and (event.name == "decision_request" or comparison_source_files):
                 decision_result = parse_decision_result(
                     answer_text, user_question=question,
                     comparison_source_files=comparison_source_files,
@@ -1385,7 +1431,7 @@ def run_chat_loop(
                     if comparison_source_files:
                         answer_text = "本轮未生成可可靠呈现的比较结果，请重试。"
                         generation_result_valid = False
-            if generation_result_valid and not structured_enumeration_requested:
+            if generation_result_valid and not structured_enumeration_requested and not dependency_strategy:
                 # Review exactly the evidence delivered to generation, after the
                 # local-first exits and format checks, before any answer state.
                 review = review_generated_evidence_scope(

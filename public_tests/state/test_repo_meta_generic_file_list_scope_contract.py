@@ -42,6 +42,8 @@ def _isolate_relation_review(monkeypatch):
     from ai.evidence_scope_review import EvidenceScopeReview
     from app.chat_loop_parts import runner
 
+    # Isolate the retained text protocol; dependency runner contracts use structured proposals.
+    monkeypatch.setenv("DOCMIND_EVIDENCE_DELIVERY_STRATEGY", "legacy_review")
     monkeypatch.setattr(runner, "review_generated_evidence_scope", lambda **_: EvidenceScopeReview("VERIFIED"))
 
 
@@ -467,9 +469,13 @@ def _run_turns(
     domain_dispatch_port=None,
     client=None,
     evidence_reviewer=None,
+    delivery_strategy="legacy_review",
 ):
     from ai.evidence_scope_review import EvidenceScopeReview
 
+    # Existing text-response fixtures explicitly exercise the retained legacy protocol.
+    # Dependency execution/runner contracts opt in with their structured proposal fixtures.
+    monkeypatch.setenv("DOCMIND_EVIDENCE_DELIVERY_STRATEGY", delivery_strategy)
     inputs = iter([*questions, "q"])
     allowed_paths: list[object] = []
     query_result_sets: list[object] = []
