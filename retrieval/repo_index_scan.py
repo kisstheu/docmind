@@ -35,7 +35,7 @@ def scan_files(notes_dir: Path) -> tuple[List[Path], List[RejectedFile]]:
     all_files: List[Path] = []
     rejected_files: List[RejectedFile] = []
     for file in notes_dir.rglob("*"):
-        decision, reason = _classify_file(file)
+        decision, reason = _classify_file(file, scope_root=notes_dir)
         if decision == "ignore":
             continue
         if decision == "index":
@@ -58,10 +58,13 @@ def _is_supported_file(file: Path) -> bool:
     return decision == "index"
 
 
-def _classify_file(file: Path) -> tuple[str, str]:
+def _classify_file(file: Path, *, scope_root: Path | None = None) -> tuple[str, str]:
     if not file.is_file():
         return "ignore", ""
-    if any(part in file.parts for part in _EXCLUDED_PARTS):
+    # An explicitly selected source root defines the scan boundary. Exclude
+    # internal folders within that scope, irrespective of its parent location.
+    scoped_path = file.relative_to(scope_root) if scope_root is not None else file
+    if any(part in scoped_path.parts for part in _EXCLUDED_PARTS):
         return "ignore", ""
     if file.name.endswith(".ocr.txt") or file.name.startswith("~$") or file.name.endswith(".converted.txt"):
         return "ignore", ""

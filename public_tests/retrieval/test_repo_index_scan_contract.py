@@ -31,6 +31,24 @@ def _sparse_file(path: Path, size_bytes: int) -> None:
         file.truncate(size_bytes)
 
 
+@pytest.mark.parametrize("ancestor", [".git", ".idea", ".venv"])
+def test_explicit_source_root_is_independent_of_ancestor_name(tmp_path: Path, ancestor: str) -> None:
+    root = tmp_path / ancestor / "selected_notes"
+    root.mkdir(parents=True)
+    (root / "source.txt").write_text("Synthetic source.", encoding="utf-8")
+    assert _relative_paths(root) == ["source.txt"]
+    assert _relative_paths(tmp_path) == []
+
+
+@pytest.mark.parametrize("internal", [".git", ".idea", ".venv", "__pycache__", ".docmind_trash"])
+def test_explicit_source_root_still_excludes_internal_directories(tmp_path: Path, internal: str) -> None:
+    root = tmp_path / ".git" / "selected_notes"
+    (root / internal).mkdir(parents=True)
+    (root / "source.txt").write_text("Synthetic source.", encoding="utf-8")
+    (root / internal / "hidden.txt").write_text("Synthetic excluded source.", encoding="utf-8")
+    assert _relative_paths(root) == ["source.txt"]
+
+
 def test_default_scan_discovers_normal_pdfs(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("DOCMIND_ENABLE_HEAVY_PDF", "0")
     docs = tmp_path / "docs"
