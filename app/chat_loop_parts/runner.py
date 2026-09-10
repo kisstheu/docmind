@@ -1409,6 +1409,9 @@ def run_chat_loop(
                         redact_sensitive_text(generation_question), logger=logger,
                     )
                     answer_text = render_decision_result(decision_result)
+                    if request_port is not None and hasattr(request_port, 'record_dependency'):
+                        request_port.record_dependency(dependency_execution, dependency_sources,
+                                                       redact_sensitive_text(generation_question))
                     generated_result_provenance = None
                     logger.info(
                         f"[证据依赖交付] checks={dependency_execution.diagnostics['check_count']} "

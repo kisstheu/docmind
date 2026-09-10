@@ -29,6 +29,7 @@ def deliver(execution, candidates, question):
     visible = list(dict.fromkeys([*(f.id for f in p.facts if f.kind != "requirement"), *p.delivery,
                                  *(d.id for d in p.derivations), *(d.id for d in p.decisions)]))
     rows, actions, missing, differences, used = [], [], [], [], []
+    row_nodes = []
     selected = None
     confirmed_matches = {d.subject for d in p.decisions if d.op == "all_match"
                          and values[d.id].state == CONFIRMED and values[d.id].value is True}
@@ -81,6 +82,10 @@ def deliver(execution, candidates, question):
                 except ValueError: pass
             if key in choices: label = "用户条件匹配" if choices[key].op == "all_match" else "限定范围比较"
             missing.append(f"{name}：{label}待确认。")
+        if r.state == CONFIRMED and r.user_confirmations:
+            confirmed = ("用户已确认：" if key in facts else "依据用户确认：") + confirmed
+            if key in facts and facts[key].value and str(r.value) not in {facts[key].value, facts[key].value.removesuffix(r.unit) if r.unit else facts[key].value}:
+                confirmed += f"（原候选值：{facts[key].value}；差异由用户核实，原文保留）"
         if not label: label = "事实依据"
         action = None
         if unknown:
@@ -90,6 +95,7 @@ def deliver(execution, candidates, question):
         used.extend(r.sources)
         rows.append((name, label, confirmed or "—", hypothetical or "—", unknown or "—",
                      actions[action-1] if action else "—", "\n".join(r.sources) or "待绑定"))
+        row_nodes.append(key)
     # Missing match proposals are missing dependencies, not permission to omit user conditions.
     hard = [f for f in p.facts if f.kind == "requirement" and f.requirement == "hard"
             and values[f.id].state == CONFIRMED]
@@ -107,6 +113,7 @@ def deliver(execution, candidates, question):
         actions.append(step)
         paths = tuple(dict.fromkeys(path for value in values.values() if value.subject == obj.id for path in value.sources))
         rows.append((obj.label, "用户硬条件", "—", "—", "待确认："+condition, step, "\n".join(paths) or "待绑定"))
+        row_nodes.append("gap:" + obj.id)
     selected_paths = tuple(dict.fromkeys(pth for r in values.values() if r.subject == selected and r.state == CONFIRMED for pth in r.sources)) if selected else ()
     conclusion = (f"在已列比较范围和已确认硬条件下，可选择{names[selected]}。" if selected
                   else "当前保留已确认信息和条件性结果；尚无足够依据确定选择，先核实表中缺口。")
@@ -118,6 +125,7 @@ def deliver(execution, candidates, question):
     if rankings: conclusion += "\n" + "\n".join(rankings)
     if not actions:
         actions.append("1. 按表中来源及适用范围核对已确认结果；条件性结果须先确认前提。")
+    execution.diagnostics['row_nodes'] = row_nodes
     table = StructuredTable(("对象", "项目", "已确认值或来源陈述", "条件性推演", "待确认", "下一步", "来源"), tuple(rows)) if rows else None
     return DecisionResult(
         conclusion=conclusion, selected_candidate=names.get(selected),

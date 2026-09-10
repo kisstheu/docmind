@@ -22,6 +22,7 @@ class Result:
     inputs: tuple[str, ...] = ()
     reason: str = "依赖待确认"
     premise: str = ""
+    user_confirmations: tuple[str, ...] = ()
 
 
 @dataclass
@@ -135,7 +136,12 @@ def display_number(value):
         return format(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), "f").rstrip("0").rstrip(".")
 
 
-def execute(proposal, candidates, question, verifier):
+def execute(proposal, candidates, question, verifier, *, user_evidence=None):
+    from .user_evidence import UserEvidence
+    if user_evidence is not None and not isinstance(user_evidence, UserEvidence):
+        raise ValueError("user evidence must come from the validated caller input")
+    user_facts = user_evidence.facts if user_evidence else {}
+    user_ops = user_evidence.operations if user_evidence else {}
     sources = {c.source_id: c for c in candidates}
     if len(sources) != len(candidates):
         raise ValueError("duplicate source ID")
@@ -158,7 +164,8 @@ def execute(proposal, candidates, question, verifier):
         result = results[f.id]
         result.unit = f.unit
         try:
-            quotes, paths = resolve_refs(f.refs, sources, question)
+            supplied = user_facts.get(f.id)
+            quotes, paths = ([], supplied['sources']) if supplied else resolve_refs(f.refs, sources, question)
             if f.kind == "requirement":
                 if f.subject != "USER" or any(r.source_id != "user" for r in f.refs):
                     raise ValueError("requirement is not from user")
@@ -168,10 +175,10 @@ def execute(proposal, candidates, question, verifier):
                 raise ValueError("invented requirement")
             result.sources = paths
             # Presence is necessary for direct values, never sufficient for their relation.
-            if f.kind != "hypothesis" and f.value not in "\n".join(quotes):
+            if not supplied and f.kind != "hypothesis" and f.value not in "\n".join(quotes):
                 raise ValueError("value not stated in source")
             descriptions[f.id] = dict(subject=objects.get(f.subject, "USER"), attribute=f.attribute,
-                                      value=str(fact_value(f)), unit=f.unit, scope=f.scope, kind=f.kind,
+                                      value=supplied['value'] if supplied else str(fact_value(f)), unit=f.unit, scope=f.scope, kind=f.kind,
                                       requirement=f.requirement)
             checks.append(dict(id=f.id, kind="fact", claim=descriptions[f.id], refs=[r.model_dump() for r in f.refs]))
             valid_facts.add(f.id)
@@ -210,7 +217,7 @@ def execute(proposal, candidates, question, verifier):
                 raise ValueError("required relation/input missing")
             if d.subject not in objects:
                 raise ValueError("invalid result subject")
-            quotes, paths = resolve_refs(r.refs, sources, question)
+            quotes, paths = ([], ()) if d.id in user_ops else resolve_refs(r.refs, sources, question)
             if d.op in {"match", "mismatch"}:
                 target = facts.get(d.inputs[1])
                 if not target or target.kind != "requirement" or d.unit:
@@ -246,6 +253,13 @@ def execute(proposal, candidates, question, verifier):
     checks.extend(rank_checks)
     verdicts = verifier(checks, tuple(candidates), question) if checks else {}
     if not isinstance(verdicts, dict): verdicts = {}
+    for key, supplied in user_facts.items():
+        if key in valid_facts:
+            verdicts[key] = dict(status="SUPPORTED", basis="用户核实，在本任务采用")
+    for key in user_ops:
+        if key in checked_ops:
+            verdicts[key] = dict(status="SUPPORTED", basis="用户核实对应关系，在本任务采用",
+                                 comparison_operator="semantic")
 
     def state_for(key):
         verdict = verdicts.get(key, {})
@@ -257,9 +271,24 @@ def execute(proposal, candidates, question, verifier):
         result.state = state_for(f.id)
         result.reason = verdicts.get(f.id, {}).get("basis", "语义核验未完成")
         if result.state == CONFIRMED:
-            result.value = fact_value(f)
+            supplied = user_facts.get(f.id)
+            result.value = fact_value(f.model_copy(update={'value': supplied['value']})) if supplied else fact_value(f)
+            if supplied:
+                result.user_confirmations = (supplied['record']['confirmation_id'],)
             if f.kind == "hypothesis":
                 result.state, result.premise = HYPOTHETICAL, f.scope
+
+    # A correction adopts this fact's new value, but does not erase independent
+    # contradictory facts for the exact same subject, attribute and scope.
+    groups = {}
+    for f in proposal.facts:
+        r = results[f.id]
+        if f.kind == 'source' and r.state == CONFIRMED:
+            groups.setdefault((f.subject, f.attribute, f.scope, f.unit), []).append(r)
+    for group in groups.values():
+        if any(r.user_confirmations for r in group) and len({str(r.value) for r in group}) > 1:
+            for r in group:
+                r.state, r.reason = CONFLICT, '用户核实与同一对象、事项、范围的其他证据存在冲突'
 
     visiting, completed = set(), set()
     def evaluate(key):
@@ -273,9 +302,12 @@ def execute(proposal, candidates, question, verifier):
             r = relations[d.relation]
             args = [evaluate(i) for i in d.inputs]
             states = [a.state for a in args] + [state_for(key)]
-            hypothetical = r.hypothetical or d.hypothetical or HYPOTHETICAL in states
+            hypothetical = ((r.hypothetical or d.hypothetical) and key not in user_ops) or HYPOTHETICAL in states
             result.premise = "；".join(dict.fromkeys(x for x in [result.premise, *(a.premise for a in args)] if x))
             result.sources = tuple(dict.fromkeys((*result.sources, *(p for a in args for p in a.sources))))
+            result.user_confirmations = tuple(dict.fromkeys([
+                *(cid for a in args for cid in a.user_confirmations),
+                *([user_ops[key]['confirmation_id']] if key in user_ops else [])]))
             if CONFLICT in states: result.state = CONFLICT
             elif UNKNOWN not in states:
                 try:
@@ -284,9 +316,11 @@ def execute(proposal, candidates, question, verifier):
                         if args[0].subject != d.subject:
                             raise ValueError("wrong match subject")
                         comparator = verdicts[key].get("comparison_operator", "semantic")
+                        if key in user_ops:
+                            comparator = user_ops[key].get('comparison_operator', 'semantic')
                         if comparator == "semantic" and all(isinstance(a.value, Decimal) for a in args):
                             raise ValueError("numeric condition requires a checked comparator")
-                        value = (d.op == "match" if comparator == "semantic" else
+                        value = ((args[0].value == args[1].value if key in user_ops else d.op == "match") if comparator == "semantic" else
                                  calculate("compare", *args, "", comparator))
                     else:
                         value = calculate(d.op, *args, d.unit, d.comparator)
@@ -330,6 +364,7 @@ def execute(proposal, candidates, question, verifier):
                     result.state = CONFIRMED
                     result.value = tuple(a.subject for a in args if a.value == best)
             result.sources = tuple(dict.fromkeys(p for a in args for p in a.sources))
+            result.user_confirmations = tuple(dict.fromkeys(cid for a in args for cid in a.user_confirmations))
         visiting.remove(key)
         completed.add(key)
         return result
