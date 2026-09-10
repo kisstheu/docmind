@@ -349,6 +349,7 @@ def run_chat_loop(
     domain_dispatch_port: DomainDispatchPort,
     domain_options: Mapping[str, JsonValue] | None = None,
     question_recorder=None,
+    request_port=None,
 ):
     from app import chat_loop as runtime
     change_store = FileChangeStore(change_log_file)
@@ -360,9 +361,12 @@ def run_chat_loop(
     print("=================================")
     print("🤖：你好！我是你的 DocMind 随身助理。你可以问我任何问题。")
     while True:
-        if is_first_turn:
+        if is_first_turn and request_port is None:
             runtime._flush_pending_tty_input_unix()
-        raw_question = runtime._read_user_question(use_fresh_tty_input=is_first_turn)
+        raw_question = (
+            request_port.read_question() if request_port is not None
+            else runtime._read_user_question(use_fresh_tty_input=is_first_turn)
+        )
         if is_first_turn:
             is_first_turn = False
         if raw_question.strip().lower() in ["q", "quit", "exit"]:
@@ -372,19 +376,25 @@ def run_chat_loop(
         question = normalize_colloquial_question(raw_question)
         if question_recorder is not None:
             question_recorder.record(raw_question, normalized_question=question)
+        decision_result = None
+        generation_result_valid = True
+        presentation_valid = True
+        turn_error = False
         try:
             start_qa = time.time()
-            file_action_handled, runtime.conversation_state, current_focus_file = handle_file_action_turn(
-                question=question,
-                start_qa=start_qa,
-                state=runtime.conversation_state,
-                memory_buffer=memory_buffer,
-                current_focus_file=current_focus_file,
-                repo_state=repo_state,
-                model_emb=model_emb,
-                notes_dir=notes_dir,
-                change_store=change_store,
-            )
+            file_action_handled = False
+            if request_port is None:
+                file_action_handled, runtime.conversation_state, current_focus_file = handle_file_action_turn(
+                    question=question,
+                    start_qa=start_qa,
+                    state=runtime.conversation_state,
+                    memory_buffer=memory_buffer,
+                    current_focus_file=current_focus_file,
+                    repo_state=repo_state,
+                    model_emb=model_emb,
+                    notes_dir=notes_dir,
+                    change_store=change_store,
+                )
             if file_action_handled:
                 continue
             detail_result_set_items = runtime.conversation_state.last_result_set_items
@@ -1477,7 +1487,15 @@ def run_chat_loop(
                 scope_decision=scope_decision,
             )
         except Exception as e:
+            turn_error = True
             err = str(e)
             if "UNEXPECTED_EOF_WHILE_READING" in err or "EOF occurred in violation of protocol" in err:
                 logger.error( "模型服务连接被中途断开，可能是代理或网络波动导致，请重试。")
             logger.error(f"\n调用失败: {e}")
+        finally:
+            if request_port is not None:
+                request_port.finish_turn(
+                    state=runtime.conversation_state,
+                    decision_result=decision_result,
+                    valid=(not turn_error and generation_result_valid and presentation_valid),
+                )
