@@ -127,7 +127,7 @@ def test_event_and_outcome_anchors_come_from_each_question(topic, event, outcome
 
 
 @pytest.mark.parametrize('topic,outcome', [('合同甲', '生效'), ('课程甲', '通过'), ('订单甲', '接收')])
-def test_separate_paragraph_becomes_ranked_without_merging_per_file_selection(topic, outcome):
+def test_separate_paragraph_partial_selection_hands_off(topic, outcome):
     import sys
 
     first = f'{topic}启用时，起始值为4单位。'
@@ -147,8 +147,7 @@ def test_separate_paragraph_becomes_ranked_without_merging_per_file_selection(to
         sys.setprofile(previous_profile)
     assert {item['line'] for item in captured} == {first, later}
     assert all(item['path'] == '资料甲.md' for item in captured)
-    assert result.count('来源：资料甲.md') == 1
-    assert (first in result) != (later in result)
+    assert result is None
 
 
 @pytest.mark.parametrize('topic,labels,facts', CASES)

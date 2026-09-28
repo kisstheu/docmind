@@ -9,6 +9,80 @@ from app.chat_text.lookup_fact_candidates import (
     _quantity_attribute_slots,
 )
 
+
+LOCAL_SUFFICIENCY_NO_ANSWER = "NO_ANSWER"
+LOCAL_SUFFICIENCY_PARTIAL = "PARTIAL"
+LOCAL_SUFFICIENCY_SUFFICIENT = "SUFFICIENT"
+
+
+def _enumerated_quantity_targets(question: str) -> tuple[str, ...]:
+    """Return explicit requested fields from a multi-value quantity question."""
+    target = re.sub(r"^\s*(?:根据|按照|按|依据)[^，,。？?]+[，,]", "", question or "")
+    ending = re.search(r"(?:分别|各自)?(?:是|为)?多少[？?]?\s*$", target)
+    if not ending:
+        return ()
+    target = target[:ending.start()].strip()
+    if "的" in target:
+        target = target.split("的", 1)[1]
+    labels = tuple(
+        norm
+        for label in re.split(r"、|以及|和|[，,]", target)
+        if (norm := _normalize_lookup_token(label))
+    )
+    return labels if len(labels) >= 2 else ()
+
+
+def _quantity_value_count(text: str) -> int:
+    """Count distinct value expressions without assigning domain semantics."""
+    value_pattern = re.compile(
+        r"\d{4}年\d{1,2}月\d{1,2}日"
+        r"|(?:>=|<=|≥|≤|>|<)?\s*\d+(?:\.\d+)?\s*"
+        r"(?:至|～|~|-|–|—)\s*\d+(?:\.\d+)?\s*"
+        r"(?:[a-zA-Z%‰℃°]+|[\u4e00-\u9fa5]{1,4})?"
+        r"|(?:>=|<=|≥|≤|>|<)?\s*\d+(?:\.\d+)?\s*"
+        r"(?:[a-zA-Z%‰℃°]+|[\u4e00-\u9fa5]{1,4})"
+    )
+    count = 0
+    for match in value_pattern.finditer(text or ""):
+        # A source edition is a qualifier, not one of the requested values.
+        if (text or "")[match.start():match.end() + 1].endswith("年版"):
+            continue
+        count += 1
+    return count
+
+
+def assess_direct_lookup_sufficiency(question: str, items: list[dict]) -> str:
+    """Decide whether selected direct evidence may own the final answer.
+
+    Single-fact and non-quantity direct lookups keep their existing local-first
+    behavior.  An explicit multi-value request is final only when the selected
+    evidence covers every named field, or an already-admitted proposition has
+    at least one requested-field binding and enough distinct values to answer
+    the complete list.  Otherwise the existing generation path must take over.
+    """
+    if not items:
+        return LOCAL_SUFFICIENCY_NO_ANSWER
+    targets = _enumerated_quantity_targets(question)
+    if not targets:
+        return LOCAL_SUFFICIENCY_SUFFICIENT
+
+    evidence_norm = _normalize_lookup_token("\n".join(str(item.get("line") or "") for item in items))
+    covered = {target for target in targets if target in evidence_norm}
+    matched_terms = {
+        _normalize_lookup_token(str(term))
+        for item in items
+        for term in (item.get("matched_terms") or ())
+        if _normalize_lookup_token(str(term))
+    }
+    covered.update(target for target in targets if target in matched_terms)
+    if len(covered) == len(targets):
+        return LOCAL_SUFFICIENCY_SUFFICIENT
+
+    value_count = sum(_quantity_value_count(str(item.get("line") or "")) for item in items)
+    if covered and value_count >= len(targets):
+        return LOCAL_SUFFICIENCY_SUFFICIENT
+    return LOCAL_SUFFICIENCY_PARTIAL
+
 def _looks_like_direct_lookup_question(question: str) -> bool:
     q = _normalize_lookup_token(question)
     if not q:
@@ -253,6 +327,7 @@ def _build_direct_lookup_evidence_items(
                     "line_norm": line_norm,
                     "score": score,
                     "matched_focus": matched_focus,
+                    "matched_terms": tuple(matched_terms),
                 }
             )
 
@@ -271,6 +346,7 @@ def _build_direct_lookup_evidence_items(
                     "line": item["line"],
                     "score": item["score"],
                     "matched_focus": item["matched_focus"],
+                    "matched_terms": item["matched_terms"],
                 }
             )
 

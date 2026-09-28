@@ -17,11 +17,13 @@ from app.chat_text.lookup_predicates import (
 from app.chat_text.lookup_extract_company import _extract_company_hr_mapping_items
 from app.chat_text.lookup_extract_role import _extract_role_name_items
 from app.chat_text.lookup_answer_helpers import (
+    LOCAL_SUFFICIENCY_PARTIAL,
     _build_direct_lookup_evidence_items,
     _extract_direct_lookup_focus_terms,
     _extract_direct_lookup_terms,
     _looks_like_direct_lookup_followup_question,
     _looks_like_direct_lookup_question,
+    assess_direct_lookup_sufficiency,
 )
 
 
@@ -228,6 +230,12 @@ def maybe_build_direct_lookup_answer(
         if allow_followup_inference and focus_terms:
             focus_tip = "、".join(focus_terms[:3])
             return f"当前检索片段未直接命中“{focus_tip}”相关证据，先不给出推断；可补充更完整关键词后再查。"
+        return None
+
+    local_sufficiency = assess_direct_lookup_sufficiency(question, items)
+    if local_sufficiency == LOCAL_SUFFICIENCY_PARTIAL:
+        if logger:
+            logger.info("🛝 [本地充分性守门] 直接证据仅覆盖部分请求项，转交既有生成链")
         return None
 
     lines = ["根据当前检索片段，先给你可直接核对的证据："]
