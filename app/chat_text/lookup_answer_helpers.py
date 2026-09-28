@@ -51,7 +51,83 @@ def _quantity_value_count(text: str) -> int:
     return count
 
 
-def assess_direct_lookup_sufficiency(question: str, items: list[dict]) -> str:
+def _explicit_source_reference(question: str) -> str:
+    match = re.match(r"^\s*(?:根据|按照|按|依据)([^，,。？?]+)[，,]", question or "")
+    return (match.group(1) if match else "").strip()
+
+
+def _resolved_source_scope(question: str, candidate_paths) -> frozenset[str]:
+    """Resolve an explicit source qualifier only when local paths make it unambiguous."""
+    reference = _explicit_source_reference(question)
+    reference_norm = _normalize_lookup_token(reference)
+    paths = tuple(dict.fromkeys(str(path or "") for path in (candidate_paths or ()) if str(path or "")))
+    if not reference_norm or not paths:
+        return frozenset()
+
+    exact = {
+        path
+        for path in paths
+        if reference_norm in _normalize_lookup_token(path)
+        or _normalize_lookup_token(path.rsplit(".", 1)[0]) in reference_norm
+    }
+    if exact:
+        return frozenset(exact)
+
+    identifiers = tuple(dict.fromkeys(re.findall(r"\d{2,}", reference_norm)))
+    if not identifiers:
+        return frozenset()
+    identified = {
+        path
+        for path in paths
+        if all(identifier in _normalize_lookup_token(path) for identifier in identifiers)
+    }
+    return frozenset(identified)
+
+
+def _requested_factual_predicates(question: str) -> tuple[str, ...]:
+    target = re.sub(r"^\s*(?:根据|按照|按|依据)[^，,。？?]+[，,]", "", question or "")
+    predicates: list[str] = []
+    seen: set[str] = set()
+    for clause in re.split(r"[？?。；;，,]", target):
+        raw = clause.strip()
+        if not raw:
+            continue
+        predicate = ""
+        polar = re.search(r"(?:是否|有没有|有无|能否|可否|需不需要)(.+)$", raw)
+        if polar:
+            predicate = polar.group(1)
+        else:
+            enumerated = re.search(
+                r"(?:在)?哪(?:些|[一二两三四五六七八九十\d]+类)?情况(?:下)?(.+)$",
+                raw,
+            )
+            if enumerated:
+                predicate = enumerated.group(1)
+        norm = _normalize_lookup_token(predicate)
+        if len(norm) < 2 or norm in seen:
+            continue
+        seen.add(norm)
+        predicates.append(norm)
+    return tuple(predicates)
+
+
+def _predicate_is_covered(predicate: str, evidence_norm: str) -> bool:
+    if predicate in evidence_norm:
+        return True
+    predicate_pairs = {predicate[index:index + 2] for index in range(len(predicate) - 1)}
+    if len(predicate_pairs) < 2:
+        return False
+    evidence_pairs = {evidence_norm[index:index + 2] for index in range(len(evidence_norm) - 1)}
+    overlap = len(predicate_pairs & evidence_pairs)
+    return overlap >= 2 and overlap / len(predicate_pairs) >= 0.5
+
+
+def assess_direct_lookup_sufficiency(
+    question: str,
+    items: list[dict],
+    *,
+    candidate_paths=None,
+) -> str:
     """Decide whether selected direct evidence may own the final answer.
 
     Single-fact and non-quantity direct lookups keep their existing local-first
@@ -62,11 +138,20 @@ def assess_direct_lookup_sufficiency(question: str, items: list[dict]) -> str:
     """
     if not items:
         return LOCAL_SUFFICIENCY_NO_ANSWER
+
+    resolved_scope = _resolved_source_scope(question, candidate_paths)
+    if resolved_scope and any(str(item.get("path") or "") not in resolved_scope for item in items):
+        return LOCAL_SUFFICIENCY_PARTIAL
+
+    evidence_norm = _normalize_lookup_token("\n".join(str(item.get("line") or "") for item in items))
+    predicates = _requested_factual_predicates(question)
+    if predicates and not all(_predicate_is_covered(predicate, evidence_norm) for predicate in predicates):
+        return LOCAL_SUFFICIENCY_PARTIAL
+
     targets = _enumerated_quantity_targets(question)
     if not targets:
         return LOCAL_SUFFICIENCY_SUFFICIENT
 
-    evidence_norm = _normalize_lookup_token("\n".join(str(item.get("line") or "") for item in items))
     covered = {target for target in targets if target in evidence_norm}
     matched_terms = {
         _normalize_lookup_token(str(term))

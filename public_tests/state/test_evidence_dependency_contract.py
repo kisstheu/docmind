@@ -8,7 +8,7 @@ import pytest
 
 from ai.evidence_dependency import execute_delivery
 from ai.evidence_dependency.executor import CONFIRMED, HYPOTHETICAL, UNKNOWN, Result, calculate
-from ai.evidence_dependency.protocol import Proposal, needs_dependencies
+from ai.evidence_dependency.protocol import Proposal, build_prompt, needs_dependencies
 from ai.evidence_dependency.semantic import verify_relations
 from ai.decision_result import render_decision_result
 from public_tests.state.test_evidence_scope_binding_contract import _candidate
@@ -44,6 +44,114 @@ def fixture(domain='商品', *, explicit=True, hypothetical=False, cross=False):
 
 def run(p, cs, verifier=supported, question='计算平均量。'):
     return execute_delivery(json.dumps(p, ensure_ascii=False), cs, question, verifier=verifier)
+
+
+def source_fact(node_id, subject, attribute, value, scope, candidate):
+    return dict(
+        id=node_id,
+        subject=subject,
+        attribute=attribute,
+        value=value,
+        unit='',
+        scope=scope,
+        kind='source',
+        requirement='none',
+        refs=[ref(candidate)],
+    )
+
+
+def test_dependency_prompt_requires_every_linked_prerequisite_as_a_delivered_fact():
+    candidate = _candidate(
+        '只有在预算获批、法务复核、双方签署、保证金到账时，合同才允许生效。',
+        '合成合同.md',
+    )
+
+    prompt = build_prompt('合同在什么条件下允许生效？', [candidate])
+
+    assert '每个明确前提' in prompt
+    assert '分别提取为source fact' in prompt
+    assert '不得只保留类别、结论或其中一个前提' in prompt
+
+
+def test_complete_contract_prerequisite_chain_survives_parse_execution_and_delivery():
+    candidate = _candidate(
+        '只有在预算获批、法务复核、双方签署、保证金到账时，合同才允许生效。',
+        '合成合同.md',
+    )
+    values = ('预算获批', '法务复核', '双方签署', '保证金到账', '允许生效')
+    facts = [
+        source_fact(f'f{index}', 'contract', f'必要条件{index}', value,
+                    '合同生效的共同条件', candidate)
+        for index, value in enumerate(values, 1)
+    ]
+    proposal = dict(
+        version=1,
+        objects=[dict(id='contract', label='合同甲')],
+        facts=facts,
+        relations=[],
+        derivations=[],
+        decisions=[],
+        delivery=[fact['id'] for fact in facts],
+    )
+
+    decision, execution = run(
+        proposal, [candidate], question='合同在什么条件下允许生效？'
+    )
+    rendered = render_decision_result(decision)
+
+    assert all(value in rendered for value in values)
+    assert execution.diagnostics['row_nodes'] == [fact['id'] for fact in facts]
+    assert decision.source_files == (candidate.path,)
+
+
+def test_equal_durations_with_distinct_procurement_conditions_do_not_merge():
+    arrival = _candidate('条件A：到货后24小时内完成验收。', '合成采购验收.md', 1)
+    payment = _candidate('条件B：质检通过后24小时内完成付款。', '合成采购付款.md', 2)
+    facts = [
+        source_fact('arrival', 'arrival_rule', '时限', '24小时', '到货后完成验收', arrival),
+        source_fact('payment', 'payment_rule', '时限', '24小时', '质检通过后完成付款', payment),
+    ]
+    proposal = dict(
+        version=1,
+        objects=[
+            dict(id='arrival_rule', label='验收规则'),
+            dict(id='payment_rule', label='付款规则'),
+        ],
+        facts=facts,
+        relations=[],
+        derivations=[],
+        decisions=[],
+        delivery=['arrival', 'payment'],
+    )
+
+    decision, execution = run(proposal, [arrival, payment], question='比较两项24小时要求。')
+    rows = decision.comparison_table.rows
+
+    assert len(rows) == 2
+    assert ('验收规则', '24小时（到货后完成验收）', arrival.path) == (rows[0][0], rows[0][2], rows[0][-1])
+    assert ('付款规则', '24小时（质检通过后完成付款）', payment.path) == (rows[1][0], rows[1][2], rows[1][-1])
+    assert execution.diagnostics['row_nodes'] == ['arrival', 'payment']
+
+
+def test_simple_course_fact_delivery_is_unchanged_without_prerequisites():
+    candidate = _candidate('课程甲共8课时。', '合成课程制度.md')
+    fact = source_fact('hours', 'course', '课时', '8课时', '当前课程', candidate)
+    proposal = dict(
+        version=1,
+        objects=[dict(id='course', label='课程甲')],
+        facts=[fact],
+        relations=[],
+        derivations=[],
+        decisions=[],
+        delivery=['hours'],
+    )
+
+    decision, execution = run(proposal, [candidate], question='课程甲有多少课时？')
+    row = decision.comparison_table.rows[0]
+
+    assert row[0:3] == ('课程甲', '课时', '8课时（当前课程）')
+    assert row[-1] == candidate.path
+    assert execution.diagnostics['row_nodes'] == ['hours']
 
 
 @pytest.mark.parametrize('domain', ['商品', '合同', '设备'])

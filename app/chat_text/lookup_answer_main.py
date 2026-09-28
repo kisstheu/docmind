@@ -232,7 +232,17 @@ def maybe_build_direct_lookup_answer(
             return f"当前检索片段未直接命中“{focus_tip}”相关证据，先不给出推断；可补充更完整关键词后再查。"
         return None
 
-    local_sufficiency = assess_direct_lookup_sufficiency(question, items)
+    candidate_paths = []
+    for index in relevant_indices or []:
+        try:
+            candidate_paths.append(repo_state.chunk_paths[index])
+        except (IndexError, TypeError):
+            continue
+    local_sufficiency = assess_direct_lookup_sufficiency(
+        question,
+        items,
+        candidate_paths=candidate_paths,
+    )
     if local_sufficiency == LOCAL_SUFFICIENCY_PARTIAL:
         if logger:
             logger.info("🛝 [本地充分性守门] 直接证据仅覆盖部分请求项，转交既有生成链")
