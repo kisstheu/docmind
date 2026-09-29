@@ -18,6 +18,7 @@ from ai.generation_output import (
     enforce_bounded_absence_claims,
     validate_generated_output,
 )
+from ai.enumerated_fact_coverage import assess_enumerated_fact_coverage
 from ai.evidence_scope_review import review_generated_evidence_scope, render_unverified_evidence
 from ai import evidence_dependency
 from ai.prompt_builder import (
@@ -101,6 +102,9 @@ import app.chat_loop_handlers as _loop_handlers
 
 
 _INVALID_GENERATION_REPLY = "本次生成返回了异常内容，已停止展示，请重试。"
+_INCOMPLETE_ENUMERATED_FACT_REPLY = (
+    "本轮生成未完整覆盖用户列出的全部请求项，已停止展示不完整答案，请重试。"
+)
 _INVALID_PRESENTATION_REPLY = (
     "本次格式转换未生成有效内容，已停止展示；上一轮回答仍保留，可重试。"
 )
@@ -1382,9 +1386,27 @@ def run_chat_loop(
                     if output_validation.valid
                     else None
                 )
+            if (
+                generation_result_valid
+                and not structured_enumeration_requested
+                and not dependency_requested
+            ):
+                enumerated_coverage = assess_enumerated_fact_coverage(
+                    generation_question,
+                    answer_text,
+                )
+                if not enumerated_coverage.safe_to_deliver:
+                    logger.warning(
+                        "🛡️ [多项事实完整性守门] "
+                        f"请求项={len(enumerated_coverage.targets)} | "
+                        f"缺失项={len(enumerated_coverage.missing)}"
+                    )
+                    answer_text = _INCOMPLETE_ENUMERATED_FACT_REPLY
+                    generated_result_provenance = None
+                    generation_result_valid = False
             requested_attribute_kind = classify_requested_attribute_kind(question)
             if (
-                output_validation.valid
+                generation_result_valid
                 and not dependency_requested
                 and requested_attribute_kind is not None
                 and scope_decision.result_scope_paths
@@ -1402,7 +1424,7 @@ def run_chat_loop(
                         "🛡️ [文件集合属性覆盖守门] 生成结果漏项或越界，已回退为全成员未知回答"
                     )
             decision_result = None
-            if dependency_requested and output_validation.valid:
+            if dependency_requested and generation_result_valid:
                 try:
                     decision_result, dependency_execution = evidence_dependency.execute_delivery(
                         output_validation.text, dependency_sources,
@@ -1421,7 +1443,7 @@ def run_chat_loop(
                     logger.warning(f"[证据依赖交付] 候选结构无效，不回退自由草稿: {type(exc).__name__}")
                     answer_text = "本轮证据依赖结构未能可靠解析，请重试。"
                     generation_result_valid = False
-            elif output_validation.valid and (event.name == "decision_request" or comparison_source_files):
+            elif generation_result_valid and (event.name == "decision_request" or comparison_source_files):
                 decision_result = parse_decision_result(
                     answer_text, user_question=question,
                     comparison_source_files=comparison_source_files,

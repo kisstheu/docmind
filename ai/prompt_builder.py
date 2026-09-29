@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ai.evidence_scope import build_evidence_scope_contract
+from ai.enumerated_fact_coverage import build_enumerated_fact_coverage_contract
 
 
 def build_answer_presentation_prompt(previous_answer: str, question: str) -> str:
@@ -54,6 +55,7 @@ def build_final_prompt(
     comparison_source_files=None,
 ):
     focus_injection = build_focus_injection(current_focus_file)
+    enumerated_fact_contract = build_enumerated_fact_coverage_contract(question)
 
     result_set_injection = ""
     if result_set_items and event_name in {"result_set_followup", "result_set_expansion_followup"}:
@@ -208,6 +210,7 @@ def build_final_prompt(
         f"{context_text}"
         f"【用户最新提问】\n{question}\n\n"
         f"【本轮回答规则】\n"
+        f"{enumerated_fact_contract}"
         f"{build_evidence_scope_contract()}"
         f"一、回答依据\n"
         f"你的判断必须优先建立在【参考片段】上。"
