@@ -23,12 +23,20 @@ def deliver(execution, candidates, question):
     sources = {c.source_id: c for c in candidates}
     names = {o.id: o.label for o in p.objects}
     facts = {f.id: f for f in p.facts}
+    relations = {r.id: r for r in p.relations}
     derivations = {d.id: d for d in p.derivations}
     choices = {d.id: d for d in p.decisions}
+    operation_relations = {d.relation for d in p.derivations}
+    standalone_relation_ids = [
+        r.id for r in p.relations
+        if r.id in p.delivery or r.id not in operation_relations
+    ]
     # Deliver all validated relevant facts; omission from display must not erase useful independent evidence.
     visible = list(dict.fromkeys([*(f.id for f in p.facts if f.kind != "requirement"), *p.delivery,
-                                 *(d.id for d in p.derivations), *(d.id for d in p.decisions)]))
+                                 *standalone_relation_ids, *(d.id for d in p.derivations),
+                                 *(d.id for d in p.decisions)]))
     rows, actions, missing, differences, used = [], [], [], [], []
+    relation_conclusions = []
     row_nodes = []
     selected = None
     confirmed_matches = {d.subject for d in p.decisions if d.op == "all_match"
@@ -36,7 +44,18 @@ def deliver(execution, candidates, question):
     rankings = []
     for key in visible:
         r = values.get(key)
-        if r is None or key in {x.id for x in p.relations}: continue
+        if r is None:
+            continue
+        if key in relations:
+            used.extend(r.sources)
+            if r.state == CONFIRMED:
+                relation_conclusions.append(str(r.value))
+            elif r.state == HYPOTHETICAL:
+                relation_conclusions.append(f"若{r.premise}，则该关系成立；当前仅作条件说明。")
+            else:
+                missing.append("用户所求的比较关系结论待确认。")
+                actions.append(f"{len(actions)+1}. 核实比较对象之间的一致性、差异及适用范围。")
+            continue
         if key in facts and facts[key].kind == "requirement": continue
         name = names.get(r.subject, "比较范围")
         label, confirmed, hypothetical, unknown = r.label, "", "", ""
@@ -122,6 +141,9 @@ def deliver(execution, candidates, question):
     elif not selected and not p.decisions and not hard and any(
             values[d.id].state == CONFIRMED for d in p.derivations):
         conclusion = "已完成有明确依据的计算，结果和各自适用范围见表。"
+    if relation_conclusions:
+        relation_text = "\n".join(dict.fromkeys(relation_conclusions))
+        conclusion = f"{conclusion}\n{relation_text}" if selected else relation_text
     if rankings: conclusion += "\n" + "\n".join(rankings)
     if not actions:
         actions.append("1. 按表中来源及适用范围核对已确认结果；条件性结果须先确认前提。")

@@ -269,6 +269,43 @@ def execute(proposal, candidates, question, verifier, *, user_evidence=None):
             out.premise = r.claim if r.hypothetical or d.hypothetical else ""
         except (ValueError, KeyError) as exc:
             out.reason = str(exc)
+    # Qualitative answer relations are first-class delivery nodes. Relations used
+    # only as operation premises keep their existing derivation-bound lifecycle;
+    # an unconsumed relation is independently checked even if the model forgot to
+    # repeat its id in the display list.
+    operation_relations = {d.relation for d in proposal.derivations}
+    standalone_relations = [
+        r for r in proposal.relations
+        if r.id in proposal.delivery or r.id not in operation_relations
+    ]
+    checked_relations = set()
+    for relation in standalone_relations:
+        out = results[relation.id]
+        out.inputs = tuple(relation.inputs)
+        try:
+            if len(set(relation.inputs)) < 2 or not all(i in valid_facts for i in relation.inputs):
+                raise ValueError("answer relation requires distinct source facts")
+            _quotes, paths = resolve_refs(relation.refs, sources, question)
+            refs = list(relation.refs) + [
+                ref for node_id in relation.inputs for ref in inherited_refs(node_id)
+            ]
+            checks.append(dict(
+                id=relation.id,
+                kind="answer_relation",
+                claim={
+                    "relation": relation.claim,
+                    "inputs": [describe(i) for i in relation.inputs],
+                    "hypothetical": relation.hypothetical,
+                },
+                refs=[ref.model_dump() for ref in refs],
+            ))
+            checked_relations.add(relation.id)
+            out.sources = tuple(dict.fromkeys((
+                *paths,
+                *(path for node_id in relation.inputs for path in results[node_id].sources),
+            )))
+        except (ValueError, KeyError) as exc:
+            out.reason = str(exc)
     requirements = [f for f in proposal.facts if f.kind == "requirement"]
     if decisions:
         checks.append(dict(id="__requirements__", kind="requirement_coverage",
@@ -324,6 +361,21 @@ def execute(proposal, candidates, question, verifier, *, user_evidence=None):
             for r in group:
                 r.state, r.reason = CONFLICT, '用户核实与同一对象、事项、范围的其他证据存在冲突'
 
+    for relation in standalone_relations:
+        result = results[relation.id]
+        if relation.id not in checked_relations:
+            continue
+        inputs = [results[node_id] for node_id in relation.inputs]
+        states = [item.state for item in inputs]
+        relation_state = state_for(relation.id)
+        if CONFLICT in states or relation_state == CONFLICT:
+            result.state = CONFLICT
+        elif relation_state == CONFIRMED and all(state == CONFIRMED for state in states):
+            result.state = HYPOTHETICAL if relation.hypothetical else CONFIRMED
+            result.value = relation.claim
+            result.premise = relation.claim if relation.hypothetical else ""
+        result.reason = verdicts.get(relation.id, {}).get("basis", "语义核验未完成")
+
     visiting, completed = set(), set()
     def evaluate(key):
         if key not in results: return Result(key, reason="dangling dependency")
@@ -360,8 +412,9 @@ def execute(proposal, candidates, question, verifier, *, user_evidence=None):
                         value = calculate(d.op, *args, d.unit, d.comparator)
                     result.state = HYPOTHETICAL if hypothetical else CONFIRMED
                     result.value, result.reason = value, verdicts[key].get("basis", "narrow relation check")
-                    results[d.relation].state = result.state
-                    results[d.relation].reason = result.reason
+                    if d.relation not in checked_relations:
+                        results[d.relation].state = result.state
+                        results[d.relation].reason = result.reason
                 except (ValueError, InvalidOperation, KeyError) as exc: result.reason = str(exc)
         elif key in decisions:
             d = decisions[key]
@@ -406,5 +459,6 @@ def execute(proposal, candidates, question, verifier, *, user_evidence=None):
     for key in (*derivations, *decisions): evaluate(key)
     return Execution(proposal, results, checks, verdicts, {
         "check_count": len(checks), "checked_operations": sorted(checked_ops),
+        "checked_answer_relations": sorted(checked_relations),
         "states": {key: value.state for key, value in results.items()},
     })

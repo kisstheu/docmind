@@ -73,6 +73,131 @@ def test_dependency_prompt_requires_every_linked_prerequisite_as_a_delivered_fac
     assert '不得只保留类别、结论或其中一个前提' in prompt
 
 
+def test_dependency_prompt_requires_coordinated_obligations_and_qualitative_relation_delivery():
+    first = _candidate('规则甲要求登记依据，并在24小时内提交手续。', '合成规则甲.md')
+    second = _candidate('规则乙将处理限于24小时内，随后完成复核。', '合成规则乙.md')
+
+    prompt = build_prompt('比较两项24小时要求是否一致，表述差别是什么？', [first, second])
+
+    assert '按原文语义拆成独立source fact并全部交付' in prompt
+    assert '必须用relation直接表达有证据支持的定性结论' in prompt
+    assert '把该relation列入delivery' in prompt
+
+
+@pytest.mark.parametrize(
+    ('domain', 'first_text', 'second_text', 'relation_claim'),
+    [
+        ('合同', '规则甲要求登记依据，并在24小时内提交手续。',
+         '规则乙将处理限于24小时内，随后完成复核。',
+         '两项规则都有24小时要求，但甲约束手续提交，乙约束处理时长并另行复核。'),
+        ('采购', '方案甲要求记录验收理由，并在2日内归档。',
+         '方案乙将验收限于2日内，随后提交审批。',
+         '两项方案都有2日要求，但甲约束归档期限，乙约束验收时长并另行审批。'),
+        ('课程', '课程甲要求记录学习目标，并在8课时内完成练习。',
+         '课程乙将授课限于8课时内，随后安排测验。',
+         '两项课程都有8课时要求，但甲约束练习期限，乙约束授课时长并另行测验。'),
+    ],
+)
+def test_confirmed_facts_and_standalone_qualitative_relation_are_all_delivered(
+    domain, first_text, second_text, relation_claim
+):
+    first = _candidate(first_text, f'合成{domain}甲.md', 1)
+    second = _candidate(second_text, f'合成{domain}乙.md', 2)
+    first_parts = first_text.rstrip('。').split('，并')
+    second_parts = second_text.rstrip('。').split('，随后')
+    facts = [
+        source_fact('first_a', 'first', '前置义务', first_parts[0].removeprefix('规则甲要求').removeprefix('方案甲要求').removeprefix('课程甲要求'), '规则甲', first),
+        source_fact('first_b', 'first', '时限义务', first_parts[1], '规则甲', first),
+        source_fact('second_a', 'second', '时限义务', second_parts[0].removeprefix('规则乙').removeprefix('方案乙').removeprefix('课程乙'), '规则乙', second),
+        source_fact('second_b', 'second', '后续义务', second_parts[1], '规则乙', second),
+    ]
+    proposal = dict(
+        version=1,
+        objects=[dict(id='first', label=f'{domain}甲'), dict(id='second', label=f'{domain}乙')],
+        facts=facts,
+        relations=[dict(
+            id='qualitative_relation',
+            inputs=[fact['id'] for fact in facts],
+            claim=relation_claim,
+            hypothetical=False,
+            refs=[ref(first), ref(second)],
+        )],
+        derivations=[],
+        decisions=[],
+        # A generated display-list omission cannot erase an independently
+        # planned, verified qualitative relation.
+        delivery=[fact['id'] for fact in facts],
+    )
+
+    decision, execution = run(proposal, [first, second], question='比较两项要求是否一致，表述差别是什么？')
+    rendered = render_decision_result(decision)
+
+    assert all(fact['value'] in rendered for fact in facts)
+    assert relation_claim in decision.conclusion
+    assert relation_claim in rendered
+    assert execution.results['qualitative_relation'].state == CONFIRMED
+    assert execution.diagnostics['checked_answer_relations'] == ['qualitative_relation']
+
+
+def test_operation_premise_relation_is_not_duplicated_as_answer_conclusion():
+    proposal, candidates = fixture('合同')
+
+    decision, execution = run(proposal, candidates)
+
+    assert execution.diagnostics['checked_answer_relations'] == []
+    assert proposal['relations'][0]['claim'] not in decision.conclusion
+
+
+def test_explicit_answer_relation_survives_an_adjacent_failed_derivation():
+    proposal, candidates = fixture('合同')
+    relation_claim = '两项已确认事实属于同一合同周期。'
+    proposal['relations'][0]['claim'] = relation_claim
+    proposal['delivery'].append(proposal['relations'][0]['id'])
+
+    def verifier(checks, sources, question):
+        verdicts = supported(checks, sources, question)
+        verdicts['d']['status'] = 'UNSUPPORTED'
+        return verdicts
+
+    decision, execution = run(proposal, candidates, verifier=verifier)
+
+    assert execution.results['d'].state == UNKNOWN
+    assert execution.results['r'].state == CONFIRMED
+    assert relation_claim in decision.conclusion
+    assert execution.diagnostics['checked_answer_relations'] == ['r']
+
+
+def test_unverified_qualitative_relation_is_not_presented_as_a_conclusion():
+    first = _candidate('规则甲要求在2日内归档。', '合成规则甲.md', 1)
+    second = _candidate('规则乙要求在2日内复核。', '合成规则乙.md', 2)
+    facts = [
+        source_fact('first', 'first_rule', '时限', '2日内归档', '规则甲', first),
+        source_fact('second', 'second_rule', '时限', '2日内复核', '规则乙', second),
+    ]
+    unsupported_claim = '两项规则完全一致。'
+    proposal = dict(
+        version=1,
+        objects=[dict(id='first_rule', label='规则甲'), dict(id='second_rule', label='规则乙')],
+        facts=facts,
+        relations=[dict(id='relation', inputs=['first', 'second'], claim=unsupported_claim,
+                        hypothetical=False, refs=[ref(first), ref(second)])],
+        derivations=[], decisions=[], delivery=['first', 'second', 'relation'],
+    )
+
+    def verifier(checks, sources, question):
+        verdicts = supported(checks, sources, question)
+        verdicts['relation']['status'] = 'UNSUPPORTED'
+        return verdicts
+
+    decision, execution = run(proposal, [first, second], verifier=verifier,
+                              question='比较两项要求是否一致。')
+    rendered = render_decision_result(decision)
+
+    assert execution.results['relation'].state == UNKNOWN
+    assert unsupported_claim not in rendered
+    assert '比较关系结论待确认' in rendered
+
+
 def test_complete_contract_prerequisite_chain_survives_parse_execution_and_delivery():
     candidate = _candidate(
         '只有在预算获批、法务复核、双方签署、保证金到账时，合同才允许生效。',
