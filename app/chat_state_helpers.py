@@ -427,7 +427,10 @@ def update_state_after_retrieval_answer(
         and bool(prev_result_set_items)
         and bool(focused_file)
         and not is_result_set_comparison_answer
-        and question_signals.explicit_single_file_result_reference
+        and (
+            question_signals.explicit_single_file_result_reference
+            or scope_decision.has_single_focus_scope
+        )
     )
     answer_type = (
         None
@@ -645,6 +648,7 @@ def update_state_after_retrieval_answer(
         )
         fallback_to_file_result_set = (
             not is_synthesis_answer
+            and not scope_decision.has_single_focus_scope
             and not full_file_result_set_content_scope
             and bool(fallback_file_items)
             and not preserve_source_file_refs
