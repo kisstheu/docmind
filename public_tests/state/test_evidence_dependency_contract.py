@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from ai.evidence_dependency import execute_delivery
-from ai.evidence_dependency.executor import CONFIRMED, HYPOTHETICAL, UNKNOWN, Result, calculate
-from ai.evidence_dependency.protocol import Proposal, build_prompt, needs_dependencies
+from ai.evidence_dependency.executor import CONFIRMED, HYPOTHETICAL, UNKNOWN, Result, calculate, resolve_refs
+from ai.evidence_dependency.protocol import Proposal, Ref, build_prompt, needs_dependencies
 from ai.evidence_dependency.semantic import verify_relations
 from ai.decision_result import render_decision_result
 from public_tests.state.test_evidence_scope_binding_contract import _candidate
@@ -152,6 +152,85 @@ def test_simple_course_fact_delivery_is_unchanged_without_prerequisites():
     assert row[0:3] == ('课程甲', '课时', '8课时（当前课程）')
     assert row[-1] == candidate.path
     assert execution.diagnostics['row_nodes'] == ['hours']
+
+
+@pytest.mark.parametrize(
+    ('domain', 'first_line', 'second_line', 'quote'),
+    [
+        ('合同', '合同须经预算批准、法务复核、双方', '签署后生效。', '合同须经预算批准、法务复核、双方签署后生效。'),
+        ('采购', '采购覆盖遴选、审批、下单、验收', '和质量评价。', '采购覆盖遴选、审批、下单、验收和质量评价。'),
+        ('设备', '设备支持离线运行、故障告警和远程', '维护。', '设备支持离线运行、故障告警和远程维护。'),
+    ],
+)
+def test_source_quote_binding_ignores_layout_only_line_wraps(
+    domain, first_line, second_line, quote,
+):
+    candidate = _candidate(f'{first_line}\n{second_line}', f'合成{domain}.md')
+    reference = Ref(
+        source_id=candidate.source_id,
+        line_start=1,
+        line_end=2,
+        quote=quote,
+    )
+
+    quotes, paths = resolve_refs([reference], {candidate.source_id: candidate}, '')
+
+    assert quote.replace(' ', '') in ''.join(quotes).replace('\n', '').replace(' ', '')
+    assert paths == (candidate.path,)
+
+
+def test_source_quote_binding_allows_one_line_drift_only_when_quote_overlaps_declared_range():
+    candidate = _candidate('制度要求预算批准并完成\n法务复核后生效。\n附录另行说明。', '合成制度.md')
+    overlapping = Ref(
+        source_id=candidate.source_id,
+        line_start=2,
+        line_end=2,
+        quote='制度要求预算批准并完成法务复核后生效。',
+    )
+    adjacent_only = Ref(
+        source_id=candidate.source_id,
+        line_start=3,
+        line_end=3,
+        quote='制度要求预算批准并完成法务复核后生效。',
+    )
+
+    resolve_refs([overlapping], {candidate.source_id: candidate}, '')
+    with pytest.raises(ValueError, match='quote mismatch'):
+        resolve_refs([adjacent_only], {candidate.source_id: candidate}, '')
+
+
+def test_multi_source_layout_wrapped_fact_survives_binding_and_delivery():
+    first = _candidate('方案甲主要解决审批延迟。', '合成方案甲.md')
+    second = _candidate('方案乙规范遴选、采购、验收\n和质量评价。', '合成方案乙.md')
+    proposal = dict(
+        version=1,
+        objects=[dict(id='first', label='方案甲'), dict(id='second', label='方案乙')],
+        facts=[
+            source_fact('f1', 'first', '主要作用', '解决审批延迟', '当前方案', first),
+            dict(
+                source_fact('f2', 'second', '主要作用', '规范遴选、采购、验收和质量评价', '当前方案', second),
+                refs=[dict(
+                    source_id=second.source_id,
+                    line_start=1,
+                    line_end=2,
+                    quote='方案乙规范遴选、采购、验收和质量评价。',
+                )],
+            ),
+        ],
+        relations=[],
+        derivations=[],
+        decisions=[],
+        delivery=['f1', 'f2'],
+    )
+
+    decision, execution = run(proposal, [first, second], question='比较两个方案的主要作用。')
+    rendered = render_decision_result(decision)
+
+    assert execution.results['f1'].state == CONFIRMED
+    assert execution.results['f2'].state == CONFIRMED
+    assert '解决审批延迟' in rendered
+    assert '规范遴选、采购、验收和质量评价' in rendered
+    assert decision.source_files == (first.path, second.path)
 
 
 @pytest.mark.parametrize('domain', ['商品', '合同', '设备'])

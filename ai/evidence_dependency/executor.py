@@ -46,13 +46,46 @@ def resolve_refs(refs, sources, question):
         a, b = ref.line_start, ref.line_end
         if type(a) is not int or type(b) is not int or not 1 <= a <= b <= len(lines):
             raise ValueError("invalid line range")
-        quote = "\n".join(lines[a-1:b])
-        if not ref.quote or ref.quote not in quote:
+        quote = _resolve_source_quote(lines, a, b, ref.quote)
+        if quote is None:
             raise ValueError("quote mismatch")
         quotes.append(quote)
         if source:
             paths.append(source.path)
     return quotes, tuple(dict.fromkeys(paths))
+
+
+def _compact_layout_text(value):
+    """Remove presentation whitespace without changing any semantic character."""
+    return re.sub(r"\s+", "", value or "")
+
+
+def _resolve_source_quote(lines, line_start, line_end, expected):
+    """Bind an exact quote despite source wrapping and a one-line boundary drift."""
+    needle = _compact_layout_text(expected)
+    if not needle:
+        return None
+    selected = "\n".join(lines[line_start - 1:line_end])
+    if needle in _compact_layout_text(selected):
+        return selected
+
+    # OCR/PDF wrapping commonly makes a model include one adjacent physical line.
+    # Accept that bounded drift only when the matched quote still overlaps the
+    # declared range; a quote found solely on a neighboring line remains invalid.
+    lower = max(0, line_start - 2)
+    upper = min(len(lines), line_end + 1)
+    compact_lines = [_compact_layout_text(line) for line in lines[lower:upper]]
+    expanded = "".join(compact_lines)
+    claimed_start = sum(len(line) for line in compact_lines[:line_start - 1 - lower])
+    claimed_end = claimed_start + sum(
+        len(line) for line in compact_lines[line_start - 1 - lower:line_end - lower]
+    )
+    offset = expanded.find(needle)
+    while offset >= 0:
+        if offset < claimed_end and offset + len(needle) > claimed_start:
+            return "\n".join(lines[lower:upper])
+        offset = expanded.find(needle, offset + 1)
+    return None
 
 
 def number(value):
@@ -175,7 +208,8 @@ def execute(proposal, candidates, question, verifier, *, user_evidence=None):
                 raise ValueError("invented requirement")
             result.sources = paths
             # Presence is necessary for direct values, never sufficient for their relation.
-            if not supplied and f.kind != "hypothesis" and f.value not in "\n".join(quotes):
+            if (not supplied and f.kind != "hypothesis"
+                    and _compact_layout_text(f.value) not in _compact_layout_text("\n".join(quotes))):
                 raise ValueError("value not stated in source")
             descriptions[f.id] = dict(subject=objects.get(f.subject, "USER"), attribute=f.attribute,
                                       value=supplied['value'] if supplied else str(fact_value(f)), unit=f.unit, scope=f.scope, kind=f.kind,
